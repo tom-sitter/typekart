@@ -1,0 +1,405 @@
+# TypeKart Codebase Tour
+
+## Purpose
+
+This document explains how the current Rust code is organized and why it is shaped this way. It is meant to help you learn Rust while navigating the project.
+
+The implementation is intentionally split into two broad areas:
+
+- `game`: pure game rules and state.
+- `ui`: terminal input and rendering.
+
+That separation matters. The game rules should be testable without a terminal, networking, or real-time rendering. The UI should display state and translate key presses into game actions, not decide game rules.
+
+## Project Entry Points
+
+### `src/main.rs`
+
+`main.rs` is the executable entry point.
+
+It uses `clap` to parse command-line arguments:
+
+```text
+typekart play --words 40
+```
+
+The important Rust idea here is that `main` returns `anyhow::Result<()>`. That lets us use the `?` operator inside the call chain and let errors bubble up cleanly instead of manually matching every error.
+
+Current flow:
+
+```text
+main
+  parse CLI
+  match command
+  app::play(words)
+```
+
+### `src/app.rs`
+
+`app.rs` is the small coordinator between the CLI and the actual game.
+
+It:
+
+1. Loads `words_alpha.txt`.
+2. Generates a `Track`.
+3. Creates a `PlayerState`.
+4. Starts the terminal session.
+
+This file should stay thin. As the project grows, it can coordinate host/join/play commands, but it should not become the place where game rules live.
+
+## Game Modules
+
+### `src/game/mod.rs`
+
+This file declares the game submodules:
+
+```rust
+pub mod player;
+pub mod stats;
+pub mod track;
+pub mod typing;
+```
+
+In Rust, a module needs to be declared before other parts of the crate can use it. `pub mod` means the module is visible to parent modules such as `app` and `ui`.
+
+### `src/game/track.rs`
+
+This module owns word-list loading and generated race tracks.
+
+Main types:
+
+- `WordList`: the curated source list loaded from `words_alpha.txt`.
+- `Track`: the generated race sequence for a single race.
+
+Important Rust concepts:
+
+- `impl Track` defines methods attached to the `Track` type.
+- `Result<Self>` means a function either returns the type being implemented or an error.
+- `impl AsRef<Path>` lets callers pass flexible path-like values, such as `&str` or `PathBuf`.
+- `bail!` returns early with an error.
+
+The word list is treated as curated data. Runtime code trims blank lines and samples from the list. Tests can validate that the curated file shape is sane, but normal gameplay should not silently filter words.
+
+### `src/game/player.rs`
+
+This module defines the local player's race state.
+
+Main type:
+
+```rust
+pub struct PlayerState {
+    pub word_index: usize,
+    pub input: String,
+    pub typo_index: Option<usize>,
+    pub started_at: Instant,
+    pub finished_at: Option<Instant>,
+    pub stats: TypingStats,
+}
+```
+
+Important Rust concepts:
+
+- `usize` is the standard index type for vectors and strings.
+- `Option<T>` means a value may or may not exist.
+- `Option<usize>` is used for `typo_index` because there may be no typo.
+- `Instant` is used for elapsed-time measurement.
+
+The current code stores fields as `pub` for simplicity while the model is small. Later, we may hide fields behind methods if invariants become harder to protect.
+
+### `src/game/stats.rs`
+
+This module tracks raw typing stats.
+
+Main type:
+
+```rust
+pub struct TypingStats {
+    pub typed_chars: usize,
+    pub correct_chars: usize,
+    pub typo_chars: usize,
+    pub backspaces: usize,
+    pub completed_words: usize,
+}
+```
+
+Important Rust concepts:
+
+- `#[derive(Debug, Clone, Default, PartialEq, Eq)]` asks the compiler to generate common trait implementations.
+- `Default` lets us create empty stats with `TypingStats::default()`.
+- Methods that only read state take `&self`.
+
+WPM uses the common typing convention of five characters per word.
+
+### `src/game/typing.rs`
+
+This is the most important module in Milestone 1. It contains the deterministic typing engine.
+
+Main types:
+
+- `KeyAction`: the game-level input actions the engine understands.
+- `TypingEvent`: events emitted by the engine after applying input.
+
+The key design choice is that `typing.rs` does not know about `crossterm`, terminals, colors, or rendering. It only knows about player state, tracks, and game actions.
+
+Current flow:
+
+```text
+apply_key
+  ignore input if player is already finished
+  find current target word
+  dispatch to:
+    apply_char
+    apply_space
+    apply_backspace
+```
+
+The function signature is:
+
+```rust
+pub fn apply_key(
+    player: &mut PlayerState,
+    track: &Track,
+    action: KeyAction,
+    now: Instant,
+) -> Vec<TypingEvent>
+```
+
+Important Rust concepts:
+
+- `&mut PlayerState` means the function can mutate the player.
+- `&Track` means the function can read the track but cannot mutate it.
+- `Vec<TypingEvent>` returns zero or more resulting events.
+- Passing `now: Instant` from the caller makes the function easier to test than calling `Instant::now()` internally everywhere.
+
+Typo behavior:
+
+- The first incorrect character sets `typo_index`.
+- While `typo_index` exists, typed characters are counted but progress is blocked.
+- Backspace recalculates the first typo.
+- Early Space is stored as a literal space in the input buffer.
+- The renderer displays that space as `␠` so the mistake is visible.
+- The final word is a special case: once its last correct character is typed,
+  the race finishes immediately without requiring a trailing Space.
+
+Tests live in the same file under:
+
+```rust
+#[cfg(test)]
+mod tests { ... }
+```
+
+This is common in Rust. Unit tests can access private helper functions in the same module, which makes it practical to test implementation details when useful.
+
+## UI Modules
+
+### `src/ui/mod.rs`
+
+This declares the UI submodules:
+
+```rust
+pub mod render;
+pub mod session;
+pub mod terminal;
+```
+
+### `src/ui/session.rs`
+
+This module owns local session state for the terminal prototype.
+
+Main types:
+
+- `LocalSession`: holds the current `Track`, `PlayerState`, and `EventLog`.
+- `EventLog`: stores recent display-facing race events.
+
+Important Rust concepts:
+
+- `VecDeque<String>` is a double-ended queue. We use it so old event entries can be removed from the front while new entries are pushed onto the back.
+- `impl Into<String>` lets `EventLog::push` accept either `&str` or `String`.
+- `impl DoubleEndedIterator<Item = &str>` returns an iterator without exposing the internal `VecDeque`.
+
+`LocalSession::apply_action` is now the bridge from input to game state:
+
+```text
+KeyAction
+  apply_key mutates PlayerState
+  returned TypingEvent values become EventLog messages
+```
+
+This keeps event display text in the UI layer while preserving the typing engine as pure game logic.
+
+### `src/ui/terminal.rs`
+
+This module owns terminal setup, teardown, input polling, and the app loop.
+
+Responsibilities:
+
+- Enable raw mode.
+- Enter the alternate screen.
+- Poll for keyboard events.
+- Convert terminal key events into `KeyAction`.
+- Apply actions through `LocalSession`.
+- Ask the renderer to draw the current state.
+- Restore the terminal on exit.
+
+Important Rust concepts:
+
+- `type AppTerminal = Terminal<CrosstermBackend<Stdout>>` creates a local type alias for a long concrete type.
+- `?` propagates errors from terminal setup, drawing, and event reading.
+- `let Event::Key(key_event) = event::read()? else { continue; };` is pattern matching. It says: if the event is a key event, bind it; otherwise continue the loop.
+
+Terminal raw mode is important because normal terminals buffer input until Enter. Raw mode lets the app receive individual key presses.
+
+The alternate screen is the full-screen terminal buffer many terminal apps use. When the app exits, the terminal returns to the previous shell screen.
+
+### `src/ui/render.rs`
+
+This module translates game state into terminal widgets.
+
+Responsibilities:
+
+- Lay out the screen.
+- Render the responsive track window.
+- Render the separate racer layer.
+- Render the input buffer.
+- Render stats.
+- Render the player list.
+- Render the event feed.
+- Render help and final results.
+
+Important Rust concepts:
+
+- `TypingScreen<'a>` contains borrowed references to `Track`, `PlayerState`, and `EventLog`.
+- The `'a` lifetime means the screen cannot outlive the data it references.
+- `Frame<'_>` means the frame has a lifetime, but the function does not need to name it.
+- Ratatui widgets are values. We build them and pass them to `frame.render_widget`.
+- `TrackWindow<'a>` and `VisibleWord<'a>` borrow word strings from the existing `Track` instead of cloning them.
+
+The input renderer uses `typo_index` to color the first typo and every following character red. Characters before the typo are green. An empty input shows `_` as a visual cursor.
+
+The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw both the word layer and the local player's three-cell racer marker.
+
+## Data Flow
+
+The current local game loop looks like this:
+
+```text
+keyboard event
+  ui::terminal converts it to KeyAction
+  ui::session applies it to LocalSession
+  game::typing::apply_key mutates PlayerState
+  ui::session logs meaningful TypingEvents
+  ui::render draws Track + PlayerState + EventLog
+```
+
+The important boundary:
+
+```text
+crossterm KeyEvent  ->  KeyAction  ->  game rules
+```
+
+This keeps terminal-specific code out of the game engine.
+
+## Borrowing And Ownership In This Code
+
+Some useful examples:
+
+### Owned Values
+
+`Track` owns its words:
+
+```rust
+pub struct Track {
+    pub words: Vec<String>,
+}
+```
+
+The track owns the `Vec`, and the vector owns each `String`.
+
+### Shared Borrows
+
+Rendering borrows state:
+
+```rust
+pub struct TypingScreen<'a> {
+    pub track: &'a Track,
+    pub player: &'a PlayerState,
+}
+```
+
+The renderer should not mutate game state, so it gets shared references.
+
+### Mutable Borrows
+
+The typing engine mutates player state:
+
+```rust
+apply_key(&mut player, &track, action, Instant::now());
+```
+
+`&mut player` means there can be only one active mutable borrow of that player at a time. Rust enforces this to prevent accidental concurrent mutation.
+
+## Error Handling
+
+Application code mostly returns `anyhow::Result<()>`.
+
+This is pragmatic for binaries because it keeps error handling lightweight:
+
+```rust
+pub fn play(word_count: usize) -> Result<()> {
+    let word_list = WordList::load("words_alpha.txt")?;
+    ...
+}
+```
+
+For library-style game rules, we should prefer explicit types and avoid unnecessary `anyhow`. For app setup, file loading, and terminal control, `anyhow` is fine.
+
+## How To Run The Current Project
+
+Run tests:
+
+```sh
+cargo test
+```
+
+Run the local typing prototype:
+
+```sh
+cargo run -- play
+```
+
+Run a short race:
+
+```sh
+cargo run -- play --words 10
+```
+
+Format code:
+
+```sh
+cargo fmt
+```
+
+## How To Read This Code
+
+Recommended order:
+
+1. Start with `src/main.rs` to see the CLI entry point.
+2. Read `src/app.rs` to see how the first race is assembled.
+3. Read `src/game/player.rs` and `src/game/track.rs` for the core data.
+4. Read `src/game/typing.rs` slowly. This is where the main rules live.
+5. Read the tests in `typing.rs`; they explain expected behavior very directly.
+6. Read `src/ui/session.rs` to see how local state and display events are bundled.
+7. Read `src/ui/terminal.rs` to see the runtime loop.
+8. Read `src/ui/render.rs` to understand how state becomes terminal output.
+
+## Things That Are Intentionally Simple For Now
+
+- The UI is functional, not final.
+- There is no multiplayer yet.
+- The racer layer only shows the local player.
+- The player list and event feed are local placeholders for future multiplayer.
+- The typing engine has no bonus-word or item logic yet.
+- Track generation samples with replacement, so repeated words can appear.
+- Most state fields are public to keep early iteration straightforward.
+
+These choices are acceptable for the current local prototype. We should tighten them only when the next milestone creates real pressure to do so.

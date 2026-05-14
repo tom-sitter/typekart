@@ -1,0 +1,9 @@
+//! Pure game state and rules.
+//!
+//! Code in this module should not depend on terminal rendering or networking.
+//! Keeping it pure makes the core behavior easy to unit test.
+
+pub mod player;
+pub mod stats;
+pub mod track;
+pub mod typing;
