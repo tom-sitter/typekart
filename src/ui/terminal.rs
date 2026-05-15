@@ -4,11 +4,13 @@
 //! It converts `crossterm` key events into game-level `KeyAction` values.
 
 use std::{
+    fs,
     io::{self, Stdout},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
@@ -24,7 +26,7 @@ use crate::{
         typing::KeyAction,
     },
     ui::render::{IconMode, TypingScreen, render},
-    ui::session::{LocalAction, LocalSession},
+    ui::session::{LocalAction, LocalSession, RunLog},
 };
 
 type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
@@ -36,6 +38,7 @@ pub fn run_typing_session(
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
     icon_mode: IconMode,
+    debug_log: Option<PathBuf>,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
     let result = run_loop(
@@ -44,7 +47,12 @@ pub fn run_typing_session(
         icon_mode,
     );
     restore_terminal(&mut terminal)?;
-    result
+    let session = result?;
+    if let Some(path) = debug_log {
+        write_debug_log(path, &session.run_log)?;
+    }
+
+    Ok(())
 }
 
 fn setup_terminal() -> Result<AppTerminal> {
@@ -70,7 +78,7 @@ fn run_loop(
     terminal: &mut AppTerminal,
     mut session: LocalSession,
     icon_mode: IconMode,
-) -> Result<()> {
+) -> Result<LocalSession> {
     loop {
         terminal.draw(|frame| {
             render(
@@ -108,13 +116,19 @@ fn run_loop(
         }
 
         if should_quit(key_event) {
-            return Ok(());
+            return Ok(session);
         }
 
         if let Some(action) = local_action(key_event) {
             session.apply_action(action, Instant::now());
         }
     }
+}
+
+fn write_debug_log(path: PathBuf, run_log: &RunLog) -> Result<()> {
+    let contents = run_log.entries().collect::<Vec<_>>().join("\n");
+    fs::write(&path, format!("{contents}\n"))
+        .with_context(|| format!("failed to write debug log to {}", path.display()))
 }
 
 fn should_quit(key_event: KeyEvent) -> bool {

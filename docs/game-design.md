@@ -238,6 +238,8 @@ Targeting:
 
 - Banana targets the nearest racer, whether that racer is ahead, behind, or overlapping the current player.
 - The target must be within 10 main-track words.
+- Finished racers and already-stunned racers are not valid targets.
+- If the target is on the same word as the attacker, render and log the cue as an overlap rather than ahead or behind.
 - If no valid racer is within range, the item misses.
 - Banana is consumed whenever it is used, whether or not a valid target exists.
 
@@ -425,6 +427,14 @@ The event feed should be short and practical:
 - Item hits and blocks.
 - Finish placements.
 - Player joins or disconnects.
+
+The player-facing feed is intentionally brief, so local prototype runs can also write a detailed diagnostic log with:
+
+```text
+--debug-log <PATH>
+```
+
+That log should record item pickup, targeting, candidate racer positions, shields, stun results, and misses so item cause and effect can be reconstructed after a run.
 
 ## Controls
 

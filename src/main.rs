@@ -7,6 +7,8 @@ mod app;
 mod game;
 mod ui;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -37,6 +39,9 @@ enum Command {
         /// Use Unicode item icons instead of ASCII-safe markers.
         #[arg(long)]
         unicode_icons: bool,
+        /// Write detailed run diagnostics to this file after the race session exits.
+        #[arg(long)]
+        debug_log: Option<PathBuf>,
     },
 }
 
@@ -64,6 +69,7 @@ fn main() -> Result<()> {
             ai_racers,
             ai_difficulty,
             unicode_icons,
+            debug_log,
         } => app::play(
             words,
             ai_racers,
@@ -73,6 +79,7 @@ fn main() -> Result<()> {
             } else {
                 IconMode::Ascii
             },
+            debug_log,
         ),
     }
 }

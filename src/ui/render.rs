@@ -508,10 +508,12 @@ fn visible_item_cue(
         (ItemCueKind::Banana { direction }, IconMode::Unicode) => match direction {
             AttackDirection::Ahead => (" 🍌 >>", ItemCuePlacement::After),
             AttackDirection::Behind => ("<< 🍌 ", ItemCuePlacement::Before),
+            AttackDirection::Overlap => (" 🍌 <>", ItemCuePlacement::After),
         },
         (ItemCueKind::Banana { direction }, IconMode::Ascii) => match direction {
             AttackDirection::Ahead => (" ))>>", ItemCuePlacement::After),
             AttackDirection::Behind => ("((<< ", ItemCuePlacement::Before),
+            AttackDirection::Overlap => (" ))<>", ItemCuePlacement::After),
         },
     };
 
@@ -1815,6 +1817,36 @@ mod tests {
         assert_eq!(lines[0].spans[5].content.as_ref(), "<");
         assert_eq!(lines[0].spans[6].content.as_ref(), " ");
         assert_eq!(lines[0].spans[7].content.as_ref(), "█");
+    }
+
+    #[test]
+    fn racer_line_shows_overlap_banana_attack_direction_cue() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let player = PlayerState::new(now);
+        let cue = ItemCue {
+            kind: ItemCueKind::Banana {
+                direction: AttackDirection::Overlap,
+            },
+            until: now + std::time::Duration::from_secs(1),
+        };
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            Some(cue),
+            RacePhase::Racing,
+            IconMode::Unicode,
+            now,
+        );
+
+        assert_eq!(lines[0].spans[3].content.as_ref(), " ");
+        assert_eq!(lines[0].spans[4].content.as_ref(), "🍌");
+        assert_eq!(lines[0].spans[6].content.as_ref(), "<");
+        assert_eq!(lines[0].spans[7].content.as_ref(), ">");
     }
 
     #[test]

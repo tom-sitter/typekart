@@ -3,7 +3,7 @@
 //! This module wires together word loading, track generation, player state, and
 //! the terminal session. It intentionally avoids owning the rules themselves.
 
-use std::time::Instant;
+use std::{path::PathBuf, time::Instant};
 
 use anyhow::{Context, Result};
 
@@ -19,6 +19,7 @@ pub fn play(
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
     icon_mode: IconMode,
+    debug_log: Option<PathBuf>,
 ) -> Result<()> {
     let word_list = WordList::load("words_alpha.txt").context("failed to load word list")?;
     let track = Track::generate(&word_list, word_count).context("failed to generate track")?;
@@ -31,5 +32,6 @@ pub fn play(
         ai_racer_count,
         ai_difficulty,
         icon_mode,
+        debug_log,
     )
 }

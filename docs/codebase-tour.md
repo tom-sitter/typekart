@@ -23,6 +23,8 @@ It uses `clap` to parse command-line arguments:
 typekart play --words 40
 ```
 
+Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--unicode-icons`, and `--debug-log <PATH>`.
+
 The important Rust idea here is that `main` returns `anyhow::Result<()>`. That lets us use the `?` operator inside the call chain and let errors bubble up cleanly instead of manually matching every error.
 
 Current flow:
@@ -31,7 +33,7 @@ Current flow:
 main
   parse CLI
   match command
-  app::play(words)
+  app::play(settings)
 ```
 
 ### `src/app.rs`
@@ -456,7 +458,7 @@ Application code mostly returns `anyhow::Result<()>`.
 This is pragmatic for binaries because it keeps error handling lightweight:
 
 ```rust
-pub fn play(word_count: usize) -> Result<()> {
+pub fn play(...) -> Result<()> {
     let word_list = WordList::load("words_alpha.txt")?;
     ...
 }
@@ -482,6 +484,12 @@ Run a short race:
 
 ```sh
 cargo run -- play --words 10
+```
+
+Run with AI racers and write detailed item diagnostics after quitting:
+
+```sh
+cargo run -- play --ai-racers 6 --debug-log typekart-debug.log
 ```
 
 Format code:
