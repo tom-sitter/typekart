@@ -356,16 +356,15 @@ you picked up Banana
 - Highlight correctly typed characters in green.
 - Highlight the next character to type with a cursor-like style.
 - When a typo is present, show typed characters from the first typo onward in red, including overflow across following words and spaces.
-- Show racer positions on a separate racer layer aligned with the same track window.
+- Show racer positions in separate lanes aligned with the same track window.
 - Represent each racer with a three-character marker in their unique color.
+- The local player lane should appear immediately below the track text.
+- Other racer lanes should appear below the local player lane.
 - Pin the local racer's marker to the next character while input is valid.
 - Pin the local racer's marker to the first typo while a typo is active.
 - When Shield is active, encapsulate the racer's marker in brackets to show the protected state, such as `[███]`.
 - Keep the word layer readable; racer markers should not obscure the text players must type.
-- If a racer marker overlaps the local player's marker, the local player's color takes visual priority.
-- If remote racer markers overlap each other, blend their colors when truecolor rendering is available.
-- If color blending is unavailable, use a deterministic fallback such as alternating marker cells or a neutral collision color.
-- If many players overlap in a way that becomes ambiguous, show the shared marker on the track and rely on the player list for exact ordering.
+- Since each racer has a lane, close positions should be readable without marker color blending.
 
 ### Item View
 

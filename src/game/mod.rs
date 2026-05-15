@@ -3,6 +3,7 @@
 //! Code in this module should not depend on terminal rendering or networking.
 //! Keeping it pure makes the core behavior easy to unit test.
 
+pub mod ai;
 pub mod bonus;
 pub mod effects;
 pub mod items;

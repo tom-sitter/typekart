@@ -59,6 +59,7 @@ pub mod stats;
 pub mod track;
 pub mod typing;
 pub mod bonus;
+pub mod ai;
 pub mod effects;
 pub mod items;
 ```
@@ -102,6 +103,21 @@ Important Rust concepts:
 - `#[cfg(test)]` helpers such as `with_points` exist only for tests and are not compiled into normal builds.
 
 The bonus module does not decide how typed input is interpreted. It models the bonus state. `ui::session` coordinates whether a player is currently attempting a bonus word.
+
+### `src/game/ai.rs`
+
+This module defines local AI difficulty.
+
+Main type:
+
+- `AiDifficulty`: currently `Easy` or `Hard`.
+
+Important Rust concepts:
+
+- Small enums can own behavior through methods such as `wpm_range`.
+- Keeping difficulty here avoids scattering magic WPM values through the UI.
+
+AI movement itself lives in `ui::session` for now because these racers are local stand-ins for future remote clients. Each AI racer samples one WPM value from its difficulty range when the race starts.
 
 ### `src/game/items.rs`
 
@@ -265,7 +281,8 @@ This module owns local session state for the terminal prototype.
 
 Main types:
 
-- `LocalSession`: holds the current `Track`, `PlayerState`, `BonusState`, optional bonus attempt, optional attack warning, and `EventLog`.
+- `LocalSession`: holds the current `Track`, local `PlayerState`, AI racers, `BonusState`, optional bonus attempt, optional attack warning, and `EventLog`.
+- `AiRacer`: local simulated racer state used to pressure-test multiplayer display and item behavior.
 - `LocalAction`: terminal-level actions such as typing, normal item use, and modified item use.
 - `BonusAttempt`: the bonus point and choice currently being typed.
 - `EventLog`: stores recent display-facing race events.
@@ -290,6 +307,8 @@ LocalAction
 ```text
 tick
   refresh expired bonus cooldowns
+  advance AI typing budgets
+  let AI racers claim and use items
   advance active Mushroom boosts
   expire active Shield
   resolve pending attack warnings
@@ -359,11 +378,11 @@ Important Rust concepts:
 - Ratatui widgets are values. We build them and pass them to `frame.render_widget`.
 - `TrackWindow<'a>` and `VisibleWord<'a>` borrow word strings from the existing `Track` instead of cloning them.
 
-The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw both the word layer and the local player's racer marker. When Shield is active, the marker is rendered in bracketed form as `[███]`.
+The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw the word layer and each racer's lane. When Shield is active, the marker is rendered in bracketed form as `[███]`.
 
 The word layer is rendered through fixed-width track cells. Correctly typed characters are green, the next character has a cursor-like highlight, and `typo_index` makes typed characters from the first typo onward red. Since the renderer maps `PlayerState.input` over the visible track stream, typo overflow can continue across following words and spaces while `word_index` remains blocked at the real race position.
 
-The local racer marker is also derived from the character stream. It follows the next character while input is valid, and pins to the first typo while typo recovery is required.
+The local racer marker is also derived from the character stream. It follows the next character while input is valid, and pins to the first typo while typo recovery is required. The local racer lane is rendered immediately below the word layer; AI racer lanes are rendered below it.
 
 The bonus renderer reads the next visible bonus point from `BonusState`. Choices are stacked vertically so players can scan them before reaching the claim window. They stay grey while merely upcoming, then turn magenta once the player reaches the claim window. They also render grey when unavailable because the player has a held item, has a typo, has an active Shield, or the choice is cooling down.
 

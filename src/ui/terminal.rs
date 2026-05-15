@@ -18,6 +18,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
     game::{
+        ai::AiDifficulty,
         player::PlayerState,
         track::{Track, WordList},
         typing::KeyAction,
@@ -28,9 +29,18 @@ use crate::{
 
 type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
 
-pub fn run_typing_session(track: Track, player: PlayerState, word_list: WordList) -> Result<()> {
+pub fn run_typing_session(
+    track: Track,
+    player: PlayerState,
+    word_list: WordList,
+    ai_racer_count: usize,
+    ai_difficulty: AiDifficulty,
+) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let result = run_loop(&mut terminal, LocalSession::new(track, player, word_list));
+    let result = run_loop(
+        &mut terminal,
+        LocalSession::new(track, player, word_list, ai_racer_count, ai_difficulty),
+    );
     restore_terminal(&mut terminal)?;
     result
 }
@@ -65,6 +75,7 @@ fn run_loop(terminal: &mut AppTerminal, mut session: LocalSession) -> Result<()>
                     bonuses: &session.bonuses,
                     bonus_attempt: session.bonus_attempt,
                     attack_warning: session.attack_warning,
+                    ai_racers: &session.ai_racers,
                     events: &session.events,
                 },
             );

@@ -8,7 +8,9 @@ mod game;
 mod ui;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use crate::game::ai::AiDifficulty;
 
 #[derive(Debug, Parser)]
 #[command(name = "typekart")]
@@ -20,18 +22,43 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Start a local single-player typing race.
+    /// Start a local typing race.
     Play {
         /// Number of words in the generated track.
         #[arg(short, long, default_value_t = 40)]
         words: usize,
+        /// Number of local AI racers to include.
+        #[arg(long, default_value_t = 0)]
+        ai_racers: usize,
+        /// Difficulty used by all local AI racers.
+        #[arg(long, value_enum, default_value_t = CliAiDifficulty::Easy)]
+        ai_difficulty: CliAiDifficulty,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliAiDifficulty {
+    Easy,
+    Hard,
+}
+
+impl From<CliAiDifficulty> for AiDifficulty {
+    fn from(value: CliAiDifficulty) -> Self {
+        match value {
+            CliAiDifficulty::Easy => Self::Easy,
+            CliAiDifficulty::Hard => Self::Hard,
+        }
+    }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Play { words } => app::play(words),
+        Command::Play {
+            words,
+            ai_racers,
+            ai_difficulty,
+        } => app::play(words, ai_racers, ai_difficulty.into()),
     }
 }

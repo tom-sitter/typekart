@@ -19,10 +19,11 @@ use crate::{
         player::PlayerState,
         track::Track,
     },
-    ui::session::{BonusAttempt, EventLog},
+    ui::session::{AiRacer, BonusAttempt, EventLog},
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 90;
+const TRACK_PANEL_HEIGHT: u16 = 10;
 const LOCAL_RACER_MARKER: &str = "███";
 const SHIELDED_RACER_MARKER: &str = "[███]";
 
@@ -32,6 +33,7 @@ pub struct TypingScreen<'a> {
     pub bonuses: &'a BonusState,
     pub bonus_attempt: Option<BonusAttempt>,
     pub attack_warning: Option<AttackWarning>,
+    pub ai_racers: &'a [AiRacer],
     pub events: &'a EventLog,
 }
 
@@ -148,7 +150,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(0)])
+        .constraints([Constraint::Length(TRACK_PANEL_HEIGHT), Constraint::Min(0)])
         .split(columns[0]);
     let right = Layout::default()
         .direction(Direction::Vertical)
@@ -167,11 +169,15 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.player,
         screen.bonuses,
         screen.bonus_attempt,
+        screen.ai_racers,
     );
     frame.render_widget(finish_or_empty(screen.player), left[1]);
     frame.render_widget(stats_view(screen.player), right[0]);
     frame.render_widget(item_view(screen.player, screen.attack_warning), right[1]);
-    frame.render_widget(player_list(screen.track, screen.player), right[2]);
+    frame.render_widget(
+        player_list(screen.track, screen.player, screen.ai_racers),
+        right[2],
+    );
     frame.render_widget(event_feed(screen.events), right[3]);
 }
 
@@ -179,7 +185,7 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),
+            Constraint::Length(TRACK_PANEL_HEIGHT),
             Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Length(5),
@@ -194,10 +200,14 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.player,
         screen.bonuses,
         screen.bonus_attempt,
+        screen.ai_racers,
     );
     frame.render_widget(stats_view(screen.player), rows[1]);
     frame.render_widget(item_view(screen.player, screen.attack_warning), rows[2]);
-    frame.render_widget(player_list(screen.track, screen.player), rows[3]);
+    frame.render_widget(
+        player_list(screen.track, screen.player, screen.ai_racers),
+        rows[3],
+    );
     frame.render_widget(results_or_events(screen.player, screen.events), rows[4]);
 }
 
@@ -231,10 +241,14 @@ fn render_track(
     player: &PlayerState,
     bonuses: &BonusState,
     bonus_attempt: Option<BonusAttempt>,
+    ai_racers: &[AiRacer],
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let window = build_track_window(track, player.word_index, inner_width);
-    frame.render_widget(track_view(&window, player, bonuses, bonus_attempt), area);
+    frame.render_widget(
+        track_view(&window, player, bonuses, bonus_attempt, ai_racers),
+        area,
+    );
 }
 
 fn track_view<'a>(
@@ -242,24 +256,16 @@ fn track_view<'a>(
     player: &PlayerState,
     bonuses: &'a BonusState,
     bonus_attempt: Option<BonusAttempt>,
+    ai_racers: &[AiRacer],
 ) -> Paragraph<'a> {
     let word_line = track_word_line(window, player);
 
     let now = std::time::Instant::now();
-    let marker = if player.has_active_shield(now) {
-        SHIELDED_RACER_MARKER
-    } else {
-        LOCAL_RACER_MARKER
-    };
-    let marker_start = window.racer_marker_start_for_player(player, marker.chars().count());
-    let racer_line = Line::from(vec![
-        Span::raw(" ".repeat(marker_start)),
-        Span::styled(marker, Style::default().fg(Color::Cyan)),
-    ]);
+    let racer_lines = racer_lines(window, player, ai_racers, now);
 
     let mut lines = bonus_lines(window, player, bonuses, bonus_attempt, now);
     lines.push(word_line);
-    lines.push(racer_line);
+    lines.extend(racer_lines);
 
     Paragraph::new(lines).block(Block::default().title("Track").borders(Borders::ALL))
 }
@@ -311,6 +317,63 @@ fn bonus_lines<'a>(
             Line::from(spans)
         })
         .collect()
+}
+
+fn racer_lines(
+    window: &TrackWindow<'_>,
+    player: &PlayerState,
+    ai_racers: &[AiRacer],
+    now: std::time::Instant,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![racer_line_for_player(window, player, now, Color::Cyan)];
+    lines.extend(
+        ai_racers
+            .iter()
+            .map(|ai| racer_line_for_player(window, &ai.player, now, ai_color(ai.id))),
+    );
+    lines
+}
+
+fn racer_line_for_player(
+    window: &TrackWindow<'_>,
+    player: &PlayerState,
+    now: std::time::Instant,
+    color: Color,
+) -> Line<'static> {
+    let mut cells = vec![TrackCell::default(); window.width];
+    let marker = if player.has_active_shield(now) {
+        SHIELDED_RACER_MARKER
+    } else {
+        LOCAL_RACER_MARKER
+    };
+    let marker_start = window.racer_marker_start_for_player(player, marker.chars().count());
+    write_marker(&mut cells, marker_start, marker, color);
+
+    Line::from(
+        cells
+            .into_iter()
+            .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn write_marker(cells: &mut [TrackCell], start: usize, marker: &str, color: Color) {
+    for (offset, ch) in marker.chars().enumerate() {
+        if let Some(cell) = cells.get_mut(start + offset) {
+            *cell = TrackCell {
+                ch,
+                style: Style::default().fg(color).add_modifier(Modifier::BOLD),
+            };
+        }
+    }
+}
+
+fn ai_color(id: usize) -> Color {
+    match id % 3 {
+        1 => Color::LightRed,
+        2 => Color::LightGreen,
+        _ => Color::LightBlue,
+    }
 }
 
 fn is_bonus_point_claimable(
@@ -569,15 +632,54 @@ fn item_view<'a>(player: &PlayerState, attack_warning: Option<AttackWarning>) ->
     .block(Block::default().title("Item").borders(Borders::ALL))
 }
 
-fn player_list<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
-    let placement = if player.is_finished() { "1." } else { "1." };
-    let line = format!(
-        "{placement} you     {}/{} words",
-        player.stats.completed_words,
-        track.len()
-    );
+fn player_list<'a>(track: &Track, player: &PlayerState, ai_racers: &[AiRacer]) -> Paragraph<'a> {
+    let mut standings = Vec::with_capacity(ai_racers.len() + 1);
+    standings.push(PlayerListRow {
+        name: "you".to_string(),
+        completed_words: player.stats.completed_words,
+        input_chars: player.input.chars().count(),
+        finished: player.is_finished(),
+    });
+    standings.extend(ai_racers.iter().map(|ai| PlayerListRow {
+        name: format!(
+            "{} ({} {:.0})",
+            ai.name,
+            ai.difficulty.name(),
+            ai.words_per_minute
+        ),
+        completed_words: ai.player.stats.completed_words,
+        input_chars: ai.player.input.chars().count(),
+        finished: ai.player.is_finished(),
+    }));
+    standings.sort_by(|a, b| {
+        b.finished
+            .cmp(&a.finished)
+            .then_with(|| b.completed_words.cmp(&a.completed_words))
+            .then_with(|| b.input_chars.cmp(&a.input_chars))
+    });
 
-    Paragraph::new(line).block(Block::default().title("Players").borders(Borders::ALL))
+    let lines = standings
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            Line::from(format!(
+                "{}. {:<12} {}/{} words",
+                index + 1,
+                row.name,
+                row.completed_words,
+                track.len()
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    Paragraph::new(lines).block(Block::default().title("Players").borders(Borders::ALL))
+}
+
+struct PlayerListRow {
+    name: String,
+    completed_words: usize,
+    input_chars: usize,
+    finished: bool,
 }
 
 fn event_feed<'a>(events: &'a EventLog) -> Paragraph<'a> {
@@ -638,14 +740,16 @@ mod tests {
 
     use crate::{
         game::{
+            ai::AiDifficulty,
             bonus::{BonusChoice, BonusPoint, BonusState},
             player::PlayerState,
             track::Track,
         },
         ui::render::{
             WordRenderState, bonus_column, build_track_window, is_bonus_point_claimable,
-            track_word_line, visible_bonus_point,
+            racer_lines, track_word_line, visible_bonus_point,
         },
+        ui::session::AiRacer,
     };
 
     fn track(words: &[&str]) -> Track {
@@ -718,6 +822,23 @@ mod tests {
         player.input = "t".to_string();
 
         assert_eq!(window.racer_marker_start_for_player(&player, 3), 4);
+    }
+
+    #[test]
+    fn racer_lines_put_local_player_first_with_one_line_per_ai() {
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(Instant::now());
+        player.input = "o".to_string();
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, Instant::now());
+        ai.player.word_index = 1;
+        let lines = racer_lines(&window, &player, &[ai], Instant::now());
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].spans[0].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(lines[1].spans[3].content.as_ref(), "█");
+        assert_eq!(lines[1].spans[3].style.fg, Some(Color::LightRed));
     }
 
     #[test]

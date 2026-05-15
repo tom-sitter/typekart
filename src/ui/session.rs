@@ -4,14 +4,21 @@
 //! Milestone 3, this type coordinates local typing, bonus claims, items, timed
 //! effects, and display-facing event history.
 
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
-use rand::thread_rng;
+use rand::{Rng, thread_rng};
 
 use crate::game::{
+    ai::AiDifficulty,
     bonus::{BonusState, claim_bonus_choice},
-    effects::{ActiveEffect, AttackWarning},
-    items::{HeldItem, ItemPickup, ItemUse, banana_direction, select_banana_target},
+    effects::{ActiveEffect, AttackWarning, PendingAttack},
+    items::{
+        HeldItem, ItemPickup, ItemUse, RacerPosition, TargetDirection, banana_direction,
+        select_banana_target,
+    },
     player::PlayerState,
     track::{Track, WordList},
     typing::{KeyAction, TypingEvent, apply_key, first_typo_index},
@@ -19,11 +26,15 @@ use crate::game::{
 
 const MUSHROOM_BOOST_WORDS: usize = 3;
 const MUSHROOM_WPM: f64 = 180.0;
+const AI_BANANA_STUN: Duration = Duration::from_secs(2);
+const PLAYER_ATTACK_WARNING: Duration = Duration::from_millis(900);
+const MAX_AI_RACERS: usize = 3;
 
 #[derive(Debug)]
 pub struct LocalSession {
     pub track: Track,
     pub player: PlayerState,
+    pub ai_racers: Vec<AiRacer>,
     pub bonuses: BonusState,
     pub bonus_attempt: Option<BonusAttempt>,
     pub attack_warning: Option<AttackWarning>,
@@ -32,6 +43,44 @@ pub struct LocalSession {
     // first track. Keeping them here lets the terminal loop reset in place.
     word_list: WordList,
     word_count: usize,
+    ai_racer_count: usize,
+    ai_difficulty: AiDifficulty,
+}
+
+#[derive(Debug, Clone)]
+pub struct AiRacer {
+    pub id: usize,
+    pub name: String,
+    pub player: PlayerState,
+    pub difficulty: AiDifficulty,
+    pub words_per_minute: f64,
+    char_budget: f64,
+    last_update: Instant,
+    stunned_until: Option<Instant>,
+}
+
+impl AiRacer {
+    pub(crate) fn new(
+        id: usize,
+        difficulty: AiDifficulty,
+        words_per_minute: f64,
+        now: Instant,
+    ) -> Self {
+        Self {
+            id,
+            name: format!("ai-{id}"),
+            player: PlayerState::new(now),
+            difficulty,
+            words_per_minute,
+            char_budget: 0.0,
+            last_update: now,
+            stunned_until: None,
+        }
+    }
+
+    pub fn is_stunned(&self, now: Instant) -> bool {
+        self.stunned_until.is_some_and(|until| until > now)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,23 +98,45 @@ pub struct BonusAttempt {
     pub choice_index: usize,
 }
 
+fn build_ai_racers(count: usize, difficulty: AiDifficulty, now: Instant) -> Vec<AiRacer> {
+    let mut rng = thread_rng();
+    (1..=count)
+        .map(|id| {
+            let words_per_minute = rng.gen_range(difficulty.wpm_range());
+            AiRacer::new(id, difficulty, words_per_minute, now)
+        })
+        .collect()
+}
+
 impl LocalSession {
-    pub fn new(track: Track, player: PlayerState, word_list: WordList) -> Self {
+    pub fn new(
+        track: Track,
+        player: PlayerState,
+        word_list: WordList,
+        ai_racer_count: usize,
+        ai_difficulty: AiDifficulty,
+    ) -> Self {
         let mut events = EventLog::new(8);
         events.push("Race started");
 
         let bonuses = BonusState::generate(&track, &word_list);
         let word_count = track.len();
+        let now = player.started_at;
+        let ai_racer_count = ai_racer_count.min(MAX_AI_RACERS);
+        let ai_racers = build_ai_racers(ai_racer_count, ai_difficulty, now);
 
         Self {
             track,
             player,
+            ai_racers,
             bonuses,
             bonus_attempt: None,
             attack_warning: None,
             events,
             word_list,
             word_count,
+            ai_racer_count,
+            ai_difficulty,
         }
     }
 
@@ -88,12 +159,15 @@ impl LocalSession {
         Self {
             track,
             player,
+            ai_racers: Vec::new(),
             bonuses,
             bonus_attempt: None,
             attack_warning: None,
             events,
             word_list,
             word_count,
+            ai_racer_count: 0,
+            ai_difficulty: AiDifficulty::Easy,
         }
     }
 
@@ -113,9 +187,11 @@ impl LocalSession {
         };
         let player = PlayerState::new(now);
         let bonuses = BonusState::generate(&track, &self.word_list);
+        let ai_racers = build_ai_racers(self.ai_racer_count, self.ai_difficulty, now);
 
         self.track = track;
         self.player = player;
+        self.ai_racers = ai_racers;
         self.bonuses = bonuses;
         self.bonus_attempt = None;
         self.attack_warning = None;
@@ -125,6 +201,8 @@ impl LocalSession {
 
     pub fn tick(&mut self, now: Instant) {
         self.advance_mushroom(now);
+        self.advance_ai_mushrooms(now);
+        self.tick_ai_racers(now);
 
         let expired_choices = self.bonuses.expire_cooldowns(&self.track, now);
         if expired_choices > 0 {
@@ -140,14 +218,302 @@ impl LocalSession {
             .attack_warning
             .is_some_and(|warning| warning.resolves_at <= now)
         {
-            if self.player.has_active_shield(now) {
-                self.player.active_effects.clear();
-                self.events.push("Attack blocked");
-            } else {
-                self.events.push("Attack landed");
-            }
+            self.apply_banana_to_player(now);
             self.attack_warning = None;
         }
+    }
+
+    fn apply_banana_to_player(&mut self, now: Instant) {
+        if self.player.has_active_shield(now) {
+            self.player.active_effects.clear();
+            self.events.push("Attack blocked");
+            return;
+        }
+
+        self.player.input.clear();
+        self.player.typo_index = None;
+        self.bonus_attempt = None;
+        self.events.push("Banana spun you out");
+    }
+
+    fn tick_ai_racers(&mut self, now: Instant) {
+        for ai_index in 0..self.ai_racers.len() {
+            self.ai_try_claim_bonus(ai_index, now);
+            self.ai_use_item(ai_index, now);
+            self.advance_ai_typing(ai_index, now);
+        }
+    }
+
+    fn advance_ai_typing(&mut self, ai_index: usize, now: Instant) {
+        let Some(ai) = self.ai_racers.get_mut(ai_index) else {
+            return;
+        };
+
+        let elapsed = now.saturating_duration_since(ai.last_update);
+        ai.last_update = now;
+
+        if ai.player.is_finished() || ai.is_stunned(now) {
+            return;
+        }
+
+        ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(ai.words_per_minute);
+        while ai.char_budget >= 1.0 && !ai.player.is_finished() {
+            let Some(action) = next_ai_key(&ai.player, &self.track) else {
+                break;
+            };
+            let events = apply_key(&mut ai.player, &self.track, action, now);
+            ai.char_budget -= 1.0;
+
+            if events
+                .iter()
+                .any(|event| matches!(event, TypingEvent::RaceFinished))
+            {
+                self.events.push(format!("{} finished", ai.name));
+                break;
+            }
+        }
+    }
+
+    fn ai_try_claim_bonus(&mut self, ai_index: usize, now: Instant) {
+        let Some(ai) = self.ai_racers.get(ai_index) else {
+            return;
+        };
+        if ai.player.held_item.is_some()
+            || ai.player.has_active_shield(now)
+            || ai.player.is_finished()
+            || ai.player.typo_index.is_some()
+            || !ai.player.input.is_empty()
+        {
+            return;
+        }
+
+        let Some((point_index, point)) = self.bonuses.point_for_gap(ai.player.word_index) else {
+            return;
+        };
+        let available_choices = point
+            .choices
+            .iter()
+            .enumerate()
+            .filter(|(_, choice)| choice.is_available(now))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if available_choices.is_empty() {
+            return;
+        }
+
+        let mut rng = thread_rng();
+        let choice_index = available_choices[rng.gen_range(0..available_choices.len())];
+        let has_nearby_racer = self.ai_has_nearby_racer(ai_index, 5);
+        let Some(item) = claim_bonus_choice(
+            &mut self.bonuses,
+            point_index,
+            choice_index,
+            now,
+            has_nearby_racer,
+            &mut rng,
+        ) else {
+            return;
+        };
+
+        self.receive_ai_pickup(ai_index, item, now);
+    }
+
+    fn ai_has_nearby_racer(&self, ai_index: usize, max_distance_words: usize) -> bool {
+        let Some(ai) = self.ai_racers.get(ai_index) else {
+            return false;
+        };
+        self.player.word_index.abs_diff(ai.player.word_index) <= max_distance_words
+            || self
+                .ai_racers
+                .iter()
+                .enumerate()
+                .any(|(other_index, other)| {
+                    other_index != ai_index
+                        && other.player.word_index.abs_diff(ai.player.word_index)
+                            <= max_distance_words
+                })
+    }
+
+    fn receive_ai_pickup(&mut self, ai_index: usize, item: ItemPickup, now: Instant) {
+        let Some(ai) = self.ai_racers.get_mut(ai_index) else {
+            return;
+        };
+
+        match item {
+            ItemPickup::Held(held_item) => {
+                ai.player.held_item = Some(held_item);
+                self.events
+                    .push(format!("{} picked up {}", ai.name, held_item.name()));
+            }
+            ItemPickup::Shield => {
+                ai.player.active_effects.push(ActiveEffect::Shield {
+                    until: now + Duration::from_secs(5),
+                });
+                self.events.push(format!("{} shielded", ai.name));
+            }
+        }
+    }
+
+    fn ai_use_item(&mut self, ai_index: usize, now: Instant) {
+        let Some(item) = self.ai_racers[ai_index].player.held_item else {
+            return;
+        };
+
+        match item {
+            HeldItem::Mushroom => {
+                self.ai_racers[ai_index].player.held_item = None;
+                self.activate_ai_mushroom(ai_index, now);
+            }
+            HeldItem::Banana => {
+                self.ai_racers[ai_index].player.held_item = None;
+                self.ai_use_banana(ai_index, now);
+            }
+        }
+    }
+
+    fn ai_use_banana(&mut self, ai_index: usize, now: Instant) {
+        let Some(ai) = self.ai_racers.get(ai_index) else {
+            return;
+        };
+        let ai_name = ai.name.clone();
+        let direction = if self.player.word_index >= ai.player.word_index {
+            TargetDirection::Ahead
+        } else {
+            TargetDirection::Behind
+        };
+        let racers = self.racer_positions_excluding_ai(ai_index);
+        let Some(target) = select_banana_target(ai.player.word_index, &racers, direction, 10)
+        else {
+            self.events.push(format!("{} missed Banana", ai.name));
+            return;
+        };
+
+        if target.id == 0 {
+            self.attack_warning = Some(AttackWarning {
+                attack: PendingAttack::BananaWordSwap,
+                resolves_at: now + PLAYER_ATTACK_WARNING,
+            });
+            self.events.push(format!("{ai_name} threw Banana at you"));
+        } else {
+            self.apply_banana_to_ai(target.id, now);
+            self.events.push(format!("{ai_name} hit ai-{}", target.id));
+        }
+    }
+
+    fn racer_positions_excluding_ai(&self, ai_index: usize) -> Vec<RacerPosition> {
+        let mut racers = vec![RacerPosition {
+            id: 0,
+            word_index: self.player.word_index,
+        }];
+        racers.extend(
+            self.ai_racers
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != ai_index)
+                .map(|(_, ai)| RacerPosition {
+                    id: ai.id,
+                    word_index: ai.player.word_index,
+                }),
+        );
+        racers
+    }
+
+    fn apply_banana_to_ai(&mut self, ai_id: usize, now: Instant) {
+        let Some(ai) = self.ai_racers.iter_mut().find(|ai| ai.id == ai_id) else {
+            return;
+        };
+
+        if ai.player.has_active_shield(now) {
+            ai.player.active_effects.clear();
+            self.events.push(format!("{} blocked Banana", ai.name));
+        } else {
+            ai.stunned_until = Some(now + AI_BANANA_STUN);
+            ai.char_budget = 0.0;
+            self.events.push(format!("{} spun out", ai.name));
+        }
+    }
+
+    fn activate_ai_mushroom(&mut self, ai_index: usize, now: Instant) {
+        let Some(ai) = self.ai_racers.get_mut(ai_index) else {
+            return;
+        };
+        ai.player.input.clear();
+        ai.player.typo_index = None;
+        ai.player.active_effects.push(ActiveEffect::Mushroom {
+            remaining_words: MUSHROOM_BOOST_WORDS,
+            next_step_at: now,
+            step_interval: mushroom_step_interval(),
+        });
+        self.events.push(format!("{} used Mushroom", ai.name));
+        self.advance_ai_mushroom(ai_index, now);
+    }
+
+    fn advance_ai_mushrooms(&mut self, now: Instant) {
+        for ai_index in 0..self.ai_racers.len() {
+            loop {
+                if !self.advance_ai_mushroom(ai_index, now) {
+                    break;
+                }
+                if self.ai_racers[ai_index].player.is_finished() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn advance_ai_mushroom(&mut self, ai_index: usize, now: Instant) -> bool {
+        let Some(effect_index) = self.ai_racers[ai_index]
+            .player
+            .active_effects
+            .iter()
+            .position(|effect| {
+                matches!(
+                    effect,
+                    ActiveEffect::Mushroom {
+                        remaining_words,
+                        next_step_at,
+                        ..
+                    } if *remaining_words > 0 && *next_step_at <= now
+                )
+            })
+        else {
+            return false;
+        };
+
+        let ai = &mut self.ai_racers[ai_index];
+        let remaining_track_words = self.track.len().saturating_sub(ai.player.word_index);
+        if remaining_track_words == 0 {
+            ai.player.active_effects.remove(effect_index);
+            return false;
+        }
+
+        ai.player.word_index += 1;
+        ai.player.stats.completed_words += 1;
+        ai.player.input.clear();
+        ai.player.typo_index = None;
+
+        if ai.player.word_index >= self.track.len() {
+            ai.player.finished_at = Some(now);
+            ai.player.active_effects.remove(effect_index);
+            self.events.push(format!("{} finished", ai.name));
+            return false;
+        }
+
+        if let Some(ActiveEffect::Mushroom {
+            remaining_words,
+            next_step_at,
+            step_interval,
+        }) = ai.player.active_effects.get_mut(effect_index)
+        {
+            *remaining_words -= 1;
+            if *remaining_words == 0 {
+                ai.player.active_effects.remove(effect_index);
+            } else {
+                *next_step_at += *step_interval;
+            }
+        }
+
+        true
     }
 
     fn apply_typing_action(&mut self, action: KeyAction, now: Instant) {
@@ -315,8 +681,20 @@ impl LocalSession {
             HeldItem::Banana => {
                 self.player.held_item = None;
                 let direction = banana_direction(item_use);
-                let target = select_banana_target(self.player.word_index, &[], direction, 10);
-                if target.is_none() {
+                let racers = self
+                    .ai_racers
+                    .iter()
+                    .map(|ai| RacerPosition {
+                        id: ai.id,
+                        word_index: ai.player.word_index,
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(target) =
+                    select_banana_target(self.player.word_index, &racers, direction, 10)
+                {
+                    self.apply_banana_to_ai(target.id, now);
+                    self.events.push(format!("Hit ai-{}", target.id));
+                } else {
                     self.events.push("No racer in range");
                 }
             }
@@ -419,6 +797,22 @@ fn mushroom_step_interval() -> std::time::Duration {
     std::time::Duration::from_secs_f64(60.0 / MUSHROOM_WPM)
 }
 
+fn ai_chars_per_second(words_per_minute: f64) -> f64 {
+    words_per_minute * 5.0 / 60.0
+}
+
+fn next_ai_key(player: &PlayerState, track: &Track) -> Option<KeyAction> {
+    let target = track.current_word(player.word_index)?;
+    if player.input == target {
+        return Some(KeyAction::Space);
+    }
+
+    target
+        .chars()
+        .nth(player.input.chars().count())
+        .map(KeyAction::Char)
+}
+
 fn event_message(event: TypingEvent, previous_word: Option<&str>) -> Option<String> {
     match event {
         TypingEvent::InputChanged => None,
@@ -465,18 +859,34 @@ mod tests {
 
     use crate::{
         game::{
+            ai::AiDifficulty,
             bonus::{BonusChoice, BonusPoint, BonusState},
             effects::ActiveEffect,
             items::{HeldItem, ItemPickup},
             player::PlayerState,
-            track::Track,
+            track::{Track, WordList},
             typing::KeyAction,
         },
-        ui::session::{EventLog, LocalAction, LocalSession},
+        ui::session::{AiRacer, EventLog, LocalAction, LocalSession},
     };
 
     fn track(words: &[&str]) -> Track {
         Track::new(words.iter().map(|word| word.to_string()).collect())
+    }
+
+    fn word_list() -> WordList {
+        WordList {
+            words: vec![
+                "alpha".to_string(),
+                "bravo".to_string(),
+                "charlie".to_string(),
+                "delta".to_string(),
+                "echo".to_string(),
+                "foxtrot".to_string(),
+                "golf".to_string(),
+                "hotel".to_string(),
+            ],
+        }
     }
 
     fn bonuses() -> BonusState {
@@ -523,6 +933,108 @@ mod tests {
         assert!(entries.contains(&"Typo started"));
         assert!(entries.contains(&"Typo cleared"));
         assert!(entries.contains(&"Completed fox"));
+    }
+
+    #[test]
+    fn local_session_caps_ai_racers_at_three() {
+        let now = Instant::now();
+        let session = LocalSession::new(
+            track(&["one", "two"]),
+            PlayerState::new(now),
+            word_list(),
+            5,
+            AiDifficulty::Easy,
+        );
+
+        assert_eq!(session.ai_racers.len(), 3);
+    }
+
+    #[test]
+    fn ai_racers_sample_wpm_from_difficulty_range() {
+        let now = Instant::now();
+        let session = LocalSession::new(
+            track(&["one", "two"]),
+            PlayerState::new(now),
+            word_list(),
+            3,
+            AiDifficulty::Hard,
+        );
+
+        assert!(session.ai_racers.iter().all(|ai| {
+            AiDifficulty::Hard
+                .wpm_range()
+                .contains(&ai.words_per_minute)
+        }));
+    }
+
+    #[test]
+    fn ai_racer_advances_from_wpm_budget() {
+        let now = Instant::now();
+        let mut session = LocalSession::new(
+            track(&["abcdef", "road"]),
+            PlayerState::new(now),
+            word_list(),
+            1,
+            AiDifficulty::Hard,
+        );
+
+        session.tick(now + std::time::Duration::from_secs(1));
+
+        assert!(!session.ai_racers[0].player.input.is_empty());
+    }
+
+    #[test]
+    fn player_banana_can_stun_ai_target() {
+        let now = Instant::now();
+        let mut session =
+            LocalSession::with_bonuses(track(&["one", "two"]), PlayerState::new(now), bonuses());
+        session.player.word_index = 1;
+        session.player.held_item = Some(HeldItem::Banana);
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai.player.word_index = 2;
+        session.ai_racers.push(ai);
+
+        session.apply_action(LocalAction::ActivateModifiedItem, now);
+
+        assert!(session.ai_racers[0].is_stunned(now));
+        assert_eq!(session.player.held_item, None);
+    }
+
+    #[test]
+    fn ai_banana_warning_can_clear_player_input() {
+        let now = Instant::now();
+        let mut session =
+            LocalSession::with_bonuses(track(&["one", "two"]), PlayerState::new(now), bonuses());
+        session.player.word_index = 1;
+        session.player.input = "t".to_string();
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai.player.held_item = Some(HeldItem::Banana);
+        session.ai_racers.push(ai);
+
+        session.tick(now);
+        assert!(session.attack_warning.is_some());
+
+        session.tick(now + std::time::Duration::from_secs(1));
+
+        assert!(session.player.input.is_empty());
+        assert!(session.attack_warning.is_none());
+    }
+
+    #[test]
+    fn ai_can_claim_bonus_pickup() {
+        let now = Instant::now();
+        let mut session =
+            LocalSession::with_bonuses(track(&["one", "two"]), PlayerState::new(now), bonuses());
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai.player.word_index = 1;
+        session.ai_racers.push(ai);
+
+        session.tick(now);
+
+        assert!(
+            session.ai_racers[0].player.held_item.is_some()
+                || !session.ai_racers[0].player.active_effects.is_empty()
+        );
     }
 
     #[test]

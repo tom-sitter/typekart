@@ -409,8 +409,10 @@ Event feed: recent important events
 Rendering rules:
 
 - Keep the word layer readable at all times.
-- Use a separate racer layer aligned to the word layer.
+- Use separate racer lanes aligned to the word layer.
 - Use three-character colored racer markers.
+- Render the local player lane immediately below the word layer.
+- Render remote or AI racer lanes below the local player lane.
 - Derive local racer marker placement from the current character, not only the current word.
 - Pin the local racer marker to the first typo while typo recovery is required.
 - Local player color wins on overlap.
