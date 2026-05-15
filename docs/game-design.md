@@ -295,8 +295,9 @@ This keeps all players synchronized and reduces trivial cheating compared with p
 4. The server assigns each player a unique color.
 5. The lobby shows connected players and readiness.
 6. The host starts the race.
-7. A countdown is shown to all players.
-8. The race begins simultaneously.
+7. The host player's Space key confirms the start.
+8. A 3 second countdown is shown to all players.
+9. The race begins simultaneously.
 
 The host is always also a player. Initial lobbies should support up to 6 players.
 
@@ -535,6 +536,7 @@ For a first version, the client can avoid prediction and wait for server confirm
 | --- | --- |
 | Main Menu | Player chooses host, join, settings, or quit. |
 | Lobby | Players connect and ready up. |
+| Waiting for Host | Race is visible but locked until the host presses Space. |
 | Countdown | Race is locked and starts after a countdown. |
 | Racing | Players type, collect items, and finish. |
 | Results | Final placements and stats are shown. |

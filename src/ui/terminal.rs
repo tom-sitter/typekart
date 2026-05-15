@@ -76,6 +76,7 @@ fn run_loop(terminal: &mut AppTerminal, mut session: LocalSession) -> Result<()>
                     bonus_attempt: session.bonus_attempt,
                     player_impact_until: session.player_impact_until,
                     race_status: session.race_status,
+                    race_phase: session.race_phase,
                     ai_racers: &session.ai_racers,
                     events: &session.events,
                 },

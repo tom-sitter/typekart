@@ -25,9 +25,10 @@ const MUSHROOM_BOOST_WORDS: usize = 3;
 const MUSHROOM_WPM: f64 = 180.0;
 const AI_BANANA_STUN: Duration = Duration::from_secs(2);
 const PLAYER_ATTACK_WARNING: Duration = Duration::from_millis(900);
-const MAX_AI_RACERS: usize = 3;
+const MAX_AI_RACERS: usize = 6;
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(15);
 const ITEM_IMPACT_BLINK: Duration = Duration::from_millis(1200);
+const RACE_COUNTDOWN: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 pub struct LocalSession {
@@ -39,6 +40,7 @@ pub struct LocalSession {
     pub attack_warning: Option<AttackWarning>,
     pub player_impact_until: Option<Instant>,
     pub race_status: RaceStatus,
+    pub race_phase: RacePhase,
     pub events: EventLog,
     // Restart needs the same source word list and race length that created the
     // first track. Keeping them here lets the terminal loop reset in place.
@@ -46,6 +48,29 @@ pub struct LocalSession {
     word_count: usize,
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RacePhase {
+    WaitingForHost,
+    Countdown { starts_at: Instant },
+    Racing,
+}
+
+impl RacePhase {
+    pub fn countdown_label(self, now: Instant) -> Option<String> {
+        let Self::Countdown { starts_at } = self else {
+            return None;
+        };
+
+        let remaining = starts_at.saturating_duration_since(now);
+        let seconds = remaining.as_secs_f64().ceil().clamp(1.0, 3.0) as u8;
+        Some(seconds.to_string())
+    }
+
+    pub fn is_racing(self) -> bool {
+        self == Self::Racing
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -137,7 +162,7 @@ impl LocalSession {
         ai_difficulty: AiDifficulty,
     ) -> Self {
         let mut events = EventLog::new(8);
-        events.push("Race started");
+        events.push("Press Space to start");
 
         let bonuses = BonusState::generate(&track, &word_list);
         let word_count = track.len();
@@ -154,6 +179,7 @@ impl LocalSession {
             attack_warning: None,
             player_impact_until: None,
             race_status: RaceStatus::default(),
+            race_phase: RacePhase::WaitingForHost,
             events,
             word_list,
             word_count,
@@ -187,6 +213,7 @@ impl LocalSession {
             attack_warning: None,
             player_impact_until: None,
             race_status: RaceStatus::default(),
+            race_phase: RacePhase::Racing,
             events,
             word_list,
             word_count,
@@ -200,6 +227,14 @@ impl LocalSession {
             return;
         }
 
+        if self.handle_prerace_action(action, now) {
+            return;
+        }
+
+        if !self.race_phase.is_racing() && action != LocalAction::Restart {
+            return;
+        }
+
         match action {
             LocalAction::Typing(action) => self.apply_typing_action(action, now),
             LocalAction::ActivateItem => self.activate_item(ItemUse::Normal, now),
@@ -207,6 +242,39 @@ impl LocalSession {
             LocalAction::Restart => self.restart(now),
         }
         self.update_race_status(now);
+    }
+
+    fn handle_prerace_action(&mut self, action: LocalAction, now: Instant) -> bool {
+        match (self.race_phase, action) {
+            (_, LocalAction::Restart) => {
+                self.restart(now);
+                true
+            }
+            (RacePhase::WaitingForHost, LocalAction::Typing(KeyAction::Space)) => {
+                self.start_countdown(now);
+                true
+            }
+            (RacePhase::WaitingForHost | RacePhase::Countdown { .. }, _) => true,
+            (RacePhase::Racing, _) => false,
+        }
+    }
+
+    fn start_countdown(&mut self, now: Instant) {
+        self.race_phase = RacePhase::Countdown {
+            starts_at: now + RACE_COUNTDOWN,
+        };
+        self.events.push("Race starts in 3");
+    }
+
+    fn start_race(&mut self, now: Instant) {
+        self.race_phase = RacePhase::Racing;
+        self.player.started_at = now;
+        for ai in &mut self.ai_racers {
+            ai.player.started_at = now;
+            ai.last_update = now;
+            ai.char_budget = 0.0;
+        }
+        self.events.push("Go");
     }
 
     pub fn restart(&mut self, now: Instant) {
@@ -226,12 +294,23 @@ impl LocalSession {
         self.attack_warning = None;
         self.player_impact_until = None;
         self.race_status = RaceStatus::default();
+        self.race_phase = RacePhase::WaitingForHost;
         self.events = EventLog::new(8);
-        self.events.push("Race restarted");
+        self.events.push("Press Space to start");
     }
 
     pub fn tick(&mut self, now: Instant) {
         if self.race_status.is_ended() {
+            return;
+        }
+
+        if let RacePhase::Countdown { starts_at } = self.race_phase {
+            if now >= starts_at {
+                self.start_race(starts_at);
+            }
+        }
+
+        if !self.race_phase.is_racing() {
             return;
         }
 
@@ -979,7 +1058,7 @@ mod tests {
             track::{Track, WordList},
             typing::KeyAction,
         },
-        ui::session::{AiRacer, EventLog, LocalAction, LocalSession},
+        ui::session::{AiRacer, EventLog, LocalAction, LocalSession, RacePhase},
     };
 
     fn track(words: &[&str]) -> Track {
@@ -1048,6 +1127,58 @@ mod tests {
     }
 
     #[test]
+    fn race_waits_for_host_space_before_accepting_typing() {
+        let now = Instant::now();
+        let mut session = LocalSession::new(
+            track(&["one", "two"]),
+            PlayerState::new(now),
+            word_list(),
+            0,
+            AiDifficulty::Easy,
+        );
+
+        session.apply_action(LocalAction::Typing(KeyAction::Char('o')), now);
+
+        assert_eq!(session.race_phase, RacePhase::WaitingForHost);
+        assert!(session.player.input.is_empty());
+    }
+
+    #[test]
+    fn host_space_starts_countdown_before_race_begins() {
+        let now = Instant::now();
+        let mut session = LocalSession::new(
+            track(&["one", "two"]),
+            PlayerState::new(now),
+            word_list(),
+            1,
+            AiDifficulty::Hard,
+        );
+
+        session.apply_action(LocalAction::Typing(KeyAction::Space), now);
+        session.apply_action(
+            LocalAction::Typing(KeyAction::Char('o')),
+            now + std::time::Duration::from_secs(1),
+        );
+        session.tick(now + std::time::Duration::from_secs(1));
+
+        assert!(matches!(session.race_phase, RacePhase::Countdown { .. }));
+        assert!(session.player.input.is_empty());
+        assert!(session.ai_racers[0].player.input.is_empty());
+
+        session.tick(now + std::time::Duration::from_secs(3));
+        session.apply_action(
+            LocalAction::Typing(KeyAction::Char('o')),
+            now + std::time::Duration::from_secs(3),
+        );
+
+        let started_at = now + std::time::Duration::from_secs(3);
+        assert_eq!(session.race_phase, RacePhase::Racing);
+        assert_eq!(session.player.started_at, started_at);
+        assert_eq!(session.ai_racers[0].player.started_at, started_at);
+        assert_eq!(session.player.input, "o");
+    }
+
+    #[test]
     fn race_ends_when_all_racers_finish() {
         let now = Instant::now();
         let mut session = LocalSession::with_bonuses(
@@ -1086,17 +1217,17 @@ mod tests {
     }
 
     #[test]
-    fn local_session_caps_ai_racers_at_three() {
+    fn local_session_caps_ai_racers_at_six() {
         let now = Instant::now();
         let session = LocalSession::new(
             track(&["one", "two"]),
             PlayerState::new(now),
             word_list(),
-            5,
+            8,
             AiDifficulty::Easy,
         );
 
-        assert_eq!(session.ai_racers.len(), 3);
+        assert_eq!(session.ai_racers.len(), 6);
     }
 
     #[test]
@@ -1128,7 +1259,9 @@ mod tests {
             AiDifficulty::Hard,
         );
 
-        session.tick(now + std::time::Duration::from_secs(1));
+        session.apply_action(LocalAction::Typing(KeyAction::Space), now);
+        session.tick(now + std::time::Duration::from_secs(3));
+        session.tick(now + std::time::Duration::from_secs(4));
 
         assert!(!session.ai_racers[0].player.input.is_empty());
     }
@@ -1235,9 +1368,10 @@ mod tests {
         assert!(session.player.active_effects.is_empty());
         assert!(session.bonus_attempt.is_none());
         assert!(session.attack_warning.is_none());
+        assert_eq!(session.race_phase, RacePhase::WaitingForHost);
         assert_eq!(
             session.events.entries().collect::<Vec<_>>(),
-            vec!["Race restarted"]
+            vec!["Press Space to start"]
         );
     }
 

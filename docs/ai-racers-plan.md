@@ -6,7 +6,7 @@ Add local AI racers so TypeKart can exercise multiplayer-like rendering, proximi
 
 ## Scope
 
-- Support 0 to 3 AI racers in local play.
+- Support 0 to 6 AI racers in local play.
 - Let the player choose `easy` or `hard` AI difficulty.
 - Render AI racers on the same racer layer as the player.
 - Advance AI racers by character-level typing pace derived from WPM.

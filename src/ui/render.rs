@@ -18,11 +18,10 @@ use crate::{
         player::PlayerState,
         track::Track,
     },
-    ui::session::{AiRacer, BonusAttempt, EventLog, RaceStatus},
+    ui::session::{AiRacer, BonusAttempt, EventLog, RacePhase, RaceStatus},
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 90;
-const TRACK_PANEL_HEIGHT: u16 = 10;
 const LOCAL_RACER_MARKER: &str = "███";
 const SHIELDED_RACER_MARKER: &str = "[███]";
 const BOOST_MARKER_PREFIX: &str = ">>>";
@@ -34,6 +33,7 @@ pub struct TypingScreen<'a> {
     pub bonus_attempt: Option<BonusAttempt>,
     pub player_impact_until: Option<std::time::Instant>,
     pub race_status: RaceStatus,
+    pub race_phase: RacePhase,
     pub ai_racers: &'a [AiRacer],
     pub events: &'a EventLog,
 }
@@ -178,6 +178,8 @@ pub fn render(frame: &mut Frame<'_>, screen: TypingScreen<'_>) {
 }
 
 fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
+    let track_panel_height = track_panel_height(screen.ai_racers.len());
+    let player_list_height = player_list_height(screen.ai_racers.len());
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
@@ -185,13 +187,13 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(TRACK_PANEL_HEIGHT), Constraint::Min(0)])
+        .constraints([Constraint::Length(track_panel_height), Constraint::Min(0)])
         .split(columns[0]);
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4),
-            Constraint::Length(5),
+            Constraint::Length(player_list_height),
             Constraint::Min(0),
         ])
         .split(columns[1]);
@@ -205,6 +207,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonus_attempt,
         screen.ai_racers,
         screen.player_impact_until,
+        screen.race_phase,
     );
     frame.render_widget(
         finish_or_empty(screen.player, screen.ai_racers, screen.race_status),
@@ -219,12 +222,14 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
 }
 
 fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
+    let track_panel_height = track_panel_height(screen.ai_racers.len());
+    let player_list_height = player_list_height(screen.ai_racers.len());
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(TRACK_PANEL_HEIGHT),
+            Constraint::Length(track_panel_height),
             Constraint::Length(4),
-            Constraint::Length(5),
+            Constraint::Length(player_list_height),
             Constraint::Min(0),
         ])
         .split(area);
@@ -238,6 +243,7 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonus_attempt,
         screen.ai_racers,
         screen.player_impact_until,
+        screen.race_phase,
     );
     frame.render_widget(stats_view(screen.player), rows[1]);
     frame.render_widget(
@@ -253,6 +259,28 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         ),
         rows[3],
     );
+}
+
+fn track_panel_height(ai_racer_count: usize) -> u16 {
+    let bonus_lines = 3;
+    let word_line = 1;
+    let racer_lines = ai_racer_count + 1;
+    let borders = 2;
+
+    (bonus_lines + word_line + racer_lines + borders)
+        .max(10)
+        .try_into()
+        .unwrap_or(u16::MAX)
+}
+
+fn player_list_height(ai_racer_count: usize) -> u16 {
+    let player_rows = ai_racer_count + 1;
+    let borders = 2;
+
+    (player_rows + borders)
+        .max(5)
+        .try_into()
+        .unwrap_or(u16::MAX)
 }
 
 fn header<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
@@ -287,6 +315,7 @@ fn render_track(
     bonus_attempt: Option<BonusAttempt>,
     ai_racers: &[AiRacer],
     player_impact_until: Option<std::time::Instant>,
+    race_phase: RacePhase,
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let window = build_track_window(track, player.word_index, inner_width);
@@ -298,6 +327,7 @@ fn render_track(
             bonus_attempt,
             ai_racers,
             player_impact_until,
+            race_phase,
         ),
         area,
     );
@@ -310,11 +340,18 @@ fn track_view<'a>(
     bonus_attempt: Option<BonusAttempt>,
     ai_racers: &[AiRacer],
     player_impact_until: Option<std::time::Instant>,
+    race_phase: RacePhase,
 ) -> Paragraph<'a> {
-    let word_line = track_word_line(window, player);
-
     let now = std::time::Instant::now();
-    let racer_lines = racer_lines(window, player, ai_racers, player_impact_until, now);
+    let word_line = track_word_line(window, player, race_phase);
+    let racer_lines = racer_lines(
+        window,
+        player,
+        ai_racers,
+        player_impact_until,
+        race_phase,
+        now,
+    );
 
     let mut lines = bonus_lines(window, player, bonuses, bonus_attempt, now);
     lines.push(word_line);
@@ -377,8 +414,10 @@ fn racer_lines(
     player: &PlayerState,
     ai_racers: &[AiRacer],
     player_impact_until: Option<std::time::Instant>,
+    race_phase: RacePhase,
     now: std::time::Instant,
 ) -> Vec<Line<'static>> {
+    let local_status_label = local_prerace_label(race_phase, now);
     let mut lines = vec![racer_line_for_player(
         window,
         player,
@@ -386,6 +425,7 @@ fn racer_lines(
         Color::Cyan,
         player_impact_until,
         RacerVisibility::Always,
+        local_status_label.as_deref(),
     )];
     lines.extend(ai_racers.iter().map(|ai| {
         racer_line_for_player(
@@ -395,9 +435,20 @@ fn racer_lines(
             ai_color(ai.id),
             ai.impact_until,
             RacerVisibility::OnlyWhenCurrentWordVisible,
+            None,
         )
     }));
     lines
+}
+
+fn local_prerace_label(race_phase: RacePhase, now: std::time::Instant) -> Option<String> {
+    match race_phase {
+        RacePhase::WaitingForHost => Some(" Space".to_string()),
+        RacePhase::Countdown { .. } => race_phase
+            .countdown_label(now)
+            .map(|label| format!(" {label}")),
+        RacePhase::Racing => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,15 +464,17 @@ fn racer_line_for_player(
     color: Color,
     impact_until: Option<std::time::Instant>,
     visibility: RacerVisibility,
+    status_label: Option<&str>,
 ) -> Line<'static> {
     let mut cells = vec![TrackCell::default(); window.width];
-    let marker = racer_marker(player, now);
+    let marker_anchor = racer_marker(player, now, None);
+    let marker = racer_marker(player, now, status_label);
     let visible_marker = match visibility {
         RacerVisibility::Always => Some(VisibleRacerMarker::Visible {
-            start: window.racer_marker_start_for_player(player, marker.chars().count()),
+            start: window.racer_marker_start_for_player(player, marker_anchor.chars().count()),
         }),
         RacerVisibility::OnlyWhenCurrentWordVisible => {
-            window.racer_marker_for_visible_player(player, marker.chars().count())
+            window.racer_marker_for_visible_player(player, marker_anchor.chars().count())
         }
     };
 
@@ -466,12 +519,20 @@ fn edge_racer_marker(direction: char, player: &PlayerState, now: std::time::Inst
     }
 }
 
-fn racer_marker(player: &PlayerState, now: std::time::Instant) -> String {
-    let marker = if player.has_active_shield(now) {
+fn racer_marker(
+    player: &PlayerState,
+    now: std::time::Instant,
+    status_label: Option<&str>,
+) -> String {
+    let mut marker = if player.has_active_shield(now) {
         SHIELDED_RACER_MARKER.to_string()
     } else {
         LOCAL_RACER_MARKER.to_string()
     };
+
+    if let Some(status_label) = status_label {
+        marker.push_str(status_label);
+    }
 
     if has_active_mushroom(player) {
         format!("{BOOST_MARKER_PREFIX}{marker}")
@@ -658,7 +719,11 @@ impl Default for TrackCell {
     }
 }
 
-fn track_word_line(window: &TrackWindow<'_>, player: &PlayerState) -> Line<'static> {
+fn track_word_line(
+    window: &TrackWindow<'_>,
+    player: &PlayerState,
+    race_phase: RacePhase,
+) -> Line<'static> {
     let mut cells = vec![TrackCell::default(); window.width];
 
     for visible in &window.words {
@@ -667,13 +732,15 @@ fn track_word_line(window: &TrackWindow<'_>, player: &PlayerState) -> Line<'stat
             if let Some(cell) = cells.get_mut(column) {
                 *cell = TrackCell {
                     ch,
-                    style: base_word_style(visible.state, player),
+                    style: base_word_style(visible.state, player, race_phase),
                 };
             }
         }
     }
 
-    overlay_player_input(&mut cells, window, player);
+    if race_phase.is_racing() {
+        overlay_player_input(&mut cells, window, player);
+    }
 
     Line::from(
         cells
@@ -683,7 +750,11 @@ fn track_word_line(window: &TrackWindow<'_>, player: &PlayerState) -> Line<'stat
     )
 }
 
-fn base_word_style(state: WordRenderState, player: &PlayerState) -> Style {
+fn base_word_style(state: WordRenderState, player: &PlayerState, race_phase: RacePhase) -> Style {
+    if !race_phase.is_racing() {
+        return Style::default().fg(Color::DarkGray);
+    }
+
     match state {
         WordRenderState::Completed => Style::default().fg(Color::DarkGray),
         WordRenderState::Upcoming => Style::default(),
@@ -975,9 +1046,10 @@ mod tests {
         },
         ui::render::{
             WordRenderState, bonus_column, build_track_window, is_bonus_point_claimable,
-            racer_lines, result_rows, track_word_line, visible_bonus_point,
+            player_list_height, racer_lines, result_rows, track_panel_height, track_word_line,
+            visible_bonus_point,
         },
-        ui::session::{AiRacer, RaceStatus},
+        ui::session::{AiRacer, RacePhase, RaceStatus},
     };
 
     fn track(words: &[&str]) -> Track {
@@ -1060,13 +1132,59 @@ mod tests {
         player.input = "o".to_string();
         let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, Instant::now());
         ai.player.word_index = 1;
-        let lines = racer_lines(&window, &player, &[ai], None, Instant::now());
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[ai],
+            None,
+            RacePhase::Racing,
+            Instant::now(),
+        );
 
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].spans[0].content.as_ref(), "█");
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::Cyan));
         assert_eq!(lines[1].spans[3].content.as_ref(), "█");
         assert_eq!(lines[1].spans[3].style.fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn local_racer_line_shows_countdown_next_to_marker() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 1, 40);
+        let mut player = PlayerState::new(now);
+        player.word_index = 1;
+        let phase = RacePhase::Countdown {
+            starts_at: now + std::time::Duration::from_secs(3),
+        };
+
+        let lines = racer_lines(&window, &player, &[], None, phase, now);
+
+        assert_eq!(lines[0].spans[3].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[6].content.as_ref(), " ");
+        assert_eq!(lines[0].spans[7].content.as_ref(), "3");
+    }
+
+    #[test]
+    fn layout_heights_fit_six_ai_racers() {
+        assert_eq!(track_panel_height(6), 13);
+        assert_eq!(player_list_height(6), 9);
+    }
+
+    #[test]
+    fn racer_lines_include_all_six_ai_racers() {
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let player = PlayerState::new(Instant::now());
+        let now = Instant::now();
+        let ai_racers = (1..=6)
+            .map(|id| AiRacer::new(id, AiDifficulty::Easy, 35.0, now))
+            .collect::<Vec<_>>();
+
+        let lines = racer_lines(&window, &player, &ai_racers, None, RacePhase::Racing, now);
+
+        assert_eq!(lines.len(), 7);
     }
 
     #[test]
@@ -1077,7 +1195,14 @@ mod tests {
         let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, Instant::now());
         ai.player.word_index = 1;
 
-        let lines = racer_lines(&window, &player, &[ai], None, Instant::now());
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[ai],
+            None,
+            RacePhase::Racing,
+            Instant::now(),
+        );
 
         assert_eq!(lines[1].spans[0].content.as_ref(), "<");
         assert_eq!(lines[1].spans[0].style.fg, Some(Color::LightRed));
@@ -1091,7 +1216,14 @@ mod tests {
         let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, Instant::now());
         ai.player.word_index = 3;
 
-        let lines = racer_lines(&window, &player, &[ai], None, Instant::now());
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[ai],
+            None,
+            RacePhase::Racing,
+            Instant::now(),
+        );
 
         assert_eq!(lines[1].spans[6].content.as_ref(), ">");
         assert_eq!(lines[1].spans[6].style.fg, Some(Color::LightRed));
@@ -1107,7 +1239,7 @@ mod tests {
         ai.player.word_index = 3;
         ai.player.finished_at = Some(now);
 
-        let lines = racer_lines(&window, &player, &[ai], None, now);
+        let lines = racer_lines(&window, &player, &[ai], None, RacePhase::Racing, now);
 
         assert!(lines[1].spans.iter().any(|span| {
             span.content.as_ref() == "█" && span.style.fg == Some(Color::LightRed)
@@ -1129,7 +1261,7 @@ mod tests {
             until: now + std::time::Duration::from_secs(1),
         });
 
-        let lines = racer_lines(&window, &player, &[ai], None, now);
+        let lines = racer_lines(&window, &player, &[ai], None, RacePhase::Racing, now);
 
         assert_eq!(lines[1].spans[0].content.as_ref(), "[");
         assert_eq!(lines[1].spans[1].content.as_ref(), "<");
@@ -1148,7 +1280,7 @@ mod tests {
             step_interval: std::time::Duration::from_millis(400),
         });
 
-        let lines = racer_lines(&window, &player, &[], None, now);
+        let lines = racer_lines(&window, &player, &[], None, RacePhase::Racing, now);
 
         assert_eq!(lines[0].spans[0].content.as_ref(), ">");
         assert_eq!(lines[0].spans[1].content.as_ref(), ">");
@@ -1170,6 +1302,7 @@ mod tests {
             &player,
             &[],
             Some(now + std::time::Duration::from_millis(300)),
+            RacePhase::Racing,
             now,
         );
 
@@ -1241,7 +1374,7 @@ mod tests {
         let mut player = PlayerState::new(Instant::now());
         player.input = "fo".to_string();
 
-        let line = track_word_line(&window, &player);
+        let line = track_word_line(&window, &player, RacePhase::Racing);
         let spans = line.spans;
 
         assert_eq!(spans[0].content.as_ref(), "f");
@@ -1253,6 +1386,25 @@ mod tests {
     }
 
     #[test]
+    fn track_words_are_grey_before_race_begins() {
+        let track = track(&["fox", "road"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(Instant::now());
+        player.input = "fo".to_string();
+
+        let line = track_word_line(&window, &player, RacePhase::WaitingForHost);
+        let spans = line.spans;
+
+        assert_eq!(spans[0].content.as_ref(), "f");
+        assert_eq!(spans[0].style.fg, Some(Color::DarkGray));
+        assert_eq!(spans[0].style.bg, None);
+        assert_eq!(spans[1].content.as_ref(), "o");
+        assert_eq!(spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(spans[2].content.as_ref(), "x");
+        assert_eq!(spans[2].style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
     fn current_word_spans_render_typos_red_on_track() {
         let track = track(&["fox", "road"]);
         let window = build_track_window(&track, 0, 40);
@@ -1260,7 +1412,7 @@ mod tests {
         player.input = "fa".to_string();
         player.typo_index = Some(1);
 
-        let line = track_word_line(&window, &player);
+        let line = track_word_line(&window, &player, RacePhase::Racing);
         let spans = line.spans;
 
         assert_eq!(spans[0].content.as_ref(), "f");
@@ -1277,7 +1429,7 @@ mod tests {
         player.input = "fa road".to_string();
         player.typo_index = Some(1);
 
-        let line = track_word_line(&window, &player);
+        let line = track_word_line(&window, &player, RacePhase::Racing);
         let spans = line.spans;
 
         assert_eq!(spans[1].content.as_ref(), "a");

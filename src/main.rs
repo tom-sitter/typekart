@@ -27,7 +27,7 @@ enum Command {
         /// Number of words in the generated track.
         #[arg(short, long, default_value_t = 40)]
         words: usize,
-        /// Number of local AI racers to include.
+        /// Number of local AI racers to include, capped at 6.
         #[arg(long, default_value_t = 0)]
         ai_racers: usize,
         /// Difficulty used by all local AI racers.

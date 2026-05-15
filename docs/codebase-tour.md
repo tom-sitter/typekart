@@ -323,6 +323,7 @@ restart
   create a new PlayerState
   regenerate bonus points for the new track
   clear transient item, warning, input, and event state
+  wait for host Space before starting the countdown
 ```
 
 The session stores the loaded word list and original word count so the terminal loop can restart without returning to `app::play`.
