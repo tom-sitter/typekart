@@ -265,9 +265,10 @@ fn track_panel_height(ai_racer_count: usize) -> u16 {
     let bonus_lines = 3;
     let word_line = 1;
     let racer_lines = ai_racer_count + 1;
+    let minimap_line = 1;
     let borders = 2;
 
-    (bonus_lines + word_line + racer_lines + borders)
+    (bonus_lines + word_line + racer_lines + minimap_line + borders)
         .max(10)
         .try_into()
         .unwrap_or(u16::MAX)
@@ -322,6 +323,7 @@ fn render_track(
     frame.render_widget(
         track_view(
             &window,
+            track.len(),
             player,
             bonuses,
             bonus_attempt,
@@ -335,6 +337,7 @@ fn render_track(
 
 fn track_view<'a>(
     window: &'a TrackWindow<'a>,
+    track_len: usize,
     player: &PlayerState,
     bonuses: &'a BonusState,
     bonus_attempt: Option<BonusAttempt>,
@@ -356,6 +359,7 @@ fn track_view<'a>(
     let mut lines = bonus_lines(window, player, bonuses, bonus_attempt, now);
     lines.push(word_line);
     lines.extend(racer_lines);
+    lines.push(minimap_line(track_len, window.width, player, ai_racers));
 
     Paragraph::new(lines).block(Block::default().title("Track").borders(Borders::ALL))
 }
@@ -449,6 +453,112 @@ fn local_prerace_label(race_phase: RacePhase, now: std::time::Instant) -> Option
             .map(|label| format!(" {label}")),
         RacePhase::Racing => None,
     }
+}
+
+fn minimap_line(
+    track_len: usize,
+    width: usize,
+    player: &PlayerState,
+    ai_racers: &[AiRacer],
+) -> Line<'static> {
+    let label = "Map  ";
+    let label_width = label.chars().count();
+    if width <= label_width {
+        return Line::from(label.chars().take(width).collect::<String>());
+    }
+
+    let map_width = width - label_width;
+    if map_width < 2 {
+        return Line::from(format!("{label}{}", "|".repeat(map_width)));
+    }
+
+    let mut cells = vec![
+        TrackCell {
+            ch: '-',
+            style: Style::default().fg(Color::DarkGray),
+        };
+        map_width
+    ];
+    cells[0].ch = '|';
+    cells[map_width - 1].ch = '|';
+
+    let usable_width = map_width.saturating_sub(2);
+    let local_col = minimap_column(track_len, usable_width, player);
+    let ai_markers = ai_racers
+        .iter()
+        .map(|ai| {
+            (
+                minimap_column(track_len, usable_width, &ai.player),
+                minimap_ai_marker(ai.id),
+                ai_color(ai.id),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for col in 0..map_width {
+        if col == local_col {
+            cells[col] = TrackCell {
+                ch: '@',
+                style: Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            };
+            continue;
+        }
+
+        let markers_at_col = ai_markers
+            .iter()
+            .filter(|(ai_col, _, _)| *ai_col == col)
+            .collect::<Vec<_>>();
+        match markers_at_col.as_slice() {
+            [] => {}
+            [(_, marker, color)] => {
+                cells[col] = TrackCell {
+                    ch: *marker,
+                    style: Style::default().fg(*color).add_modifier(Modifier::BOLD),
+                };
+            }
+            _ => {
+                cells[col] = TrackCell {
+                    ch: '*',
+                    style: Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                };
+            }
+        }
+    }
+
+    let mut spans = label
+        .chars()
+        .map(|ch| Span::raw(ch.to_string()))
+        .collect::<Vec<_>>();
+    spans.extend(
+        cells
+            .into_iter()
+            .map(|cell| Span::styled(cell.ch.to_string(), cell.style)),
+    );
+
+    Line::from(spans)
+}
+
+fn minimap_column(track_len: usize, usable_width: usize, player: &PlayerState) -> usize {
+    let finish_col = usable_width + 1;
+    if player.is_finished() {
+        return finish_col;
+    }
+
+    if track_len <= 1 {
+        return 1;
+    }
+
+    let final_word_index = track_len - 1;
+    let word_index = player.word_index.min(final_word_index);
+    1 + ((word_index * usable_width) + (final_word_index / 2)) / final_word_index
+}
+
+fn minimap_ai_marker(id: usize) -> char {
+    char::from_digit((id % 10) as u32, 10).unwrap_or('?')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -587,10 +697,13 @@ fn impact_blink_visible(impact_until: Option<std::time::Instant>, now: std::time
 }
 
 fn ai_color(id: usize) -> Color {
-    match id % 3 {
+    match id % 6 {
         1 => Color::LightRed,
         2 => Color::LightGreen,
-        _ => Color::LightBlue,
+        3 => Color::LightBlue,
+        4 => Color::LightYellow,
+        5 => Color::LightMagenta,
+        _ => Color::LightCyan,
     }
 }
 
@@ -1045,9 +1158,9 @@ mod tests {
             track::Track,
         },
         ui::render::{
-            WordRenderState, bonus_column, build_track_window, is_bonus_point_claimable,
-            player_list_height, racer_lines, result_rows, track_panel_height, track_word_line,
-            visible_bonus_point,
+            WordRenderState, ai_color, bonus_column, build_track_window, is_bonus_point_claimable,
+            minimap_line, player_list_height, racer_lines, result_rows, track_panel_height,
+            track_word_line, visible_bonus_point,
         },
         ui::session::{AiRacer, RacePhase, RaceStatus},
     };
@@ -1168,8 +1281,73 @@ mod tests {
 
     #[test]
     fn layout_heights_fit_six_ai_racers() {
-        assert_eq!(track_panel_height(6), 13);
+        assert_eq!(track_panel_height(6), 14);
         assert_eq!(player_list_height(6), 9);
+    }
+
+    #[test]
+    fn first_six_ai_racers_have_distinct_colors() {
+        let colors = (1..=6).map(ai_color).collect::<Vec<_>>();
+
+        for (index, color) in colors.iter().enumerate() {
+            assert!(!colors[..index].contains(color));
+        }
+    }
+
+    #[test]
+    fn minimap_line_shows_local_and_ai_markers() {
+        let now = Instant::now();
+        let mut player = PlayerState::new(now);
+        player.word_index = 1;
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai.player.word_index = 3;
+
+        let line = minimap_line(5, 20, &player, &[ai]);
+
+        assert_eq!(line.spans[5].content.as_ref(), "|");
+        assert_eq!(line.spans[9].content.as_ref(), "@");
+        assert_eq!(line.spans[9].style.fg, Some(Color::Cyan));
+        assert_eq!(line.spans[16].content.as_ref(), "1");
+        assert_eq!(line.spans[16].style.fg, Some(Color::LightRed));
+        assert_eq!(line.spans[19].content.as_ref(), "|");
+    }
+
+    #[test]
+    fn minimap_line_pins_finished_racer_to_finish_edge() {
+        let now = Instant::now();
+        let player = PlayerState::new(now);
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai.player.finished_at = Some(now);
+
+        let line = minimap_line(5, 20, &player, &[ai]);
+
+        assert_eq!(line.spans[19].content.as_ref(), "1");
+    }
+
+    #[test]
+    fn minimap_line_prefers_local_marker_on_overlap() {
+        let now = Instant::now();
+        let player = PlayerState::new(now);
+        let ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+
+        let line = minimap_line(5, 20, &player, &[ai]);
+
+        assert_eq!(line.spans[6].content.as_ref(), "@");
+    }
+
+    #[test]
+    fn minimap_line_shows_star_for_ai_overlap() {
+        let now = Instant::now();
+        let player = PlayerState::new(now);
+        let mut ai_1 = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai_1.player.word_index = 2;
+        let mut ai_2 = AiRacer::new(2, AiDifficulty::Easy, 35.0, now);
+        ai_2.player.word_index = 2;
+
+        let line = minimap_line(5, 20, &player, &[ai_1, ai_2]);
+
+        assert_eq!(line.spans[13].content.as_ref(), "*");
+        assert_eq!(line.spans[13].style.fg, Some(Color::White));
     }
 
     #[test]

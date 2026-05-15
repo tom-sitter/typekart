@@ -1268,9 +1268,12 @@ mod tests {
 
         session.apply_action(LocalAction::Typing(KeyAction::Space), now);
         session.tick(now + std::time::Duration::from_secs(3));
-        session.tick(now + std::time::Duration::from_secs(4));
+        session.tick(now + std::time::Duration::from_secs(5));
 
-        assert!(!session.ai_racers[0].player.input.is_empty());
+        assert!(
+            !session.ai_racers[0].player.input.is_empty()
+                || session.ai_racers[0].player.stats.completed_words > 0
+        );
     }
 
     #[test]

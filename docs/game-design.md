@@ -368,6 +368,28 @@ you picked up Banana
 - Keep the word layer readable; racer markers should not obscure the text players must type.
 - Since each racer has a lane, close positions should be readable without marker color blending.
 
+### Minimap
+
+The track panel should include a single-line minimap below all racer lanes so players can understand the whole-race spread even when other racers are outside the current word window.
+
+Recommended first version:
+
+```text
+Map  |--1------@------2---*----------3-------------|
+```
+
+Rules:
+
+- Render the minimap inside the Track panel, below the local and other racer lanes.
+- Scale each racer's race position across the full track length, not the current visible word window.
+- Use `@` for the local player and `1` through `6` for AI racers.
+- Use the same racer colors as the main racer lanes.
+- Pin finished racers to the finish edge.
+- If multiple racers occupy the same minimap column, render `*`.
+- If the local player overlaps with other racers, prefer `@` for the minimap marker.
+- Keep the minimap to one terminal row for now.
+- Do not show item state on the minimap in the first version unless it falls out naturally from the existing marker styling.
+
 ### Item Feedback
 
 - Represent active item effects on the racer lanes instead of a separate item panel.

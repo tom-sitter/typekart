@@ -383,6 +383,8 @@ The word layer is rendered through fixed-width track cells. Correctly typed char
 
 The local racer marker is also derived from the character stream. It follows the next character while input is valid, and pins to the first typo while typo recovery is required. The local racer lane is rendered immediately below the word layer; AI racer lanes are rendered below it.
 
+The planned minimap should also live in the track renderer, below all racer lanes. See `docs/minimap-plan.md` for the current implementation plan.
+
 The bonus renderer reads the next visible bonus point from `BonusState`. Choices are stacked vertically so players can scan them before reaching the claim window. They stay grey while merely upcoming, then turn magenta once the player reaches the claim window. They also render grey when unavailable because the player has a held item, has a typo, has an active Shield, or the choice is cooling down.
 
 ## Data Flow

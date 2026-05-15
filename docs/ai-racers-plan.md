@@ -22,8 +22,8 @@ Add local AI racers so TypeKart can exercise multiplayer-like rendering, proximi
 
 ## Initial Difficulty Values
 
-- Easy: random per-racer speed from 28 to 42 WPM.
-- Hard: random per-racer speed from 65 to 85 WPM.
+- Easy: random per-racer speed from 20 to 50 WPM.
+- Hard: random per-racer speed from 55 to 105 WPM.
 
 These values should be easy to tune after playtesting.
 

@@ -11,7 +11,7 @@ use super::{
 
 pub const BONUS_INTERVAL_WORDS: usize = 8;
 pub const BONUS_CHOICE_COUNT: usize = 3;
-pub const BONUS_COOLDOWN: Duration = Duration::from_secs(7);
+pub const BONUS_COOLDOWN: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone)]
 pub struct BonusState {
@@ -243,7 +243,7 @@ mod tests {
     use rand::{SeedableRng, rngs::StdRng};
 
     use super::{
-        BONUS_CHOICE_COUNT, BonusChoice, BonusChoiceStatus, BonusPoint, BonusState,
+        BONUS_CHOICE_COUNT, BONUS_COOLDOWN, BonusChoice, BonusChoiceStatus, BonusPoint, BonusState,
         claim_bonus_choice,
     };
     use crate::game::track::{Track, WordList};
@@ -298,6 +298,12 @@ mod tests {
             bonuses.points[0].choices[1].status,
             BonusChoiceStatus::Cooldown { .. }
         ));
+        assert_eq!(
+            bonuses.points[0].choices[1].status,
+            BonusChoiceStatus::Cooldown {
+                until: now + BONUS_COOLDOWN
+            }
+        );
     }
 
     #[test]
