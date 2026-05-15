@@ -471,13 +471,15 @@ impl LocalSession {
         let Some(ai) = self.ai_racers.get(ai_index) else {
             return false;
         };
-        self.player.word_index.abs_diff(ai.player.word_index) <= max_distance_words
+        (!self.player.is_finished()
+            && self.player.word_index.abs_diff(ai.player.word_index) <= max_distance_words)
             || self
                 .ai_racers
                 .iter()
                 .enumerate()
                 .any(|(other_index, other)| {
                     other_index != ai_index
+                        && !other.player.is_finished()
                         && other.player.word_index.abs_diff(ai.player.word_index)
                             <= max_distance_words
                 })
@@ -554,15 +556,19 @@ impl LocalSession {
     }
 
     fn racer_positions_excluding_ai(&self, ai_index: usize) -> Vec<RacerPosition> {
-        let mut racers = vec![RacerPosition {
-            id: 0,
-            word_index: self.player.word_index,
-        }];
+        let mut racers = Vec::new();
+        if !self.player.is_finished() {
+            racers.push(RacerPosition {
+                id: 0,
+                word_index: self.player.word_index,
+            });
+        }
         racers.extend(
             self.ai_racers
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| *index != ai_index)
+                .filter(|(_, ai)| !ai.player.is_finished())
                 .map(|(_, ai)| RacerPosition {
                     id: ai.id,
                     word_index: ai.player.word_index,
@@ -883,6 +889,7 @@ impl LocalSession {
                 let racers = self
                     .ai_racers
                     .iter()
+                    .filter(|ai| !ai.player.is_finished())
                     .map(|ai| RacerPosition {
                         id: ai.id,
                         word_index: ai.player.word_index,
@@ -1307,6 +1314,29 @@ mod tests {
     }
 
     #[test]
+    fn player_banana_ignores_finished_ai_targets() {
+        let now = Instant::now();
+        let mut session =
+            LocalSession::with_bonuses(track(&["one", "two"]), PlayerState::new(now), bonuses());
+        session.player.word_index = 10;
+        session.player.held_item = Some(HeldItem::Banana);
+
+        let mut finished_ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        finished_ai.player.word_index = 10;
+        finished_ai.player.finished_at = Some(now);
+        session.ai_racers.push(finished_ai);
+
+        let mut active_ai = AiRacer::new(2, AiDifficulty::Easy, 35.0, now);
+        active_ai.player.word_index = 12;
+        session.ai_racers.push(active_ai);
+
+        session.apply_action(LocalAction::ActivateItem, now);
+
+        assert!(!session.ai_racers[0].is_stunned(now));
+        assert!(session.ai_racers[1].is_stunned(now));
+    }
+
+    #[test]
     fn ai_banana_warning_can_clear_player_input() {
         let now = Instant::now();
         let mut session =
@@ -1325,6 +1355,30 @@ mod tests {
         assert!(session.player.input.is_empty());
         assert!(session.attack_warning.is_none());
         assert!(session.player_impact_until.is_some_and(|until| until > now));
+    }
+
+    #[test]
+    fn ai_banana_ignores_finished_player_target() {
+        let now = Instant::now();
+        let mut session =
+            LocalSession::with_bonuses(track(&["one", "two"]), PlayerState::new(now), bonuses());
+        session.player.word_index = 1;
+        session.player.finished_at = Some(now);
+
+        let mut attacker = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        attacker.player.word_index = 1;
+        attacker.player.held_item = Some(HeldItem::Banana);
+        session.ai_racers.push(attacker);
+
+        let mut active_target = AiRacer::new(2, AiDifficulty::Easy, 35.0, now);
+        active_target.player.word_index = 2;
+        session.ai_racers.push(active_target);
+
+        session.tick(now);
+
+        assert!(session.attack_warning.is_none());
+        assert!(!session.player_impact_until.is_some_and(|until| until > now));
+        assert!(session.ai_racers[1].is_stunned(now));
     }
 
     #[test]
