@@ -11,6 +11,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::game::ai::AiDifficulty;
+use crate::ui::render::IconMode;
 
 #[derive(Debug, Parser)]
 #[command(name = "typekart")]
@@ -33,6 +34,9 @@ enum Command {
         /// Difficulty used by all local AI racers.
         #[arg(long, value_enum, default_value_t = CliAiDifficulty::Easy)]
         ai_difficulty: CliAiDifficulty,
+        /// Use Unicode item icons instead of ASCII-safe markers.
+        #[arg(long)]
+        unicode_icons: bool,
     },
 }
 
@@ -59,6 +63,16 @@ fn main() -> Result<()> {
             words,
             ai_racers,
             ai_difficulty,
-        } => app::play(words, ai_racers, ai_difficulty.into()),
+            unicode_icons,
+        } => app::play(
+            words,
+            ai_racers,
+            ai_difficulty.into(),
+            if unicode_icons {
+                IconMode::Unicode
+            } else {
+                IconMode::Ascii
+            },
+        ),
     }
 }

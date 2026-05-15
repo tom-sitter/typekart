@@ -363,7 +363,9 @@ you picked up Banana
 - Pin the local racer's marker to the next character while input is valid.
 - Pin the local racer's marker to the first typo while a typo is active.
 - When Shield is active, encapsulate the racer's marker in brackets to show the protected state, such as `[███]`.
+- When Unicode icons are enabled, render the shield icon in the center of the racer marker without a trailing block that can obscure wide emoji glyphs, such as `█🛡`.
 - When Mushroom is active, prepend `>>>` to the racer's marker to show the boost.
+- When Unicode icons are enabled, use `>>🍄` as the Mushroom boost marker.
 - When an item impact lands, briefly blink the impacted racer's lane marker.
 - Keep the word layer readable; racer markers should not obscure the text players must type.
 - Since each racer has a lane, close positions should be readable without marker color blending.
@@ -393,7 +395,26 @@ Rules:
 ### Item Feedback
 
 - Represent active item effects on the racer lanes instead of a separate item panel.
+- Briefly show a Banana cue beside the attacker's racer marker when Banana fires.
+- In Unicode mode, Banana cues should render as `🍌 >>` for attacks ahead and `<< 🍌` for attacks behind.
+- In ASCII mode, Banana cues should render as `))>>` for attacks ahead and `((<<` for attacks behind.
 - Grey out bonus words when they are visible but unavailable because the player already has an active lockout effect.
+
+### Icon Mode
+
+The default display should remain ASCII-safe because terminal emoji width and styling support varies. A settings toggle can enable Unicode icons for terminals that render them well.
+
+Current command-line toggle:
+
+```text
+--unicode-icons
+```
+
+Unicode mode affects:
+
+- Banana attack cues.
+- Mushroom boost markers.
+- Shield markers.
 
 ### Event Feed
 

@@ -23,7 +23,7 @@ use crate::{
         track::{Track, WordList},
         typing::KeyAction,
     },
-    ui::render::{TypingScreen, render},
+    ui::render::{IconMode, TypingScreen, render},
     ui::session::{LocalAction, LocalSession},
 };
 
@@ -35,11 +35,13 @@ pub fn run_typing_session(
     word_list: WordList,
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
+    icon_mode: IconMode,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
     let result = run_loop(
         &mut terminal,
         LocalSession::new(track, player, word_list, ai_racer_count, ai_difficulty),
+        icon_mode,
     );
     restore_terminal(&mut terminal)?;
     result
@@ -64,7 +66,11 @@ fn restore_terminal(terminal: &mut AppTerminal) -> Result<()> {
     Ok(())
 }
 
-fn run_loop(terminal: &mut AppTerminal, mut session: LocalSession) -> Result<()> {
+fn run_loop(
+    terminal: &mut AppTerminal,
+    mut session: LocalSession,
+    icon_mode: IconMode,
+) -> Result<()> {
     loop {
         terminal.draw(|frame| {
             render(
@@ -75,8 +81,10 @@ fn run_loop(terminal: &mut AppTerminal, mut session: LocalSession) -> Result<()>
                     bonuses: &session.bonuses,
                     bonus_attempt: session.bonus_attempt,
                     player_impact_until: session.player_impact_until,
+                    player_item_cue: session.player_item_cue,
                     race_status: session.race_status,
                     race_phase: session.race_phase,
+                    icon_mode,
                     ai_racers: &session.ai_racers,
                     events: &session.events,
                 },

@@ -18,7 +18,10 @@ use crate::{
         player::PlayerState,
         track::Track,
     },
-    ui::session::{AiRacer, BonusAttempt, EventLog, RacePhase, RaceStatus},
+    ui::session::{
+        AiRacer, AttackDirection, BonusAttempt, EventLog, ItemCue, ItemCueKind, RacePhase,
+        RaceStatus,
+    },
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 90;
@@ -27,14 +30,22 @@ const SHIELDED_RACER_MARKER: &str = "[███]";
 const BOOST_MARKER_PREFIX: &str = ">>>";
 const FINISHED_EDGE_MARKER: &str = ">!";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconMode {
+    Ascii,
+    Unicode,
+}
+
 pub struct TypingScreen<'a> {
     pub track: &'a Track,
     pub player: &'a PlayerState,
     pub bonuses: &'a BonusState,
     pub bonus_attempt: Option<BonusAttempt>,
     pub player_impact_until: Option<std::time::Instant>,
+    pub player_item_cue: Option<ItemCue>,
     pub race_status: RaceStatus,
     pub race_phase: RacePhase,
+    pub icon_mode: IconMode,
     pub ai_racers: &'a [AiRacer],
     pub events: &'a EventLog,
 }
@@ -219,7 +230,9 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonus_attempt,
         screen.ai_racers,
         screen.player_impact_until,
+        screen.player_item_cue,
         screen.race_phase,
+        screen.icon_mode,
     );
     frame.render_widget(
         finish_or_empty(screen.player, screen.ai_racers, screen.race_status),
@@ -255,7 +268,9 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonus_attempt,
         screen.ai_racers,
         screen.player_impact_until,
+        screen.player_item_cue,
         screen.race_phase,
+        screen.icon_mode,
     );
     frame.render_widget(stats_view(screen.player), rows[1]);
     frame.render_widget(
@@ -328,7 +343,9 @@ fn render_track(
     bonus_attempt: Option<BonusAttempt>,
     ai_racers: &[AiRacer],
     player_impact_until: Option<std::time::Instant>,
+    player_item_cue: Option<ItemCue>,
     race_phase: RacePhase,
+    icon_mode: IconMode,
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let window = build_track_window(track, player.word_index, inner_width);
@@ -341,7 +358,9 @@ fn render_track(
             bonus_attempt,
             ai_racers,
             player_impact_until,
+            player_item_cue,
             race_phase,
+            icon_mode,
         ),
         area,
     );
@@ -355,7 +374,9 @@ fn track_view<'a>(
     bonus_attempt: Option<BonusAttempt>,
     ai_racers: &[AiRacer],
     player_impact_until: Option<std::time::Instant>,
+    player_item_cue: Option<ItemCue>,
     race_phase: RacePhase,
+    icon_mode: IconMode,
 ) -> Paragraph<'a> {
     let now = std::time::Instant::now();
     let word_line = track_word_line(window, player, race_phase);
@@ -364,7 +385,9 @@ fn track_view<'a>(
         player,
         ai_racers,
         player_impact_until,
+        player_item_cue,
         race_phase,
+        icon_mode,
         now,
     );
 
@@ -430,10 +453,13 @@ fn racer_lines(
     player: &PlayerState,
     ai_racers: &[AiRacer],
     player_impact_until: Option<std::time::Instant>,
+    player_item_cue: Option<ItemCue>,
     race_phase: RacePhase,
+    icon_mode: IconMode,
     now: std::time::Instant,
 ) -> Vec<Line<'static>> {
     let local_status_label = local_prerace_label(race_phase, now);
+    let local_item_cue = visible_item_cue(player_item_cue, now, icon_mode);
     let mut lines = vec![racer_line_for_player(
         window,
         player,
@@ -442,8 +468,11 @@ fn racer_lines(
         player_impact_until,
         RacerVisibility::Always,
         local_status_label.as_deref(),
+        local_item_cue.as_ref(),
+        icon_mode,
     )];
     lines.extend(ai_racers.iter().map(|ai| {
+        let item_cue = visible_item_cue(ai.item_cue, now, icon_mode);
         racer_line_for_player(
             window,
             &ai.player,
@@ -452,6 +481,8 @@ fn racer_lines(
             ai.impact_until,
             RacerVisibility::OnlyWhenCurrentWordVisible,
             None,
+            item_cue.as_ref(),
+            icon_mode,
         )
     }));
     lines
@@ -465,6 +496,41 @@ fn local_prerace_label(race_phase: RacePhase, now: std::time::Instant) -> Option
             .map(|label| format!(" {label}")),
         RacePhase::Racing => None,
     }
+}
+
+fn visible_item_cue(
+    item_cue: Option<ItemCue>,
+    now: std::time::Instant,
+    icon_mode: IconMode,
+) -> Option<VisibleItemCue> {
+    let cue = item_cue.filter(|cue| cue.is_visible(now))?;
+    let (label, placement) = match (cue.kind, icon_mode) {
+        (ItemCueKind::Banana { direction }, IconMode::Unicode) => match direction {
+            AttackDirection::Ahead => (" 🍌 >>", ItemCuePlacement::After),
+            AttackDirection::Behind => ("<< 🍌 ", ItemCuePlacement::Before),
+        },
+        (ItemCueKind::Banana { direction }, IconMode::Ascii) => match direction {
+            AttackDirection::Ahead => (" ))>>", ItemCuePlacement::After),
+            AttackDirection::Behind => ("((<< ", ItemCuePlacement::Before),
+        },
+    };
+
+    Some(VisibleItemCue {
+        label: label.to_string(),
+        placement,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisibleItemCue {
+    label: String,
+    placement: ItemCuePlacement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemCuePlacement {
+    Before,
+    After,
 }
 
 fn minimap_line(
@@ -587,40 +653,63 @@ fn racer_line_for_player(
     impact_until: Option<std::time::Instant>,
     visibility: RacerVisibility,
     status_label: Option<&str>,
+    item_cue: Option<&VisibleItemCue>,
+    icon_mode: IconMode,
 ) -> Line<'static> {
     let mut cells = vec![TrackCell::default(); window.width];
-    let marker_anchor = racer_marker(player, now, None);
-    let marker = racer_marker(player, now, status_label);
+    let marker_anchor_width = racer_marker_layout_width(player, now, None, icon_mode);
+    let marker = racer_marker(player, now, status_label, icon_mode);
+    let marker_layout_width = racer_marker_layout_width(player, now, status_label, icon_mode);
     let visible_marker = match visibility {
         RacerVisibility::Always => Some(VisibleRacerMarker::Visible {
-            start: window.racer_marker_start_for_player(player, marker_anchor.chars().count()),
+            start: window.racer_marker_start_for_player(player, marker_anchor_width),
         }),
         RacerVisibility::OnlyWhenCurrentWordVisible => {
-            window.racer_marker_for_visible_player(player, marker_anchor.chars().count())
+            window.racer_marker_for_visible_player(player, marker_anchor_width)
         }
     };
 
     if let Some(visible_marker) = visible_marker {
-        let (marker_start, marker) = match visible_marker {
-            VisibleRacerMarker::Visible { start } => (start, marker),
-            VisibleRacerMarker::Behind => (0, edge_racer_marker('<', player, now)),
-            VisibleRacerMarker::Ahead => (
-                window
-                    .width
-                    .saturating_sub(edge_racer_marker('>', player, now).chars().count()),
-                edge_racer_marker('>', player, now),
-            ),
+        let (marker_start, marker, marker_width) = match visible_marker {
+            VisibleRacerMarker::Visible { start } => (start, marker, marker_layout_width),
+            VisibleRacerMarker::Behind => {
+                let marker = edge_racer_marker('<', player, now, icon_mode);
+                let marker_width = marker.chars().count();
+                (0, marker, marker_width)
+            }
+            VisibleRacerMarker::Ahead => {
+                let marker = edge_racer_marker('>', player, now, icon_mode);
+                let marker_width = marker.chars().count();
+                (
+                    window.width.saturating_sub(marker_width),
+                    marker,
+                    marker_width,
+                )
+            }
             VisibleRacerMarker::FinishedAhead => (
                 window.width.saturating_sub(FINISHED_EDGE_MARKER.len()),
                 FINISHED_EDGE_MARKER.to_string(),
+                FINISHED_EDGE_MARKER.len(),
             ),
         };
-        write_marker(
-            &mut cells,
-            marker_start,
-            marker.as_str(),
-            marker_style(color, impact_until, now),
-        );
+        let style = marker_style(color, impact_until, now);
+        if let Some(item_cue) = item_cue {
+            match item_cue.placement {
+                ItemCuePlacement::Before => {
+                    let cue_start = marker_start.saturating_sub(item_cue.label.chars().count());
+                    write_marker(&mut cells, cue_start, item_cue.label.as_str(), style);
+                }
+                ItemCuePlacement::After => {
+                    write_marker(
+                        &mut cells,
+                        marker_start + marker_width,
+                        item_cue.label.as_str(),
+                        style,
+                    );
+                }
+            }
+        }
+        write_marker(&mut cells, marker_start, marker.as_str(), style);
     }
 
     Line::from(
@@ -631,15 +720,20 @@ fn racer_line_for_player(
     )
 }
 
-fn edge_racer_marker(direction: char, player: &PlayerState, now: std::time::Instant) -> String {
-    let marker = if player.has_active_shield(now) {
-        format!("[{direction}]")
-    } else {
-        direction.to_string()
+fn edge_racer_marker(
+    direction: char,
+    player: &PlayerState,
+    now: std::time::Instant,
+    icon_mode: IconMode,
+) -> String {
+    let marker = match (player.has_active_shield(now), icon_mode) {
+        (true, IconMode::Unicode) => format!("{direction}🛡"),
+        (true, IconMode::Ascii) => format!("[{direction}]"),
+        (false, _) => direction.to_string(),
     };
 
     if has_active_mushroom(player) {
-        format!("{BOOST_MARKER_PREFIX}{marker}")
+        format!("{}{}", boost_marker_prefix(icon_mode), marker)
     } else {
         marker
     }
@@ -649,11 +743,12 @@ fn racer_marker(
     player: &PlayerState,
     now: std::time::Instant,
     status_label: Option<&str>,
+    icon_mode: IconMode,
 ) -> String {
-    let mut marker = if player.has_active_shield(now) {
-        SHIELDED_RACER_MARKER.to_string()
-    } else {
-        LOCAL_RACER_MARKER.to_string()
+    let mut marker = match (player.has_active_shield(now), icon_mode) {
+        (true, IconMode::Unicode) => "█🛡".to_string(),
+        (true, IconMode::Ascii) => SHIELDED_RACER_MARKER.to_string(),
+        (false, _) => LOCAL_RACER_MARKER.to_string(),
     };
 
     if let Some(status_label) = status_label {
@@ -661,9 +756,44 @@ fn racer_marker(
     }
 
     if has_active_mushroom(player) {
-        format!("{BOOST_MARKER_PREFIX}{marker}")
+        format!("{}{}", boost_marker_prefix(icon_mode), marker)
     } else {
         marker
+    }
+}
+
+fn racer_marker_layout_width(
+    player: &PlayerState,
+    now: std::time::Instant,
+    status_label: Option<&str>,
+    icon_mode: IconMode,
+) -> usize {
+    let base_width = match (player.has_active_shield(now), icon_mode) {
+        // The shield emoji commonly occupies two terminal columns. The marker
+        // intentionally omits the right block, but layout still reserves the
+        // normal three-column kart footprint so centering and item cues stay
+        // aligned with unshielded racers.
+        (true, IconMode::Unicode) => LOCAL_RACER_MARKER.chars().count(),
+        (true, IconMode::Ascii) => SHIELDED_RACER_MARKER.chars().count(),
+        (false, _) => LOCAL_RACER_MARKER.chars().count(),
+    };
+    let status_width = status_label
+        .map(str::chars)
+        .map(Iterator::count)
+        .unwrap_or(0);
+    let boost_width = if has_active_mushroom(player) {
+        boost_marker_prefix(icon_mode).chars().count()
+    } else {
+        0
+    };
+
+    boost_width + base_width + status_width
+}
+
+fn boost_marker_prefix(icon_mode: IconMode) -> &'static str {
+    match icon_mode {
+        IconMode::Ascii => BOOST_MARKER_PREFIX,
+        IconMode::Unicode => ">>🍄",
     }
 }
 
@@ -1179,11 +1309,11 @@ mod tests {
             track::Track,
         },
         ui::render::{
-            WordRenderState, ai_color, bonus_column, build_track_window, is_bonus_point_claimable,
-            minimap_line, player_list_height, racer_lines, result_rows, track_panel_height,
-            track_word_line, visible_bonus_point,
+            IconMode, WordRenderState, ai_color, bonus_column, build_track_window,
+            is_bonus_point_claimable, minimap_line, player_list_height, racer_lines, result_rows,
+            track_panel_height, track_word_line, visible_bonus_point,
         },
-        ui::session::{AiRacer, RacePhase, RaceStatus},
+        ui::session::{AiRacer, AttackDirection, ItemCue, ItemCueKind, RacePhase, RaceStatus},
     };
 
     fn track(words: &[&str]) -> Track {
@@ -1271,7 +1401,9 @@ mod tests {
             &player,
             &[ai],
             None,
+            None,
             RacePhase::Racing,
+            IconMode::Ascii,
             Instant::now(),
         );
 
@@ -1293,7 +1425,16 @@ mod tests {
             starts_at: now + std::time::Duration::from_secs(3),
         };
 
-        let lines = racer_lines(&window, &player, &[], None, phase, now);
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            None,
+            phase,
+            IconMode::Ascii,
+            now,
+        );
 
         assert_eq!(lines[0].spans[3].content.as_ref(), "█");
         assert_eq!(lines[0].spans[6].content.as_ref(), " ");
@@ -1381,7 +1522,16 @@ mod tests {
             .map(|id| AiRacer::new(id, AiDifficulty::Easy, 35.0, now))
             .collect::<Vec<_>>();
 
-        let lines = racer_lines(&window, &player, &ai_racers, None, RacePhase::Racing, now);
+        let lines = racer_lines(
+            &window,
+            &player,
+            &ai_racers,
+            None,
+            None,
+            RacePhase::Racing,
+            IconMode::Ascii,
+            now,
+        );
 
         assert_eq!(lines.len(), 7);
     }
@@ -1399,7 +1549,9 @@ mod tests {
             &player,
             &[ai],
             None,
+            None,
             RacePhase::Racing,
+            IconMode::Ascii,
             Instant::now(),
         );
 
@@ -1420,7 +1572,9 @@ mod tests {
             &player,
             &[ai],
             None,
+            None,
             RacePhase::Racing,
+            IconMode::Ascii,
             Instant::now(),
         );
 
@@ -1438,7 +1592,16 @@ mod tests {
         ai.player.word_index = 3;
         ai.player.finished_at = Some(now);
 
-        let lines = racer_lines(&window, &player, &[ai], None, RacePhase::Racing, now);
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[ai],
+            None,
+            None,
+            RacePhase::Racing,
+            IconMode::Ascii,
+            now,
+        );
 
         assert!(lines[1].spans.iter().any(|span| {
             span.content.as_ref() == "█" && span.style.fg == Some(Color::LightRed)
@@ -1458,7 +1621,16 @@ mod tests {
         ai.player.word_index = 6;
         ai.player.finished_at = Some(now);
 
-        let lines = racer_lines(&window, &player, &[ai], None, RacePhase::Racing, now);
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[ai],
+            None,
+            None,
+            RacePhase::Racing,
+            IconMode::Ascii,
+            now,
+        );
 
         assert_eq!(lines[1].spans[10].content.as_ref(), ">");
         assert_eq!(lines[1].spans[11].content.as_ref(), "!");
@@ -1480,7 +1652,16 @@ mod tests {
             until: now + std::time::Duration::from_secs(1),
         });
 
-        let lines = racer_lines(&window, &player, &[ai], None, RacePhase::Racing, now);
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[ai],
+            None,
+            None,
+            RacePhase::Racing,
+            IconMode::Ascii,
+            now,
+        );
 
         assert_eq!(lines[1].spans[0].content.as_ref(), "[");
         assert_eq!(lines[1].spans[1].content.as_ref(), "<");
@@ -1499,7 +1680,16 @@ mod tests {
             step_interval: std::time::Duration::from_millis(400),
         });
 
-        let lines = racer_lines(&window, &player, &[], None, RacePhase::Racing, now);
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            None,
+            RacePhase::Racing,
+            IconMode::Ascii,
+            now,
+        );
 
         assert_eq!(lines[0].spans[0].content.as_ref(), ">");
         assert_eq!(lines[0].spans[1].content.as_ref(), ">");
@@ -1507,6 +1697,124 @@ mod tests {
         assert_eq!(lines[0].spans[3].content.as_ref(), "█");
         assert_eq!(lines[0].spans[4].content.as_ref(), "█");
         assert_eq!(lines[0].spans[5].content.as_ref(), "█");
+    }
+
+    #[test]
+    fn racer_line_shows_unicode_mushroom_boost_prefix() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(now);
+        player.active_effects.push(ActiveEffect::Mushroom {
+            remaining_words: 2,
+            next_step_at: now,
+            step_interval: std::time::Duration::from_millis(400),
+        });
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            None,
+            RacePhase::Racing,
+            IconMode::Unicode,
+            now,
+        );
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[1].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[2].content.as_ref(), "🍄");
+        assert_eq!(lines[0].spans[3].content.as_ref(), "█");
+    }
+
+    #[test]
+    fn racer_line_uses_unicode_shield_marker_when_enabled() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(now);
+        player.active_effects.push(ActiveEffect::Shield {
+            until: now + std::time::Duration::from_secs(1),
+        });
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            None,
+            RacePhase::Racing,
+            IconMode::Unicode,
+            now,
+        );
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[1].content.as_ref(), "🛡");
+        assert_eq!(lines[0].spans[2].content.as_ref(), " ");
+    }
+
+    #[test]
+    fn racer_line_shows_unicode_banana_attack_direction_cue() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let player = PlayerState::new(now);
+        let cue = ItemCue {
+            kind: ItemCueKind::Banana {
+                direction: AttackDirection::Ahead,
+            },
+            until: now + std::time::Duration::from_secs(1),
+        };
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            Some(cue),
+            RacePhase::Racing,
+            IconMode::Unicode,
+            now,
+        );
+
+        assert_eq!(lines[0].spans[3].content.as_ref(), " ");
+        assert_eq!(lines[0].spans[4].content.as_ref(), "🍌");
+        assert_eq!(lines[0].spans[6].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[7].content.as_ref(), ">");
+    }
+
+    #[test]
+    fn racer_line_shows_ascii_banana_attack_direction_cue() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three", "four"]);
+        let window = build_track_window(&track, 2, 40);
+        let mut player = PlayerState::new(now);
+        player.word_index = 2;
+        let cue = ItemCue {
+            kind: ItemCueKind::Banana {
+                direction: AttackDirection::Behind,
+            },
+            until: now + std::time::Duration::from_secs(1),
+        };
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            Some(cue),
+            RacePhase::Racing,
+            IconMode::Ascii,
+            now,
+        );
+
+        assert_eq!(lines[0].spans[2].content.as_ref(), "(");
+        assert_eq!(lines[0].spans[3].content.as_ref(), "(");
+        assert_eq!(lines[0].spans[4].content.as_ref(), "<");
+        assert_eq!(lines[0].spans[5].content.as_ref(), "<");
+        assert_eq!(lines[0].spans[6].content.as_ref(), " ");
+        assert_eq!(lines[0].spans[7].content.as_ref(), "█");
     }
 
     #[test]
@@ -1521,7 +1829,9 @@ mod tests {
             &player,
             &[],
             Some(now + std::time::Duration::from_millis(300)),
+            None,
             RacePhase::Racing,
+            IconMode::Ascii,
             now,
         );
 

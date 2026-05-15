@@ -150,7 +150,7 @@ Main types:
 - `PendingAttack`: currently only the planned Banana word swap.
 - `AttackWarning`: an attack plus the time when it resolves.
 
-Shield is represented as an active effect with an expiration `Instant`. The UI can ask `PlayerState` whether Shield is active and render the racer marker as `[███]`. When the effect expires, it is consumed automatically.
+Shield is represented as an active effect with an expiration `Instant`. The UI can ask `PlayerState` whether Shield is active and render the racer marker as `[███]` in ASCII mode or as `█🛡` in Unicode icon mode. When the effect expires, it is consumed automatically.
 
 ### `src/game/player.rs`
 
@@ -377,7 +377,7 @@ Important Rust concepts:
 - Ratatui widgets are values. We build them and pass them to `frame.render_widget`.
 - `TrackWindow<'a>` and `VisibleWord<'a>` borrow word strings from the existing `Track` instead of cloning them.
 
-The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw the word layer and each racer's lane. When Shield is active, the marker is rendered in bracketed form as `[███]`. When Mushroom is active, the marker gains a `>>>` prefix. Item impacts briefly blink the impacted racer's marker.
+The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw the word layer and each racer's lane. When Shield is active, the marker is rendered in bracketed form as `[███]` in ASCII mode or as `█🛡` in Unicode icon mode. The Unicode shield marker reserves the normal three-column kart footprint but does not draw a right-side block, because the shield emoji commonly occupies two terminal columns. When Mushroom is active, the marker gains a `>>>` prefix in ASCII mode or a `>>🍄` prefix in Unicode icon mode. Banana attacks briefly show a direction cue beside the attacker marker. Item impacts briefly blink the impacted racer's marker.
 
 The word layer is rendered through fixed-width track cells. Correctly typed characters are green, the next character has a cursor-like highlight, and `typo_index` makes typed characters from the first typo onward red. Since the renderer maps `PlayerState.input` over the visible track stream, typo overflow can continue across following words and spaces while `word_index` remains blocked at the real race position.
 
