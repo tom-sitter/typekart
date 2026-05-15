@@ -402,7 +402,6 @@ Header: race phase, elapsed time, held item
 Bonus layer: current bonus choices
 Word layer: visible track words
 Racer layer: three-cell colored racer markers
-Input layer: current target and typed input
 Player list: placement, name, progress
 Event feed: recent important events
 ```
@@ -412,10 +411,12 @@ Rendering rules:
 - Keep the word layer readable at all times.
 - Use a separate racer layer aligned to the word layer.
 - Use three-character colored racer markers.
+- Derive local racer marker placement from the current character, not only the current word.
+- Pin the local racer marker to the first typo while typo recovery is required.
 - Local player color wins on overlap.
 - Remote overlaps blend colors when truecolor is available.
 - Use a deterministic fallback when blending is unavailable.
-- Highlight typo spans in red.
+- Highlight typed typo spans in red, including overflow across following words.
 - Grey out bonus words when unavailable because the local player already holds an item.
 - Show incoming attack warnings prominently.
 

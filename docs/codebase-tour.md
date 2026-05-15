@@ -359,9 +359,11 @@ Important Rust concepts:
 - Ratatui widgets are values. We build them and pass them to `frame.render_widget`.
 - `TrackWindow<'a>` and `VisibleWord<'a>` borrow word strings from the existing `Track` instead of cloning them.
 
-The input renderer uses `typo_index` to color the first typo and every following character red. Characters before the typo are green. An empty input shows `_` as a visual cursor.
-
 The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw both the word layer and the local player's racer marker. When Shield is active, the marker is rendered in bracketed form as `[███]`.
+
+The word layer is rendered through fixed-width track cells. Correctly typed characters are green, the next character has a cursor-like highlight, and `typo_index` makes typed characters from the first typo onward red. Since the renderer maps `PlayerState.input` over the visible track stream, typo overflow can continue across following words and spaces while `word_index` remains blocked at the real race position.
+
+The local racer marker is also derived from the character stream. It follows the next character while input is valid, and pins to the first typo while typo recovery is required.
 
 The bonus renderer reads the next visible bonus point from `BonusState`. Choices are stacked vertically so players can scan them before reaching the claim window. They stay grey while merely upcoming, then turn magenta once the player reaches the claim window. They also render grey when unavailable because the player has a held item, has a typo, has an active Shield, or the choice is cooling down.
 

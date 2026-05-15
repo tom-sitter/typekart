@@ -338,9 +338,6 @@ Track:
 the quick brown fox jumps over the lazy driver into bright road
           ███       ▓▓▓       ▒▒▒
 
-Current: fox
-Input:   fo_
-
 Players:
 1. ana       42/120 words
 2. you       39/120 words
@@ -355,8 +352,14 @@ you picked up Banana
 
 - Show a horizontal window around the local player's current position.
 - Show completed words, current word, and upcoming words.
+- Render the local player's typed progress directly on the track.
+- Highlight correctly typed characters in green.
+- Highlight the next character to type with a cursor-like style.
+- When a typo is present, show typed characters from the first typo onward in red, including overflow across following words and spaces.
 - Show racer positions on a separate racer layer aligned with the same track window.
 - Represent each racer with a three-character marker in their unique color.
+- Pin the local racer's marker to the next character while input is valid.
+- Pin the local racer's marker to the first typo while a typo is active.
 - When Shield is active, encapsulate the racer's marker in brackets to show the protected state, such as `[███]`.
 - Keep the word layer readable; racer markers should not obscure the text players must type.
 - If a racer marker overlaps the local player's marker, the local player's color takes visual priority.
@@ -364,20 +367,13 @@ you picked up Banana
 - If color blending is unavailable, use a deterministic fallback such as alternating marker cells or a neutral collision color.
 - If many players overlap in a way that becomes ambiguous, show the shared marker on the track and rely on the player list for exact ordering.
 
-### Input View
-
-- Show the current target word.
-- Show the player's current typed input.
-- Highlight correct and incorrect characters differently.
-- When a typo is present, highlight the first typo and all following input in red.
-- Show active negative effects clearly.
-- Show active positive effects clearly.
-- Grey out bonus words when they are visible but unavailable because the player already has a held item.
-
 ### Item View
 
 - Show the held item.
 - Show whether it is ready to activate.
+- Show active negative effects clearly.
+- Show active positive effects clearly.
+- Grey out bonus words when they are visible but unavailable because the player already has a held item.
 - Show active item effects and remaining duration.
 
 ### Event Feed

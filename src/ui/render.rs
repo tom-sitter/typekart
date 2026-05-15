@@ -64,13 +64,58 @@ impl<'a> TrackWindow<'a> {
             .find(|word| word.state == WordRenderState::Current)
     }
 
-    pub fn racer_marker_start(&self, marker_width: usize) -> usize {
-        let Some(current) = self.current_word() else {
-            return 0;
-        };
-        let marker_center = current.start_col + current.word.chars().count() / 2;
+    pub fn racer_marker_start_for_player(
+        &self,
+        player: &PlayerState,
+        marker_width: usize,
+    ) -> usize {
+        let marker_center = self.player_track_column(player);
         let marker_start = marker_center.saturating_sub(marker_width / 2);
         marker_start.min(self.width.saturating_sub(marker_width))
+    }
+
+    fn player_track_column(&self, player: &PlayerState) -> usize {
+        let target_stream_index = player
+            .typo_index
+            .unwrap_or_else(|| player.input.chars().count());
+
+        self.column_for_stream_index(player.word_index, target_stream_index)
+            .or_else(|| self.current_word().map(|word| word.start_col))
+            .unwrap_or(0)
+    }
+
+    fn column_for_stream_index(
+        &self,
+        current_word_index: usize,
+        target_stream_index: usize,
+    ) -> Option<usize> {
+        let mut stream_index = 0;
+        let mut previous_visible_word_index = None;
+
+        for visible in self
+            .words
+            .iter()
+            .filter(|word| word.index >= current_word_index)
+        {
+            if previous_visible_word_index.is_some() {
+                if target_stream_index == stream_index {
+                    return Some(visible.start_col.saturating_sub(1));
+                }
+                stream_index += 1;
+            }
+
+            let word_width = visible.word.chars().count();
+            if target_stream_index < stream_index + word_width {
+                return Some(visible.start_col + target_stream_index - stream_index);
+            }
+
+            stream_index += word_width;
+            previous_visible_word_index = Some(visible.index);
+        }
+
+        self.words
+            .last()
+            .map(|word| word.end_col.min(self.width.saturating_sub(1)))
     }
 }
 
@@ -103,11 +148,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(7),
-            Constraint::Length(5),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(7), Constraint::Min(0)])
         .split(columns[0]);
     let right = Layout::default()
         .direction(Direction::Vertical)
@@ -127,8 +168,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonuses,
         screen.bonus_attempt,
     );
-    frame.render_widget(input_view(screen.track, screen.player), left[1]);
-    frame.render_widget(finish_or_empty(screen.player), left[2]);
+    frame.render_widget(finish_or_empty(screen.player), left[1]);
     frame.render_widget(stats_view(screen.player), right[0]);
     frame.render_widget(item_view(screen.player, screen.attack_warning), right[1]);
     frame.render_widget(player_list(screen.track, screen.player), right[2]);
@@ -140,7 +180,6 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(7),
-            Constraint::Length(5),
             Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Length(5),
@@ -156,11 +195,10 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonuses,
         screen.bonus_attempt,
     );
-    frame.render_widget(input_view(screen.track, screen.player), rows[1]);
-    frame.render_widget(stats_view(screen.player), rows[2]);
-    frame.render_widget(item_view(screen.player, screen.attack_warning), rows[3]);
-    frame.render_widget(player_list(screen.track, screen.player), rows[4]);
-    frame.render_widget(results_or_events(screen.player, screen.events), rows[5]);
+    frame.render_widget(stats_view(screen.player), rows[1]);
+    frame.render_widget(item_view(screen.player, screen.attack_warning), rows[2]);
+    frame.render_widget(player_list(screen.track, screen.player), rows[3]);
+    frame.render_widget(results_or_events(screen.player, screen.events), rows[4]);
 }
 
 fn header<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
@@ -205,23 +243,7 @@ fn track_view<'a>(
     bonuses: &'a BonusState,
     bonus_attempt: Option<BonusAttempt>,
 ) -> Paragraph<'a> {
-    let mut word_spans = Vec::new();
-    for visible in &window.words {
-        if visible.start_col > line_width(&word_spans) {
-            word_spans.push(Span::raw(
-                " ".repeat(visible.start_col - line_width(&word_spans)),
-            ));
-        }
-
-        let style = match visible.state {
-            WordRenderState::Completed => Style::default().fg(Color::DarkGray),
-            WordRenderState::Current => Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            WordRenderState::Upcoming => Style::default(),
-        };
-        word_spans.push(Span::styled(visible.word.to_string(), style));
-    }
+    let word_line = track_word_line(window, player);
 
     let now = std::time::Instant::now();
     let marker = if player.has_active_shield(now) {
@@ -229,14 +251,14 @@ fn track_view<'a>(
     } else {
         LOCAL_RACER_MARKER
     };
-    let marker_start = window.racer_marker_start(marker.chars().count());
+    let marker_start = window.racer_marker_start_for_player(player, marker.chars().count());
     let racer_line = Line::from(vec![
         Span::raw(" ".repeat(marker_start)),
         Span::styled(marker, Style::default().fg(Color::Cyan)),
     ]);
 
     let mut lines = bonus_lines(window, player, bonuses, bonus_attempt, now);
-    lines.push(Line::from(word_spans));
+    lines.push(word_line);
     lines.push(racer_line);
 
     Paragraph::new(lines).block(Block::default().title("Track").borders(Borders::ALL))
@@ -342,10 +364,6 @@ fn bonus_column(window: &TrackWindow<'_>, after_word_index: usize, word_width: u
         .min(window.width.saturating_sub(word_width))
 }
 
-fn line_width(spans: &[Span<'_>]) -> usize {
-    spans.iter().map(|span| span.content.chars().count()).sum()
-}
-
 pub fn build_track_window(track: &Track, current_index: usize, width: usize) -> TrackWindow<'_> {
     if width == 0 || track.words.is_empty() {
         return TrackWindow {
@@ -405,47 +423,103 @@ fn word_state(index: usize, current_index: usize) -> WordRenderState {
     }
 }
 
-fn input_view<'a>(track: &'a Track, player: &PlayerState) -> Paragraph<'a> {
-    let mut lines = vec![Line::from(vec![
-        Span::styled("Target: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            track.current_word(player.word_index).unwrap_or(""),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ])];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrackCell {
+    ch: char,
+    style: Style,
+}
 
-    let mut input_spans = vec![Span::styled(
-        "Input:  ",
-        Style::default().fg(Color::DarkGray),
-    )];
-    let typo_index = player.typo_index;
-
-    if player.input.is_empty() {
-        input_spans.push(Span::styled("_", Style::default().fg(Color::DarkGray)));
-    } else {
-        for (index, ch) in player.input.chars().enumerate() {
-            // Early Space is stored as a literal space so Backspace semantics
-            // stay simple. Render it visibly so the player understands the typo.
-            let display = if ch == ' ' {
-                "␠".to_string()
-            } else {
-                ch.to_string()
-            };
-            let style = if typo_index.is_some_and(|typo| index >= typo) {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::Green)
-            };
-            input_spans.push(Span::styled(display, style));
+impl Default for TrackCell {
+    fn default() -> Self {
+        Self {
+            ch: ' ',
+            style: Style::default(),
         }
-        input_spans.push(Span::styled("_", Style::default().fg(Color::DarkGray)));
+    }
+}
+
+fn track_word_line(window: &TrackWindow<'_>, player: &PlayerState) -> Line<'static> {
+    let mut cells = vec![TrackCell::default(); window.width];
+
+    for visible in &window.words {
+        for (offset, ch) in visible.word.chars().enumerate() {
+            let column = visible.start_col + offset;
+            if let Some(cell) = cells.get_mut(column) {
+                *cell = TrackCell {
+                    ch,
+                    style: base_word_style(visible.state, player),
+                };
+            }
+        }
     }
 
-    lines.push(Line::from(input_spans));
+    overlay_player_input(&mut cells, window, player);
 
-    Paragraph::new(lines).block(Block::default().title("Input").borders(Borders::ALL))
+    Line::from(
+        cells
+            .into_iter()
+            .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn base_word_style(state: WordRenderState, player: &PlayerState) -> Style {
+    match state {
+        WordRenderState::Completed => Style::default().fg(Color::DarkGray),
+        WordRenderState::Upcoming => Style::default(),
+        WordRenderState::Current if player.is_finished() => Style::default().fg(Color::DarkGray),
+        WordRenderState::Current => Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+fn overlay_player_input(cells: &mut [TrackCell], window: &TrackWindow<'_>, player: &PlayerState) {
+    if player.is_finished() {
+        return;
+    }
+
+    for (stream_index, typed_ch) in player.input.chars().enumerate() {
+        let Some(column) = window.column_for_stream_index(player.word_index, stream_index) else {
+            break;
+        };
+        let Some(cell) = cells.get_mut(column) else {
+            break;
+        };
+
+        cell.ch = display_input_char(typed_ch);
+        cell.style = typed_char_style(stream_index, player.typo_index);
+    }
+
+    if player.typo_index.is_none() {
+        let cursor_index = player.input.chars().count();
+        if let Some(column) = window.column_for_stream_index(player.word_index, cursor_index) {
+            if let Some(cell) = cells.get_mut(column) {
+                cell.style = cursor_style();
+            }
+        }
+    }
+}
+
+fn display_input_char(ch: char) -> char {
+    if ch == ' ' { '␠' } else { ch }
+}
+
+fn typed_char_style(stream_index: usize, typo_index: Option<usize>) -> Style {
+    if typo_index.is_some_and(|typo| stream_index >= typo) {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+fn cursor_style() -> Style {
+    Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn stats_view<'a>(player: &PlayerState) -> Paragraph<'a> {
@@ -560,6 +634,8 @@ fn help_view<'a>() -> Paragraph<'a> {
 mod tests {
     use std::time::Instant;
 
+    use ratatui::style::Color;
+
     use crate::{
         game::{
             bonus::{BonusChoice, BonusPoint, BonusState},
@@ -568,7 +644,7 @@ mod tests {
         },
         ui::render::{
             WordRenderState, bonus_column, build_track_window, is_bonus_point_claimable,
-            visible_bonus_point,
+            track_word_line, visible_bonus_point,
         },
     };
 
@@ -627,7 +703,21 @@ mod tests {
         let track = track(&["one", "two", "three"]);
         let window = build_track_window(&track, 1, 40);
 
-        assert_eq!(window.racer_marker_start(3), 4);
+        assert_eq!(
+            window.racer_marker_start_for_player(&PlayerState::new(Instant::now()), 3),
+            0
+        );
+    }
+
+    #[test]
+    fn local_racer_marker_tracks_current_character() {
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 1, 40);
+        let mut player = PlayerState::new(Instant::now());
+        player.word_index = 1;
+        player.input = "t".to_string();
+
+        assert_eq!(window.racer_marker_start_for_player(&player, 3), 4);
     }
 
     #[test]
@@ -635,7 +725,10 @@ mod tests {
         let track = track(&["a", "two"]);
         let window = build_track_window(&track, 0, 40);
 
-        assert_eq!(window.racer_marker_start(3), 0);
+        assert_eq!(
+            window.racer_marker_start_for_player(&PlayerState::new(Instant::now()), 3),
+            0
+        );
     }
 
     #[test]
@@ -643,7 +736,10 @@ mod tests {
         let track = track(&["abcde"]);
         let window = build_track_window(&track, 0, 2);
 
-        assert_eq!(window.racer_marker_start(5), 0);
+        assert_eq!(
+            window.racer_marker_start_for_player(&PlayerState::new(Instant::now()), 5),
+            0
+        );
     }
 
     #[test]
@@ -651,6 +747,73 @@ mod tests {
         let player = PlayerState::new(Instant::now());
 
         assert_eq!(player.word_index, 0);
+    }
+
+    #[test]
+    fn current_word_spans_show_typed_prefix_and_cursor_on_track() {
+        let track = track(&["fox", "road"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(Instant::now());
+        player.input = "fo".to_string();
+
+        let line = track_word_line(&window, &player);
+        let spans = line.spans;
+
+        assert_eq!(spans[0].content.as_ref(), "f");
+        assert_eq!(spans[0].style.fg, Some(Color::Green));
+        assert_eq!(spans[1].content.as_ref(), "o");
+        assert_eq!(spans[1].style.fg, Some(Color::Green));
+        assert_eq!(spans[2].content.as_ref(), "x");
+        assert_eq!(spans[2].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn current_word_spans_render_typos_red_on_track() {
+        let track = track(&["fox", "road"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(Instant::now());
+        player.input = "fa".to_string();
+        player.typo_index = Some(1);
+
+        let line = track_word_line(&window, &player);
+        let spans = line.spans;
+
+        assert_eq!(spans[0].content.as_ref(), "f");
+        assert_eq!(spans[0].style.fg, Some(Color::Green));
+        assert_eq!(spans[1].content.as_ref(), "a");
+        assert_eq!(spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn typo_overflow_renders_across_following_words() {
+        let track = track(&["fox", "road"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(Instant::now());
+        player.input = "fa road".to_string();
+        player.typo_index = Some(1);
+
+        let line = track_word_line(&window, &player);
+        let spans = line.spans;
+
+        assert_eq!(spans[1].content.as_ref(), "a");
+        assert_eq!(spans[1].style.fg, Some(Color::Red));
+        assert_eq!(spans[2].content.as_ref(), "␠");
+        assert_eq!(spans[2].style.fg, Some(Color::Red));
+        assert_eq!(spans[3].content.as_ref(), "r");
+        assert_eq!(spans[3].style.fg, Some(Color::Red));
+        assert_eq!(spans[6].content.as_ref(), "d");
+        assert_eq!(spans[6].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn racer_marker_pins_to_first_typo() {
+        let track = track(&["fox", "road"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(Instant::now());
+        player.input = "fa road".to_string();
+        player.typo_index = Some(1);
+
+        assert_eq!(window.racer_marker_start_for_player(&player, 3), 0);
     }
 
     #[test]
