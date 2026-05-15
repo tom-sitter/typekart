@@ -605,7 +605,8 @@ fn track_view<'a>(
     let width = usize::from(area_width.saturating_sub(2)).max(1);
     let current_word_index = local.map(|player| player.word_index).unwrap_or(0);
     let window = NetworkTrackWindow::new(&snapshot.track_words, current_word_index, width);
-    let mut lines = vec![network_track_word_line(&window, local)];
+    let mut lines = network_bonus_lines(&window, snapshot);
+    lines.push(network_track_word_line(&window, local));
     lines.extend(network_racer_lines(&window, state, snapshot));
     lines.push(network_minimap_line(state, snapshot, width));
 
@@ -918,6 +919,83 @@ fn network_track_word_line<'a>(
     }
 
     Line::from(spans)
+}
+
+fn network_bonus_lines<'a>(
+    window: &NetworkTrackWindow<'_>,
+    snapshot: &'a RaceSnapshot,
+) -> Vec<Line<'a>> {
+    let Some(point) = visible_network_bonus_point(window, snapshot) else {
+        return vec![Line::from(""), Line::from(""), Line::from("")];
+    };
+
+    (0..3)
+        .map(|choice_index| {
+            let Some(choice) = point.choices.get(choice_index) else {
+                return Line::from("");
+            };
+            let text = match choice.status {
+                super::protocol::BonusChoiceSnapshotStatus::Available => choice.word.clone(),
+                super::protocol::BonusChoiceSnapshotStatus::Cooldown { .. } => "---".to_string(),
+            };
+            let start = network_bonus_column(window, point.after_word_index, text.chars().count());
+            Line::from(vec![
+                Span::raw(" ".repeat(start)),
+                Span::styled(
+                    text,
+                    match choice.status {
+                        super::protocol::BonusChoiceSnapshotStatus::Available => {
+                            Style::default().fg(Color::Magenta)
+                        }
+                        super::protocol::BonusChoiceSnapshotStatus::Cooldown { .. } => {
+                            Style::default().fg(Color::DarkGray)
+                        }
+                    },
+                ),
+            ])
+        })
+        .collect()
+}
+
+fn visible_network_bonus_point<'a>(
+    window: &NetworkTrackWindow<'_>,
+    snapshot: &'a RaceSnapshot,
+) -> Option<&'a super::protocol::BonusPointSnapshot> {
+    let first_visible = window.words.first()?.index;
+    let last_visible = window.words.last()?.index;
+
+    snapshot
+        .bonuses
+        .iter()
+        .filter(|point| point.after_word_index >= first_visible)
+        .filter(|point| point.after_word_index.saturating_add(1) <= last_visible)
+        .min_by_key(|point| point.after_word_index)
+}
+
+fn network_bonus_column(
+    window: &NetworkTrackWindow<'_>,
+    after_word_index: usize,
+    word_width: usize,
+) -> usize {
+    let Some(before_word) = window
+        .words
+        .iter()
+        .find(|word| word.index == after_word_index)
+    else {
+        return 0;
+    };
+    let Some(after_word) = window
+        .words
+        .iter()
+        .find(|word| word.index == after_word_index + 1)
+    else {
+        return 0;
+    };
+
+    let center = (before_word.end_col + after_word.start_col) / 2;
+    center
+        .saturating_sub(word_width / 2)
+        .min(window.width.saturating_sub(word_width))
 }
 
 fn network_word_char_style(
@@ -1238,7 +1316,12 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 mod tests {
     use super::{
         AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, PlayerId, PlayerSnapshot,
-        display_word_number, network_minimap_column, stream_index_for_word_char,
+        display_word_number, network_bonus_column, network_minimap_column,
+        stream_index_for_word_char, visible_network_bonus_point,
+    };
+    use crate::net::protocol::{
+        BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, NetworkRacePhase,
+        RaceSnapshot,
     };
 
     #[test]
@@ -1297,6 +1380,25 @@ mod tests {
     }
 
     #[test]
+    fn network_bonus_point_is_visible_when_gap_words_are_visible() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 0, 20);
+        let snapshot = snapshot_with_bonus(0);
+
+        let point = visible_network_bonus_point(&window, &snapshot).unwrap();
+
+        assert_eq!(point.after_word_index, 0);
+    }
+
+    #[test]
+    fn network_bonus_column_aligns_between_gap_words() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 0, 20);
+
+        assert_eq!(network_bonus_column(&window, 0, 4), 1);
+    }
+
+    #[test]
     fn display_word_number_clamps_finished_player_to_track_length() {
         let player = player(PlayerId(1), 3, "", None, true);
 
@@ -1323,6 +1425,23 @@ mod tests {
             typo_index,
             finished,
             connected: true,
+        }
+    }
+
+    fn snapshot_with_bonus(after_word_index: usize) -> RaceSnapshot {
+        RaceSnapshot {
+            sequence: 1,
+            phase: NetworkRacePhase::Racing,
+            track_words: words(["one", "two", "three"]),
+            bonuses: vec![BonusPointSnapshot {
+                after_word_index,
+                choices: vec![BonusChoiceSnapshot {
+                    word: "dash".to_string(),
+                    status: BonusChoiceSnapshotStatus::Available,
+                }],
+            }],
+            players: Vec::new(),
+            events: Vec::new(),
         }
     }
 }

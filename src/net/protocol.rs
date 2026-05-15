@@ -86,8 +86,28 @@ pub struct RaceSnapshot {
     pub sequence: u64,
     pub phase: NetworkRacePhase,
     pub track_words: Vec<String>,
+    pub bonuses: Vec<BonusPointSnapshot>,
     pub players: Vec<PlayerSnapshot>,
     pub events: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BonusPointSnapshot {
+    pub after_word_index: usize,
+    pub choices: Vec<BonusChoiceSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BonusChoiceSnapshot {
+    pub word: String,
+    pub status: BonusChoiceSnapshotStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BonusChoiceSnapshotStatus {
+    Available,
+    Cooldown { remaining_ms: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,9 +152,10 @@ pub fn decode_server_message(line: &str) -> serde_json::Result<ServerMessage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AssignedColor, ClientMessage, ClientSequence, LobbyPlayer, NetworkRacePhase, PlayerId,
-        PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage, decode_client_message,
-        decode_server_message, encode_client_message, encode_server_message,
+        AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
+        ClientMessage, ClientSequence, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot,
+        ProtocolKey, RaceSnapshot, ServerMessage, decode_client_message, decode_server_message,
+        encode_client_message, encode_server_message,
     };
 
     #[test]
@@ -195,6 +216,13 @@ mod tests {
             sequence: 7,
             phase: NetworkRacePhase::Racing,
             track_words: vec!["one".to_string(), "two".to_string()],
+            bonuses: vec![BonusPointSnapshot {
+                after_word_index: 0,
+                choices: vec![BonusChoiceSnapshot {
+                    word: "boost".to_string(),
+                    status: BonusChoiceSnapshotStatus::Available,
+                }],
+            }],
             players: vec![PlayerSnapshot {
                 id: PlayerId(1),
                 name: "tom".to_string(),

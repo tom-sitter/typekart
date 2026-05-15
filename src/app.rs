@@ -67,6 +67,7 @@ pub fn host(
             bind,
             host_name: None,
             track,
+            word_list,
             max_players,
             ready_signal: Some(ready_sender),
             console_logging: false,

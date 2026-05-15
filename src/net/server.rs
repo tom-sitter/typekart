@@ -19,15 +19,17 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::game::{
+    bonus::{BonusChoiceStatus, BonusState},
     race::{PlayerColorId, RacePlayerId, RaceState},
-    track::Track,
+    track::{Track, WordList},
     typing::KeyAction,
 };
 
 use super::log::{SharedNetworkLog, push_network_log};
 use super::protocol::{
-    AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot,
-    ProtocolKey, RaceSnapshot, ServerMessage, decode_client_message, encode_server_message,
+    AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
+    ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey,
+    RaceSnapshot, ServerMessage, decode_client_message, encode_server_message,
 };
 
 const COLOR_ROTATION: [AssignedColor; 6] = [
@@ -63,6 +65,7 @@ pub struct HostConfig {
     pub bind: SocketAddr,
     pub host_name: Option<String>,
     pub track: Track,
+    pub word_list: WordList,
     pub max_players: usize,
     pub ready_signal: Option<Sender<SocketAddr>>,
     pub console_logging: bool,
@@ -78,6 +81,7 @@ struct HostState {
     players: Vec<LobbyPlayer>,
     clients: Vec<ConnectedClient>,
     race: RaceState,
+    bonuses: BonusState,
     phase: NetworkRacePhase,
     snapshot_sequence: u64,
     events: Vec<String>,
@@ -111,6 +115,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         ),
     );
 
+    let bonuses = BonusState::generate(&config.track, &config.word_list);
     let mut race = RaceState::new(config.track);
     let mut players = Vec::new();
     let mut next_player_id = 1;
@@ -135,6 +140,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         players,
         clients: Vec::new(),
         race,
+        bonuses,
         phase: NetworkRacePhase::WaitingForHost,
         snapshot_sequence: 0,
         events: Vec::new(),
@@ -649,7 +655,15 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
                 break;
             }
 
-            update_race_status(&mut state, Instant::now());
+            let now = Instant::now();
+            update_race_status(&mut state, now);
+            let expired_choices = expire_bonus_cooldowns(&mut state, now);
+            if expired_choices > 0 {
+                push_network_log(
+                    &state.debug_log,
+                    format!("bonus refreshed choices={expired_choices}"),
+                );
+            }
 
             if let Err(error) = broadcast_race_snapshot(&mut state) {
                 server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -681,6 +695,15 @@ fn push_event(state: &mut HostState, event: String) {
         let excess = state.events.len() - EVENT_LIMIT;
         state.events.drain(0..excess);
     }
+}
+
+fn expire_bonus_cooldowns(state: &mut HostState, now: Instant) -> usize {
+    let track = &state.race.track;
+    let expired = state.bonuses.expire_cooldowns(track, now);
+    if expired > 0 {
+        push_event(state, "Bonus refreshed".to_string());
+    }
+    expired
 }
 
 fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
@@ -868,11 +891,15 @@ fn player_name(state: &HostState, id: PlayerId) -> Option<String> {
 }
 
 fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
+    let now = Instant::now();
+    expire_bonus_cooldowns(state, now);
+
     state.snapshot_sequence += 1;
     RaceSnapshot {
         sequence: state.snapshot_sequence,
         phase: state.phase,
         track_words: state.race.track.words.clone(),
+        bonuses: build_bonus_snapshots(&state.bonuses, now),
         players: state
             .race
             .players
@@ -890,6 +917,35 @@ fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
             .collect(),
         events: state.events.clone(),
     }
+}
+
+fn build_bonus_snapshots(bonuses: &BonusState, now: Instant) -> Vec<BonusPointSnapshot> {
+    bonuses
+        .points
+        .iter()
+        .map(|point| BonusPointSnapshot {
+            after_word_index: point.after_word_index,
+            choices: point
+                .choices
+                .iter()
+                .map(|choice| BonusChoiceSnapshot {
+                    word: choice.word.clone(),
+                    status: match choice.status {
+                        BonusChoiceStatus::Available => BonusChoiceSnapshotStatus::Available,
+                        BonusChoiceStatus::Cooldown { until } if until <= now => {
+                            BonusChoiceSnapshotStatus::Available
+                        }
+                        BonusChoiceStatus::Cooldown { until } => {
+                            BonusChoiceSnapshotStatus::Cooldown {
+                                remaining_ms: until.saturating_duration_since(now).as_millis()
+                                    as u64,
+                            }
+                        }
+                    },
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 fn protocol_key_to_action(key: ProtocolKey) -> KeyAction {
@@ -953,6 +1009,7 @@ mod tests {
         update_host_ready, update_race_status, welcome_joiner,
     };
     use crate::game::{
+        bonus::{BonusChoice, BonusPoint, BonusState},
         race::{PlayerColorId, RacePlayerId, RaceState},
         track::Track,
         typing::KeyAction,
@@ -1010,6 +1067,7 @@ mod tests {
                 }],
                 players: test_players(false),
                 race: test_race_state(),
+                bonuses: test_bonus_state(),
                 phase: NetworkRacePhase::WaitingForHost,
                 snapshot_sequence: 0,
                 events: Vec::new(),
@@ -1059,6 +1117,7 @@ mod tests {
                 }],
                 players: test_players(false),
                 race: test_race_state(),
+                bonuses: test_bonus_state(),
                 phase: NetworkRacePhase::WaitingForHost,
                 snapshot_sequence: 0,
                 events: Vec::new(),
@@ -1134,6 +1193,7 @@ mod tests {
                 connected: true,
             }],
             race: test_race_state(),
+            bonuses: test_bonus_state(),
             phase: NetworkRacePhase::WaitingForHost,
             snapshot_sequence: 0,
             events: Vec::new(),
@@ -1166,6 +1226,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            bonuses: test_bonus_state(),
             phase: NetworkRacePhase::Countdown {
                 remaining_seconds: 3,
             },
@@ -1189,6 +1250,9 @@ mod tests {
         assert_eq!(snapshot.sequence, 1);
         assert_eq!(snapshot.players.len(), 2);
         assert_eq!(snapshot.track_words, vec!["one", "two"]);
+        assert_eq!(snapshot.bonuses.len(), 1);
+        assert_eq!(snapshot.bonuses[0].after_word_index, 0);
+        assert_eq!(snapshot.bonuses[0].choices[0].word, "dash");
         assert_eq!(snapshot.events, vec!["Countdown started"]);
     }
 
@@ -1198,6 +1262,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            bonuses: test_bonus_state(),
             phase: NetworkRacePhase::Racing,
             snapshot_sequence: 0,
             events: Vec::new(),
@@ -1235,6 +1300,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            bonuses: test_bonus_state(),
             phase: NetworkRacePhase::Racing,
             snapshot_sequence: 0,
             events: Vec::new(),
@@ -1265,6 +1331,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            bonuses: test_bonus_state(),
             phase: NetworkRacePhase::Racing,
             snapshot_sequence: 0,
             events: Vec::new(),
@@ -1292,6 +1359,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            bonuses: test_bonus_state(),
             phase: NetworkRacePhase::Finished,
             snapshot_sequence: 0,
             events: Vec::new(),
@@ -1342,6 +1410,20 @@ mod tests {
         race.add_player(RacePlayerId(1), "host", PlayerColorId::Cyan, now);
         race.add_player(RacePlayerId(2), "alex", PlayerColorId::Red, now);
         race
+    }
+
+    fn test_bonus_state() -> BonusState {
+        BonusState::with_points(
+            vec![BonusPoint::new(
+                0,
+                [
+                    BonusChoice::available("dash"),
+                    BonusChoice::available("drift"),
+                    BonusChoice::available("spark"),
+                ],
+            )],
+            vec!["dash".to_string(), "drift".to_string(), "spark".to_string()],
+        )
     }
 
     fn finish_player(state: &mut HostState, id: RacePlayerId, now: std::time::Instant) {

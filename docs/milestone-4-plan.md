@@ -51,15 +51,18 @@ Implemented:
 - Local host-as-client architecture for the `host` command.
 - Host countdown start from the shared network UI with `Space` or `start`.
 - Network race screen with a windowed track, per-racer lanes, on-track typo coloring, and a minimap.
+- Server-owned bonus state with shared bonus choices and cooldown refresh.
+- Race snapshots containing bonus point choices and cooldown state.
+- Network race screen bonus lanes rendered from server snapshots.
 - Fixed-rate race snapshot broadcast loop at 20 snapshots per second while racing.
 - `--debug-log` support for `host` and `join`.
 - Network diagnostics for joins, readiness, countdown, key input, sampled snapshots, finish order, results, and disconnects.
 
 Not implemented yet:
 
-- Full local-play-equivalent network track rendering, including bonus lanes and item effect cues.
-- Server-owned bonus state.
+- Network bonus claiming from typed input.
 - Server-owned multiplayer item resolution.
+- Network item effect cues.
 
 Milestone 4 excludes:
 
@@ -129,7 +132,7 @@ After racing starts: character keys, Space, and Backspace are sent immediately
 Leave during network racing: Esc or Ctrl-C
 ```
 
-The network client now uses a focused Ratatui screen with a windowed track, racer lanes, typo coloring on the track, and a minimap. The next rendering slice should bring it closer to local `play` by adding bonus lanes and item effect cues once the server owns those systems.
+The network client now uses a focused Ratatui screen with a windowed track, shared bonus lanes, racer lanes, typo coloring on the track, and a minimap. The next gameplay slice is bonus claiming and server-owned item resolution.
 
 ## Proposed File Changes
 
@@ -271,20 +274,15 @@ For Milestone 4, every client can receive the same snapshot. Later, if bonus vis
 
 1. Host runs `typekart host`.
 2. App starts a TCP server bound to the requested address.
-3. Current implementation reads host lobby and race input directly from the host terminal.
+3. The `host` command starts a local client that connects to the server.
 4. Host appears in the lobby as a normal player.
 5. Other players join.
 6. Host marks ready.
-7. Host runs `start` to start countdown.
+7. Host presses `Space` or runs `start` to start countdown.
 8. Server broadcasts countdown snapshots.
 9. Race starts simultaneously for connected clients.
 
-Target later flow:
-
-1. Host process also starts a local client connected to its own server.
-2. Host presses Space to start countdown from the same raw terminal path used by joiners.
-
-This keeps the host code path closer to every other client path, but we have not moved to that architecture yet.
+The host uses the same protocol and raw racing input path as other clients. The main difference is that the host's local client is allowed to request the countdown.
 
 ## Current Network Race Flow
 
@@ -308,7 +306,7 @@ Then:
 ```text
 join> ready
 host> ready
-host> start
+host lobby: press Space or type start
 join racing input: type firstword, press Space, then keep typing
 ```
 
@@ -355,10 +353,11 @@ Implemented:
 - `RaceState`.
 - `RacePlayer`.
 - Server-style method for applying normal key input to one player.
+- Server-owned bonus state in the network host.
 
 Remaining:
 
-- Shared bonus state.
+- Moving bonus ownership fully into `RaceState`, if we choose that path.
 - Shared item resolution.
 - Shared finish order/race status.
 - Adapting local `LocalSession` to the shared state, if we choose that path.
@@ -412,11 +411,11 @@ Implemented:
 - Client receives lobby snapshots and race snapshots.
 - Client sends raw key-derived `KeyInput` after racing starts.
 - Client renders lobby/race snapshots in a focused Ratatui network screen.
-- Race screen includes a windowed track, local/remote racer lanes, on-track typo coloring, offscreen markers, and a minimap.
+- Race screen includes a windowed track, shared bonus lanes, local/remote racer lanes, on-track typo coloring, offscreen markers, and a minimap.
 
 Remaining:
 
-- Bonus/item rendering parity with local `play`.
+- Item rendering parity with local `play`.
 - Channels between input, network reader, and renderer.
 
 Deliverables:
@@ -445,10 +444,14 @@ Implemented:
 - Race ends after a post-first-place timeout.
 - Server broadcasts `RaceResults`.
 - Server broadcasts race snapshots at 20 snapshots per second while racing.
+- Server owns bonus choices and cooldown refresh.
+- Server includes bonus choice state in race snapshots.
 
 Remaining:
 
-- Bonus/item race UI.
+- Bonus claiming.
+- Item race UI.
+- Item resolution.
 
 Deliverables:
 

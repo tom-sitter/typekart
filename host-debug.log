@@ -1,0 +1,794 @@
++     0ms client connecting server=127.0.0.1:4000 name=host
++     0ms server listening addr=127.0.0.1:4000 max_players=2 words=20
++     0ms client sent hello
++     1ms host joined player=1 color=Cyan
++     1ms client welcomed player=1 color=Cyan
++     1ms client received lobby players=1 host=1
++  5063ms player2 joined player=2 color=Red
++  5064ms client received lobby players=2 host=1
++  8540ms client sent lobby command=ready
++  8541ms host ready=true
++  8541ms client received lobby players=2 host=1
++ 10545ms player2 ready=true
++ 10545ms client received lobby players=2 host=1
++ 15829ms client sent lobby command=start
++ 15829ms host requested countdown
++ 15829ms countdown started remaining=3
++ 15829ms broadcast snapshot seq=1 phase=countdown remaining=3
++ 15830ms client received snapshot seq=1 phase=countdown remaining=3
++ 16834ms countdown tick remaining=2
++ 16834ms broadcast snapshot seq=2 phase=countdown remaining=2
++ 16835ms client received snapshot seq=2 phase=countdown remaining=2
++ 17840ms countdown tick remaining=1
++ 17840ms broadcast snapshot seq=3 phase=countdown remaining=1
++ 17841ms client received snapshot seq=3 phase=countdown remaining=1
++ 18842ms race started
++ 19176ms input player=2 key=Char('d')
++ 19653ms broadcast snapshot seq=20 phase=racing
++ 19654ms client received snapshot seq=20 phase=racing
++ 20003ms input player=2 key=Char('t')
++ 20103ms input player=2 key=Char('e')
++ 20401ms input player=2 key=Char('n')
++ 20490ms input player=2 key=Char('d')
++ 20516ms broadcast snapshot seq=40 phase=racing
++ 20516ms client received snapshot seq=40 phase=racing
++ 20673ms input player=2 key=Char('e')
++ 20750ms input player=2 key=Char('r')
++ 20854ms input player=2 key=Space
++ 21209ms input player=2 key=Char('h')
++ 21298ms input player=2 key=Char('a')
++ 21311ms broadcast snapshot seq=60 phase=racing
++ 21311ms client received snapshot seq=60 phase=racing
++ 21772ms input player=2 key=Char('l')
++ 21915ms input player=2 key=Char('l')
++ 21989ms input player=2 key=Space
++ 22235ms broadcast snapshot seq=80 phase=racing
++ 22236ms client received snapshot seq=80 phase=racing
++ 22640ms input player=2 key=Char('p')
++ 23137ms input player=2 key=Char('e')
++ 23213ms broadcast snapshot seq=100 phase=racing
++ 23214ms client received snapshot seq=100 phase=racing
++ 23396ms input player=2 key=Char('n')
++ 23537ms input player=2 key=Char('c')
++ 23680ms input player=2 key=Char('i')
++ 23884ms input player=2 key=Char('l')
++ 23998ms input player=2 key=Space
++ 24032ms broadcast snapshot seq=120 phase=racing
++ 24032ms client received snapshot seq=120 phase=racing
++ 24195ms input player=2 key=Char('b')
++ 24309ms input player=2 key=Char('u')
++ 24437ms input player=2 key=Char('t')
++ 24625ms input player=2 key=Char('c')
++ 24770ms input player=2 key=Char('h')
++ 24840ms broadcast snapshot seq=140 phase=racing
++ 24840ms client received snapshot seq=140 phase=racing
++ 24949ms input player=2 key=Char('e')
++ 25049ms input player=2 key=Char('r')
++ 25126ms input player=2 key=Space
++ 25757ms broadcast snapshot seq=160 phase=racing
++ 25758ms client received snapshot seq=160 phase=racing
++ 26320ms input player=2 key=Backspace
++ 26781ms broadcast snapshot seq=180 phase=racing
++ 26782ms client received snapshot seq=180 phase=racing
++ 26821ms input player=2 key=Backspace
++ 26905ms input player=2 key=Backspace
++ 26987ms input player=2 key=Backspace
++ 27070ms input player=2 key=Backspace
++ 27151ms input player=2 key=Backspace
++ 27237ms input player=2 key=Backspace
++ 27317ms input player=2 key=Backspace
++ 27404ms input player=2 key=Backspace
++ 27423ms broadcast snapshot seq=200 phase=racing
++ 27424ms client received snapshot seq=200 phase=racing
++ 27486ms input player=2 key=Backspace
++ 27570ms input player=2 key=Backspace
++ 27651ms input player=2 key=Backspace
++ 27737ms input player=2 key=Backspace
++ 27820ms input player=2 key=Backspace
++ 27903ms input player=2 key=Backspace
++ 27988ms input player=2 key=Backspace
++ 28070ms input player=2 key=Backspace
++ 28070ms broadcast snapshot seq=220 phase=racing
++ 28070ms client received snapshot seq=220 phase=racing
++ 28153ms input player=2 key=Backspace
++ 28237ms input player=2 key=Backspace
++ 28323ms input player=2 key=Backspace
++ 28404ms input player=2 key=Backspace
++ 28487ms input player=2 key=Backspace
++ 28570ms input player=2 key=Backspace
++ 28653ms input player=2 key=Backspace
++ 28738ms input player=2 key=Backspace
++ 28738ms broadcast snapshot seq=240 phase=racing
++ 28739ms client received snapshot seq=240 phase=racing
++ 28817ms input player=2 key=Backspace
++ 28904ms input player=2 key=Backspace
++ 28984ms input player=2 key=Backspace
++ 29070ms input player=2 key=Backspace
++ 29153ms input player=2 key=Backspace
++ 29241ms input player=2 key=Backspace
++ 29320ms input player=2 key=Backspace
++ 29431ms broadcast snapshot seq=260 phase=racing
++ 29432ms client received snapshot seq=260 phase=racing
++ 29512ms input player=2 key=Char('t')
++ 29597ms input player=2 key=Char('e')
++ 29737ms input player=2 key=Char('n')
++ 29828ms input player=2 key=Char('d')
++ 29978ms input player=2 key=Char('e')
++ 30048ms input player=2 key=Char('r')
++ 30141ms input player=2 key=Space
++ 30141ms broadcast snapshot seq=280 phase=racing
++ 30141ms client received snapshot seq=280 phase=racing
++ 30758ms input player=2 key=Char('h')
++ 30859ms input player=2 key=Char('a')
++ 31003ms input player=2 key=Char('l')
++ 31061ms broadcast snapshot seq=300 phase=racing
++ 31062ms client received snapshot seq=300 phase=racing
++ 31145ms input player=2 key=Char('l')
++ 31222ms input player=2 key=Space
++ 31471ms input player=2 key=Char('p')
++ 31592ms input player=2 key=Char('e')
++ 31737ms input player=2 key=Char('n')
++ 31816ms input player=2 key=Char('c')
++ 31830ms broadcast snapshot seq=320 phase=racing
++ 31831ms client received snapshot seq=320 phase=racing
++ 31934ms input player=2 key=Char('i')
++ 32103ms input player=2 key=Char('l')
++ 32188ms input player=2 key=Space
++ 32405ms input player=2 key=Char('b')
++ 32480ms input player=2 key=Char('u')
++ 32601ms input player=2 key=Char('t')
++ 32601ms broadcast snapshot seq=340 phase=racing
++ 32602ms client received snapshot seq=340 phase=racing
++ 32779ms input player=2 key=Char('c')
++ 32854ms input player=2 key=Char('h')
++ 32918ms input player=2 key=Char('e')
++ 32980ms input player=2 key=Char('r')
++ 33062ms input player=2 key=Space
++ 33385ms broadcast snapshot seq=360 phase=racing
++ 33385ms client received snapshot seq=360 phase=racing
++ 33395ms input player=2 key=Char('d')
++ 33670ms input player=2 key=Char('i')
++ 33795ms input player=2 key=Char('s')
++ 33974ms input player=2 key=Char('p')
++ 34195ms input player=2 key=Char('a')
++ 34196ms broadcast snapshot seq=380 phase=racing
++ 34197ms client received snapshot seq=380 phase=racing
++ 34696ms input player=2 key=Space
++ 35227ms broadcast snapshot seq=400 phase=racing
++ 35227ms client received snapshot seq=400 phase=racing
++ 35462ms input player=2 key=Space
++ 36023ms input player=2 key=Backspace
++ 36187ms input player=2 key=Backspace
++ 36187ms broadcast snapshot seq=420 phase=racing
++ 36188ms client received snapshot seq=420 phase=racing
++ 36387ms input player=2 key=Char('t')
++ 36570ms input player=2 key=Char('c')
++ 36645ms input player=2 key=Char('h')
++ 36728ms input player=2 key=Space
++ 37023ms broadcast snapshot seq=440 phase=racing
++ 37024ms client received snapshot seq=440 phase=racing
++ 37049ms input player=2 key=Char('i')
++ 37145ms input player=2 key=Char('r')
++ 37286ms input player=2 key=Char('r')
++ 37331ms input player=2 key=Char('e')
++ 37487ms input player=2 key=Char('g')
++ 37571ms input player=2 key=Char('u')
++ 37754ms input player=2 key=Char('l')
++ 37754ms broadcast snapshot seq=460 phase=racing
++ 37755ms client received snapshot seq=460 phase=racing
++ 37832ms input player=2 key=Char('a')
++ 37909ms input player=2 key=Char('r')
++ 38011ms input player=2 key=Space
++ 38375ms input player=2 key=Char('t')
++ 38518ms input player=2 key=Char('u')
++ 38551ms broadcast snapshot seq=480 phase=racing
++ 38552ms client received snapshot seq=480 phase=racing
++ 38640ms input player=2 key=Char('b')
++ 38760ms input player=2 key=Char('e')
++ 38838ms input player=2 key=Space
++ 39224ms input player=2 key=Char('t')
++ 39408ms broadcast snapshot seq=500 phase=racing
++ 39408ms client received snapshot seq=500 phase=racing
++ 39659ms input player=2 key=Backspace
++ 39703ms input player=2 key=Char('g')
++ 39913ms input player=2 key=Char('r')
++ 40058ms input player=2 key=Char('e')
++ 40252ms input player=2 key=Char('e')
++ 40252ms broadcast snapshot seq=520 phase=racing
++ 40253ms client received snapshot seq=520 phase=racing
++ 40591ms input player=2 key=Char('d')
++ 40782ms input player=2 key=Char('y')
++ 40905ms input player=2 key=Space
++ 41128ms broadcast snapshot seq=540 phase=racing
++ 41128ms client received snapshot seq=540 phase=racing
++ 41711ms input player=2 key=Char('p')
++ 41893ms input player=2 key=Char('l')
++ 42049ms input player=2 key=Char('a')
++ 42053ms broadcast snapshot seq=560 phase=racing
++ 42054ms client received snapshot seq=560 phase=racing
++ 42196ms input player=2 key=Char('y')
++ 42760ms input player=2 key=Char('e')
++ 42847ms input player=2 key=Char('r')
++ 42950ms input player=2 key=Space
++ 42950ms broadcast snapshot seq=580 phase=racing
++ 42950ms client received snapshot seq=580 phase=racing
++ 44016ms broadcast snapshot seq=600 phase=racing
++ 44016ms client received snapshot seq=600 phase=racing
++ 44553ms input player=2 key=Char('a')
++ 44637ms input player=2 key=Char('c')
++ 44991ms broadcast snapshot seq=620 phase=racing
++ 44991ms client received snapshot seq=620 phase=racing
++ 45796ms input player=2 key=Space
++ 46021ms broadcast snapshot seq=640 phase=racing
++ 46022ms client received snapshot seq=640 phase=racing
++ 46657ms input player=2 key=Backspace
++ 46814ms input player=2 key=Char('t')
++ 46941ms input player=2 key=Char('i')
++ 46941ms broadcast snapshot seq=660 phase=racing
++ 46941ms client received snapshot seq=660 phase=racing
++ 47038ms input player=2 key=Char('v')
++ 47151ms input player=2 key=Char('i')
++ 47291ms input player=2 key=Char('t')
++ 47483ms input player=2 key=Char('y')
++ 47587ms input player=2 key=Space
++ 47758ms broadcast snapshot seq=680 phase=racing
++ 47759ms client received snapshot seq=680 phase=racing
++ 48836ms broadcast snapshot seq=700 phase=racing
++ 48836ms client received snapshot seq=700 phase=racing
++ 49911ms broadcast snapshot seq=720 phase=racing
++ 49912ms client received snapshot seq=720 phase=racing
++ 50993ms broadcast snapshot seq=740 phase=racing
++ 50994ms client received snapshot seq=740 phase=racing
++ 51755ms input player=2 key=Char('k')
++ 51886ms input player=2 key=Char('i')
++ 51969ms broadcast snapshot seq=760 phase=racing
++ 51970ms client received snapshot seq=760 phase=racing
++ 52083ms input player=2 key=Char('n')
++ 52992ms broadcast snapshot seq=780 phase=racing
++ 52992ms client received snapshot seq=780 phase=racing
++ 54078ms broadcast snapshot seq=800 phase=racing
++ 54078ms client received snapshot seq=800 phase=racing
++ 55155ms broadcast snapshot seq=820 phase=racing
++ 55156ms client received snapshot seq=820 phase=racing
++ 56230ms input player=2 key=Char('d')
++ 56230ms broadcast snapshot seq=840 phase=racing
++ 56231ms client received snapshot seq=840 phase=racing
++ 57279ms broadcast snapshot seq=860 phase=racing
++ 57280ms client received snapshot seq=860 phase=racing
++ 58025ms input player=2 key=Space
++ 58310ms broadcast snapshot seq=880 phase=racing
++ 58311ms client received snapshot seq=880 phase=racing
++ 58854ms input player=2 key=Char('w')
++ 58943ms input player=2 key=Char('a')
++ 59052ms input player=2 key=Char('s')
++ 59223ms broadcast snapshot seq=900 phase=racing
++ 59224ms client received snapshot seq=900 phase=racing
++ 59281ms input player=2 key=Char('t')
++ 59874ms input player=2 key=Char('e')
++ 60041ms input player=2 key=Char('f')
++ 60137ms input player=2 key=Char('u')
++ 60137ms broadcast snapshot seq=920 phase=racing
++ 60138ms client received snapshot seq=920 phase=racing
++ 60332ms input player=2 key=Char('l')
++ 60490ms input player=2 key=Space
++ 60625ms input player=2 key=Char('o')
++ 60775ms input player=2 key=Char('v')
++ 60920ms input player=2 key=Char('e')
++ 60920ms broadcast snapshot seq=940 phase=racing
++ 60921ms client received snapshot seq=940 phase=racing
++ 61011ms input player=2 key=Char('r')
++ 61097ms input player=2 key=Space
++ 61853ms input player=2 key=Char('f')
++ 61853ms broadcast snapshot seq=960 phase=racing
++ 61853ms client received snapshot seq=960 phase=racing
++ 61938ms input player=2 key=Char('l')
++ 62102ms input player=2 key=Char('o')
++ 62271ms input player=2 key=Char('a')
++ 62334ms input player=2 key=Char('s')
++ 62476ms input player=2 key=Char('t')
++ 62566ms input player=2 key=Space
++ 62566ms broadcast snapshot seq=980 phase=racing
++ 62566ms client received snapshot seq=980 phase=racing
++ 63358ms input player=2 key=Backspace
++ 63499ms input player=2 key=Char('t')
++ 63542ms broadcast snapshot seq=1000 phase=racing
++ 63543ms client received snapshot seq=1000 phase=racing
++ 64618ms broadcast snapshot seq=1020 phase=racing
++ 64619ms client received snapshot seq=1020 phase=racing
++ 65698ms broadcast snapshot seq=1040 phase=racing
++ 65699ms client received snapshot seq=1040 phase=racing
++ 66841ms broadcast snapshot seq=1060 phase=racing
++ 66841ms client received snapshot seq=1060 phase=racing
++ 67907ms broadcast snapshot seq=1080 phase=racing
++ 67908ms client received snapshot seq=1080 phase=racing
++ 68995ms broadcast snapshot seq=1100 phase=racing
++ 68995ms client received snapshot seq=1100 phase=racing
++ 70074ms broadcast snapshot seq=1120 phase=racing
++ 70075ms client received snapshot seq=1120 phase=racing
++ 71161ms broadcast snapshot seq=1140 phase=racing
++ 71162ms client received snapshot seq=1140 phase=racing
++ 72238ms broadcast snapshot seq=1160 phase=racing
++ 72238ms client received snapshot seq=1160 phase=racing
++ 73319ms broadcast snapshot seq=1180 phase=racing
++ 73320ms client received snapshot seq=1180 phase=racing
++ 74406ms broadcast snapshot seq=1200 phase=racing
++ 74408ms client received snapshot seq=1200 phase=racing
++ 75496ms broadcast snapshot seq=1220 phase=racing
++ 75496ms client received snapshot seq=1220 phase=racing
++ 76583ms broadcast snapshot seq=1240 phase=racing
++ 76584ms client received snapshot seq=1240 phase=racing
++ 77673ms broadcast snapshot seq=1260 phase=racing
++ 77673ms client received snapshot seq=1260 phase=racing
++ 78762ms broadcast snapshot seq=1280 phase=racing
++ 78762ms client received snapshot seq=1280 phase=racing
++ 79850ms broadcast snapshot seq=1300 phase=racing
++ 79851ms client received snapshot seq=1300 phase=racing
++ 80927ms broadcast snapshot seq=1320 phase=racing
++ 80927ms client received snapshot seq=1320 phase=racing
++ 82000ms broadcast snapshot seq=1340 phase=racing
++ 82001ms client received snapshot seq=1340 phase=racing
++ 83080ms broadcast snapshot seq=1360 phase=racing
++ 83080ms client received snapshot seq=1360 phase=racing
++ 84155ms broadcast snapshot seq=1380 phase=racing
++ 84155ms client received snapshot seq=1380 phase=racing
++ 85242ms broadcast snapshot seq=1400 phase=racing
++ 85243ms client received snapshot seq=1400 phase=racing
++ 86320ms broadcast snapshot seq=1420 phase=racing
++ 86320ms client received snapshot seq=1420 phase=racing
++ 87397ms broadcast snapshot seq=1440 phase=racing
++ 87397ms client received snapshot seq=1440 phase=racing
++ 88475ms broadcast snapshot seq=1460 phase=racing
++ 88475ms client received snapshot seq=1460 phase=racing
++ 89566ms broadcast snapshot seq=1480 phase=racing
++ 89566ms client received snapshot seq=1480 phase=racing
++ 90632ms broadcast snapshot seq=1500 phase=racing
++ 90632ms client received snapshot seq=1500 phase=racing
++ 91527ms input player=2 key=Backspace
++ 91651ms broadcast snapshot seq=1520 phase=racing
++ 91651ms client received snapshot seq=1520 phase=racing
++ 91766ms input player=2 key=Char('t')
++ 92166ms input player=2 key=Space
++ 92577ms input player=2 key=Backspace
++ 92577ms broadcast snapshot seq=1540 phase=racing
++ 92578ms client received snapshot seq=1540 phase=racing
++ 92724ms input player=2 key=Backspace
++ 92903ms input player=2 key=Backspace
++ 93561ms broadcast snapshot seq=1560 phase=racing
++ 93561ms client received snapshot seq=1560 phase=racing
++ 94155ms input player=2 key=Char('t')
++ 94456ms input player=2 key=Backspace
++ 94521ms broadcast snapshot seq=1580 phase=racing
++ 94522ms client received snapshot seq=1580 phase=racing
++ 94607ms input player=2 key=Backspace
++ 94763ms input player=2 key=Backspace
++ 95499ms broadcast snapshot seq=1600 phase=racing
++ 95499ms client received snapshot seq=1600 phase=racing
++ 95549ms input player=2 key=Char('a')
++ 95712ms input player=2 key=Char('t')
++ 95841ms input player=2 key=Space
++ 96425ms broadcast snapshot seq=1620 phase=racing
++ 96425ms client received snapshot seq=1620 phase=racing
++ 96521ms input player=2 key=Char('f')
++ 96590ms input player=2 key=Char('l')
++ 96770ms input player=2 key=Char('u')
++ 96899ms input player=2 key=Char('t')
++ 96979ms input player=2 key=Char('e')
++ 97049ms input player=2 key=Space
++ 97179ms broadcast snapshot seq=1640 phase=racing
++ 97179ms client received snapshot seq=1640 phase=racing
++ 97949ms input player=2 key=Char('g')
++ 98041ms input player=2 key=Char('o')
++ 98155ms broadcast snapshot seq=1660 phase=racing
++ 98156ms client received snapshot seq=1660 phase=racing
++ 98212ms input player=2 key=Char('v')
++ 98354ms input player=2 key=Char('e')
++ 98429ms input player=2 key=Char('r')
++ 98511ms input player=2 key=Char('n')
++ 98682ms input player=2 key=Char('m')
++ 98797ms input player=2 key=Char('e')
++ 98906ms broadcast snapshot seq=1680 phase=racing
++ 98907ms client received snapshot seq=1680 phase=racing
++ 98919ms input player=2 key=Char('n')
++ 99037ms input player=2 key=Char('t')
++ 99116ms input player=2 key=Space
++ 99391ms input player=2 key=Char('a')
++ 99453ms input player=2 key=Char('r')
++ 99613ms input player=2 key=Char('g')
++ 99661ms broadcast snapshot seq=1700 phase=racing
++ 99662ms client received snapshot seq=1700 phase=racing
++ 99686ms input player=2 key=Char('u')
++ 99791ms input player=2 key=Char('e')
++ 99871ms input player=2 key=Space
++100529ms input player=2 key=Char('t')
++100529ms broadcast snapshot seq=1720 phase=racing
++100530ms client received snapshot seq=1720 phase=racing
++100688ms input player=2 key=Char('r')
++100840ms input player=2 key=Char('r')
++100965ms input player=2 key=Char('s')
++101405ms input player=2 key=Backspace
++101405ms broadcast snapshot seq=1740 phase=racing
++101405ms client received snapshot seq=1740 phase=racing
++101599ms input player=2 key=Backspace
++101672ms input player=2 key=Char('e')
++101720ms input player=2 key=Char('s')
++101887ms input player=2 key=Char('t')
++102007ms input player=2 key=Char('u')
++102087ms input player=2 key=Char('r')
++102141ms broadcast snapshot seq=1760 phase=racing
++102141ms client received snapshot seq=1760 phase=racing
++102147ms input player=2 key=Char('e')
++102224ms input player=2 key=Space
++102545ms input player=2 key=Backspace
++102691ms input player=2 key=Backspace
++102853ms input player=2 key=Char('y')
++102871ms input player=2 key=Char('r')
++102893ms broadcast snapshot seq=1780 phase=racing
++102894ms client received snapshot seq=1780 phase=racing
++103186ms input player=2 key=Backspace
++103330ms input player=2 key=Backspace
++103479ms input player=2 key=Backspace
++103615ms input player=2 key=Backspace
++103750ms broadcast snapshot seq=1800 phase=racing
++103751ms client received snapshot seq=1800 phase=racing
++103799ms input player=2 key=Backspace
++103965ms input player=2 key=Backspace
++104174ms input player=2 key=Char('a')
++104234ms input player=2 key=Char('s')
++104540ms input player=2 key=Char('t')
++104554ms broadcast snapshot seq=1820 phase=racing
++104554ms client received snapshot seq=1820 phase=racing
++104704ms input player=2 key=Char('u')
++104802ms input player=2 key=Char('r')
++104887ms input player=2 key=Char('y')
++104972ms input player=2 key=Space
++105268ms input player=2 key=Backspace
++105366ms broadcast snapshot seq=1840 phase=racing
++105367ms client received snapshot seq=1840 phase=racing
++105415ms input player=2 key=Backspace
++105565ms input player=2 key=Backspace
++105718ms input player=2 key=Backspace
++105900ms input player=2 key=Backspace
++106228ms broadcast snapshot seq=1860 phase=racing
++106228ms client received snapshot seq=1860 phase=racing
++106890ms input player=2 key=Char('u')
++107013ms input player=2 key=Char('r')
++107104ms input player=2 key=Char('y')
++107157ms broadcast snapshot seq=1880 phase=racing
++107158ms client received snapshot seq=1880 phase=racing
++107192ms input player=2 key=Space
++108046ms input player=2 key=Char('c')
++108134ms broadcast snapshot seq=1900 phase=racing
++108134ms client received snapshot seq=1900 phase=racing
++108169ms input player=2 key=Char('o')
++108347ms input player=2 key=Char('n')
++108449ms input player=2 key=Char('v')
++108611ms input player=2 key=Char('i')
++108730ms input player=2 key=Char('c')
++108899ms input player=2 key=Char('t')
++108899ms broadcast snapshot seq=1920 phase=racing
++108899ms client received snapshot seq=1920 phase=racing
++108946ms input player=2 key=Char('i')
++109075ms input player=2 key=Char('o')
++109272ms input player=2 key=Char('n')
++109387ms input player=2 key=Space
++109736ms broadcast snapshot seq=1940 phase=racing
++109737ms client received snapshot seq=1940 phase=racing
++110140ms input player=2 key=Char('h')
++110752ms broadcast snapshot seq=1960 phase=racing
++110753ms client received snapshot seq=1960 phase=racing
++111580ms input player=2 key=Char('o')
++111732ms input player=2 key=Char('s')
++111732ms broadcast snapshot seq=1980 phase=racing
++111733ms client received snapshot seq=1980 phase=racing
++111811ms input player=2 key=Char('p')
++111987ms input player=2 key=Char('i')
++112080ms input player=2 key=Char('t')
++112183ms input player=2 key=Char('a')
++112270ms input player=2 key=Char('l')
++112271ms 1. player2 finished
++112387ms input player=2 key=Space
++112485ms broadcast snapshot seq=2000 phase=racing
++112485ms client received snapshot seq=2000 phase=racing
++113549ms broadcast snapshot seq=2020 phase=racing
++113550ms client received snapshot seq=2020 phase=racing
++114642ms broadcast snapshot seq=2040 phase=racing
++114643ms client received snapshot seq=2040 phase=racing
++115721ms broadcast snapshot seq=2060 phase=racing
++115722ms client received snapshot seq=2060 phase=racing
++115771ms client sent key_input seq=1 key=Char('t')
++115771ms input player=1 key=Char('t')
++115895ms client sent key_input seq=2 key=Char('e')
++115895ms input player=1 key=Char('e')
++116024ms client sent key_input seq=3 key=Char('n')
++116024ms input player=1 key=Char('n')
++116132ms client sent key_input seq=4 key=Char('d')
++116133ms input player=1 key=Char('d')
++116253ms client sent key_input seq=5 key=Char('e')
++116253ms input player=1 key=Char('e')
++116338ms client sent key_input seq=6 key=Char('r')
++116339ms input player=1 key=Char('r')
++116429ms client sent key_input seq=7 key=Space
++116429ms input player=1 key=Space
++116429ms broadcast snapshot seq=2080 phase=racing
++116430ms client received snapshot seq=2080 phase=racing
++116574ms client sent key_input seq=8 key=Char('h')
++116574ms input player=1 key=Char('h')
++116582ms client sent key_input seq=9 key=Char('g')
++116582ms input player=1 key=Char('g')
++116654ms client sent key_input seq=10 key=Char('a')
++116654ms input player=1 key=Char('a')
++116729ms client sent key_input seq=11 key=Char('l')
++116729ms input player=1 key=Char('l')
++116907ms client sent key_input seq=12 key=Char('l')
++116908ms input player=1 key=Char('l')
++117239ms broadcast snapshot seq=2100 phase=racing
++117240ms client received snapshot seq=2100 phase=racing
++117266ms client sent key_input seq=13 key=Backspace
++117266ms input player=1 key=Backspace
++117396ms client sent key_input seq=14 key=Backspace
++117397ms input player=1 key=Backspace
++117554ms client sent key_input seq=15 key=Backspace
++117554ms input player=1 key=Backspace
++117707ms client sent key_input seq=16 key=Backspace
++117707ms input player=1 key=Backspace
++117860ms client sent key_input seq=17 key=Backspace
++117860ms input player=1 key=Backspace
++117940ms client sent key_input seq=18 key=Char('a')
++117940ms input player=1 key=Char('a')
++117991ms broadcast snapshot seq=2120 phase=racing
++117992ms client received snapshot seq=2120 phase=racing
++118082ms client sent key_input seq=19 key=Char('l')
++118082ms input player=1 key=Char('l')
++118380ms client sent key_input seq=20 key=Backspace
++118380ms input player=1 key=Backspace
++118530ms client sent key_input seq=21 key=Backspace
++118530ms input player=1 key=Backspace
++118646ms client sent key_input seq=22 key=Char('g')
++118647ms input player=1 key=Char('g')
++118752ms client sent key_input seq=23 key=Char('a')
++118753ms input player=1 key=Char('a')
++118807ms broadcast snapshot seq=2140 phase=racing
++118808ms client received snapshot seq=2140 phase=racing
++118862ms client sent key_input seq=24 key=Char('l')
++118862ms input player=1 key=Char('l')
++118988ms client sent key_input seq=25 key=Char('l')
++118988ms input player=1 key=Char('l')
++119090ms client sent key_input seq=26 key=Space
++119091ms input player=1 key=Space
++119237ms client sent key_input seq=27 key=Char('p')
++119238ms input player=1 key=Char('p')
++119535ms client sent key_input seq=28 key=Backspace
++119536ms input player=1 key=Backspace
++119622ms broadcast snapshot seq=2160 phase=racing
++119623ms client received snapshot seq=2160 phase=racing
++119663ms client sent key_input seq=29 key=Backspace
++119664ms input player=1 key=Backspace
++119839ms client sent key_input seq=30 key=Backspace
++119839ms input player=1 key=Backspace
++119993ms client sent key_input seq=31 key=Backspace
++119993ms input player=1 key=Backspace
++120174ms client sent key_input seq=32 key=Backspace
++120174ms input player=1 key=Backspace
++120350ms client sent key_input seq=33 key=Backspace
++120350ms input player=1 key=Backspace
++120434ms broadcast snapshot seq=2180 phase=racing
++120435ms client received snapshot seq=2180 phase=racing
++120632ms client sent key_input seq=34 key=Char('h')
++120632ms input player=1 key=Char('h')
++120740ms client sent key_input seq=35 key=Char('a')
++120741ms input player=1 key=Char('a')
++120874ms client sent key_input seq=36 key=Char('l')
++120874ms input player=1 key=Char('l')
++121005ms client sent key_input seq=37 key=Char('l')
++121005ms input player=1 key=Char('l')
++121107ms client sent key_input seq=38 key=Space
++121107ms input player=1 key=Space
++121242ms broadcast snapshot seq=2200 phase=racing
++121243ms client received snapshot seq=2200 phase=racing
++121261ms client sent key_input seq=39 key=Char('p')
++121261ms input player=1 key=Char('p')
++121363ms client sent key_input seq=40 key=Char('e')
++121363ms input player=1 key=Char('e')
++121496ms client sent key_input seq=41 key=Char('n')
++121496ms input player=1 key=Char('n')
++121557ms client sent key_input seq=42 key=Char('c')
++121557ms input player=1 key=Char('c')
++121699ms client sent key_input seq=43 key=Char('i')
++121699ms input player=1 key=Char('i')
++121880ms client sent key_input seq=44 key=Char('l')
++121881ms input player=1 key=Char('l')
++121970ms client sent key_input seq=45 key=Space
++121970ms input player=1 key=Space
++121970ms broadcast snapshot seq=2220 phase=racing
++121970ms client received snapshot seq=2220 phase=racing
++122163ms client sent key_input seq=46 key=Char('b')
++122163ms input player=1 key=Char('b')
++122228ms client sent key_input seq=47 key=Char('u')
++122228ms input player=1 key=Char('u')
++122349ms client sent key_input seq=48 key=Char('t')
++122349ms input player=1 key=Char('t')
++122520ms client sent key_input seq=49 key=Char('c')
++122520ms input player=1 key=Char('c')
++122615ms client sent key_input seq=50 key=Char('h')
++122615ms input player=1 key=Char('h')
++122673ms client sent key_input seq=51 key=Char('e')
++122674ms input player=1 key=Char('e')
++122692ms broadcast snapshot seq=2240 phase=racing
++122693ms client received snapshot seq=2240 phase=racing
++122749ms client sent key_input seq=52 key=Char('r')
++122749ms input player=1 key=Char('r')
++122840ms client sent key_input seq=53 key=Space
++122841ms input player=1 key=Space
++122954ms client sent key_input seq=54 key=Char('d')
++122954ms input player=1 key=Char('d')
++123021ms client sent key_input seq=55 key=Char('i')
++123021ms input player=1 key=Char('i')
++123146ms client sent key_input seq=56 key=Char('s')
++123146ms input player=1 key=Char('s')
++123310ms client sent key_input seq=57 key=Char('p')
++123310ms input player=1 key=Char('p')
++123440ms client sent key_input seq=58 key=Char('a')
++123441ms input player=1 key=Char('a')
++123441ms broadcast snapshot seq=2260 phase=racing
++123441ms client received snapshot seq=2260 phase=racing
++123512ms client sent key_input seq=59 key=Char('t')
++123512ms input player=1 key=Char('t')
++123703ms client sent key_input seq=60 key=Char('c')
++123703ms input player=1 key=Char('c')
++123795ms client sent key_input seq=61 key=Char('h')
++123795ms input player=1 key=Char('h')
++123874ms client sent key_input seq=62 key=Space
++123874ms input player=1 key=Space
++124061ms client sent key_input seq=63 key=Char('i')
++124062ms input player=1 key=Char('i')
++124180ms client sent key_input seq=64 key=Char('r')
++124180ms input player=1 key=Char('r')
++124180ms broadcast snapshot seq=2280 phase=racing
++124181ms client received snapshot seq=2280 phase=racing
++124329ms client sent key_input seq=65 key=Char('r')
++124329ms input player=1 key=Char('r')
++124424ms client sent key_input seq=66 key=Char('e')
++124424ms input player=1 key=Char('e')
++124549ms client sent key_input seq=67 key=Char('g')
++124549ms input player=1 key=Char('g')
++124649ms client sent key_input seq=68 key=Char('u')
++124649ms input player=1 key=Char('u')
++124846ms client sent key_input seq=69 key=Char('l')
++124847ms input player=1 key=Char('l')
++124958ms broadcast snapshot seq=2300 phase=racing
++124958ms client received snapshot seq=2300 phase=racing
++124966ms client sent key_input seq=70 key=Char('a')
++124966ms input player=1 key=Char('a')
++125061ms client sent key_input seq=71 key=Char('r')
++125061ms input player=1 key=Char('r')
++125912ms broadcast snapshot seq=2320 phase=racing
++125912ms client received snapshot seq=2320 phase=racing
++126346ms client sent key_input seq=72 key=Space
++126346ms input player=1 key=Space
++126579ms client sent key_input seq=73 key=Char('t')
++126580ms input player=1 key=Char('t')
++126699ms client sent key_input seq=74 key=Char('u')
++126699ms input player=1 key=Char('u')
++126824ms client sent key_input seq=75 key=Char('b')
++126824ms input player=1 key=Char('b')
++126824ms broadcast snapshot seq=2340 phase=racing
++126824ms client received snapshot seq=2340 phase=racing
++126915ms client sent key_input seq=76 key=Char('e')
++126916ms input player=1 key=Char('e')
++126990ms client sent key_input seq=77 key=Space
++126990ms input player=1 key=Space
++127347ms client sent key_input seq=78 key=Char('g')
++127347ms input player=1 key=Char('g')
++127599ms client sent key_input seq=79 key=Char('r')
++127599ms input player=1 key=Char('r')
++127620ms client sent key_input seq=80 key=Char('e')
++127620ms input player=1 key=Char('e')
++127620ms broadcast snapshot seq=2360 phase=racing
++127621ms client received snapshot seq=2360 phase=racing
++127781ms client sent key_input seq=81 key=Char('e')
++127781ms input player=1 key=Char('e')
++127943ms client sent key_input seq=82 key=Char('d')
++127943ms input player=1 key=Char('d')
++128120ms client sent key_input seq=83 key=Char('y')
++128120ms input player=1 key=Char('y')
++128162ms client sent key_input seq=84 key=Space
++128163ms input player=1 key=Space
++128308ms client sent key_input seq=85 key=Char('p')
++128308ms input player=1 key=Char('p')
++128405ms broadcast snapshot seq=2380 phase=racing
++128405ms client received snapshot seq=2380 phase=racing
++128471ms client sent key_input seq=86 key=Char('l')
++128471ms input player=1 key=Char('l')
++128514ms client sent key_input seq=87 key=Char('a')
++128514ms input player=1 key=Char('a')
++128605ms client sent key_input seq=88 key=Char('y')
++128605ms input player=1 key=Char('y')
++128804ms client sent key_input seq=89 key=Char('e')
++128804ms input player=1 key=Char('e')
++128874ms client sent key_input seq=90 key=Char('r')
++128874ms input player=1 key=Char('r')
++128990ms client sent key_input seq=91 key=Space
++128990ms input player=1 key=Space
++129065ms client sent key_input seq=92 key=Char('a')
++129065ms input player=1 key=Char('a')
++129112ms broadcast snapshot seq=2400 phase=racing
++129112ms client received snapshot seq=2400 phase=racing
++129165ms client sent key_input seq=93 key=Char('c')
++129165ms input player=1 key=Char('c')
++129311ms client sent key_input seq=94 key=Char('t')
++129311ms input player=1 key=Char('t')
++129407ms client sent key_input seq=95 key=Char('i')
++129407ms input player=1 key=Char('i')
++129515ms client sent key_input seq=96 key=Char('v')
++129515ms input player=1 key=Char('v')
++129604ms client sent key_input seq=97 key=Char('i')
++129604ms input player=1 key=Char('i')
++129763ms client sent key_input seq=98 key=Char('t')
++129763ms input player=1 key=Char('t')
++129854ms client sent key_input seq=99 key=Char('y')
++129854ms input player=1 key=Char('y')
++129854ms broadcast snapshot seq=2420 phase=racing
++129855ms client received snapshot seq=2420 phase=racing
++129987ms client sent key_input seq=100 key=Space
++129988ms input player=1 key=Space
++130182ms client sent key_input seq=101 key=Char('k')
++130182ms input player=1 key=Char('k')
++130328ms client sent key_input seq=102 key=Char('i')
++130329ms input player=1 key=Char('i')
++130507ms client sent key_input seq=103 key=Char('n')
++130508ms input player=1 key=Char('n')
++130595ms client sent key_input seq=104 key=Char('d')
++130596ms input player=1 key=Char('d')
++130596ms broadcast snapshot seq=2440 phase=racing
++130596ms client received snapshot seq=2440 phase=racing
++130680ms client sent key_input seq=105 key=Space
++130680ms input player=1 key=Space
++131608ms broadcast snapshot seq=2460 phase=racing
++131609ms client received snapshot seq=2460 phase=racing
++131767ms client sent key_input seq=106 key=Char('e')
++131767ms input player=1 key=Char('e')
++131935ms client sent key_input seq=107 key=Char('a')
++131935ms input player=1 key=Char('a')
++131991ms client sent key_input seq=108 key=Char('s')
++131991ms input player=1 key=Char('s')
++132299ms client sent key_input seq=109 key=Backspace
++132299ms input player=1 key=Backspace
++132467ms broadcast snapshot seq=2480 phase=racing
++132467ms client received snapshot seq=2480 phase=racing
++132473ms client sent key_input seq=110 key=Backspace
++132473ms input player=1 key=Backspace
++133021ms client sent key_input seq=111 key=Backspace
++133022ms input player=1 key=Backspace
++133183ms client sent key_input seq=112 key=Char('w')
++133183ms input player=1 key=Char('w')
++133266ms client sent key_input seq=113 key=Char('a')
++133266ms input player=1 key=Char('a')
++133334ms broadcast snapshot seq=2500 phase=racing
++133335ms client received snapshot seq=2500 phase=racing
++133354ms client sent key_input seq=114 key=Char('s')
++133354ms input player=1 key=Char('s')
++133537ms client sent key_input seq=115 key=Char('t')
++133537ms input player=1 key=Char('t')
++133695ms client sent key_input seq=116 key=Char('e')
++133696ms input player=1 key=Char('e')
++133806ms client sent key_input seq=117 key=Char('f')
++133807ms input player=1 key=Char('f')
++133874ms client sent key_input seq=118 key=Char('u')
++133874ms input player=1 key=Char('u')
++134054ms client sent key_input seq=119 key=Char('l')
++134055ms input player=1 key=Char('l')
++134085ms broadcast snapshot seq=2520 phase=racing
++134086ms client received snapshot seq=2520 phase=racing
++134130ms client sent key_input seq=120 key=Space
++134131ms input player=1 key=Space
++135111ms broadcast snapshot seq=2540 phase=racing
++135111ms client received snapshot seq=2540 phase=racing
++136186ms broadcast snapshot seq=2560 phase=racing
++136186ms client received snapshot seq=2560 phase=racing
++136421ms client sent leave
++136421ms client left server
++136421ms host disconnected
++136422ms race finished all_connected_finished=true timeout_expired=false
++136422ms broadcast snapshot seq=2565 phase=finished
++136422ms broadcast race results placements=[PlayerId(2)]
++136422ms client disconnected from server
