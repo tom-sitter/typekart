@@ -8,7 +8,7 @@ mod game;
 mod net;
 mod ui;
 
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -43,6 +43,27 @@ enum Command {
         /// Write detailed run diagnostics to this file after the race session exits.
         #[arg(long)]
         debug_log: Option<PathBuf>,
+    },
+    /// Host a local-network multiplayer lobby.
+    Host {
+        /// Display name for the host player.
+        #[arg(long)]
+        name: String,
+        /// Address and port to listen on.
+        #[arg(long, default_value = "127.0.0.1:4000")]
+        bind: SocketAddr,
+        /// Maximum total players, including the host.
+        #[arg(long, default_value_t = 6)]
+        max_players: usize,
+    },
+    /// Join a local-network multiplayer lobby.
+    Join {
+        /// Display name for this player.
+        #[arg(long)]
+        name: String,
+        /// Host address and port to connect to.
+        #[arg(long)]
+        server: SocketAddr,
     },
 }
 
@@ -82,5 +103,11 @@ fn main() -> Result<()> {
             },
             debug_log,
         ),
+        Command::Host {
+            name,
+            bind,
+            max_players,
+        } => app::host(bind, name, max_players),
+        Command::Join { name, server } => app::join(server, name),
     }
 }

@@ -3,7 +3,7 @@
 //! This module wires together word loading, track generation, player state, and
 //! the terminal session. It intentionally avoids owning the rules themselves.
 
-use std::{path::PathBuf, time::Instant};
+use std::{net::SocketAddr, path::PathBuf, time::Instant};
 
 use anyhow::{Context, Result};
 
@@ -11,6 +11,10 @@ use crate::game::{
     ai::AiDifficulty,
     player::PlayerState,
     track::{Track, WordList},
+};
+use crate::net::{
+    client::{JoinConfig, run_join},
+    server::{HostConfig, run_host},
 };
 use crate::ui::{render::IconMode, terminal::run_typing_session};
 
@@ -34,4 +38,16 @@ pub fn play(
         icon_mode,
         debug_log,
     )
+}
+
+pub fn host(bind: SocketAddr, name: String, max_players: usize) -> Result<()> {
+    run_host(HostConfig {
+        bind,
+        host_name: name,
+        max_players,
+    })
+}
+
+pub fn join(server: SocketAddr, name: String) -> Result<()> {
+    run_join(JoinConfig { server, name })
 }

@@ -15,6 +15,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub struct RacePlayerId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,7 @@ pub const PLAYER_COLOR_ROTATION: [PlayerColorId; 6] = [
 ];
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RacePlayer {
     pub id: RacePlayerId,
     pub name: String,
@@ -48,11 +50,13 @@ pub struct RacePlayer {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RaceState {
     pub track: Track,
     pub players: Vec<RacePlayer>,
 }
 
+#[allow(dead_code)]
 impl RaceState {
     pub fn new(track: Track) -> Self {
         Self {
