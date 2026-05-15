@@ -51,14 +51,15 @@ Implemented:
 - Local host-as-client architecture for the `host` command.
 - Host countdown start from the shared network UI with `Space` or `start`.
 - Network race screen with a windowed track, per-racer lanes, on-track typo coloring, and a minimap.
+- Fixed-rate race snapshot broadcast loop at 20 snapshots per second while racing.
+- `--debug-log` support for `host` and `join`.
+- Network diagnostics for joins, readiness, countdown, key input, sampled snapshots, finish order, results, and disconnects.
 
 Not implemented yet:
 
 - Full local-play-equivalent network track rendering, including bonus lanes and item effect cues.
-- Fixed-rate race snapshot broadcast loop.
 - Server-owned bonus state.
 - Server-owned multiplayer item resolution.
-- Network debug-log file support.
 
 Milestone 4 excludes:
 
@@ -118,8 +119,6 @@ Useful debug option on both:
 ```sh
 --debug-log typekart-debug.log
 ```
-
-`--debug-log` is planned but is not implemented for `host` or `join` yet.
 
 Current network controls:
 
@@ -445,10 +444,10 @@ Implemented:
 - Race ends when all connected racers finish.
 - Race ends after a post-first-place timeout.
 - Server broadcasts `RaceResults`.
+- Server broadcasts race snapshots at 20 snapshots per second while racing.
 
 Remaining:
 
-- Fixed-rate snapshot loop.
 - Bonus/item race UI.
 
 Deliverables:
@@ -491,9 +490,9 @@ Add enough logging and tests to make local network bugs diagnosable.
 
 Deliverables:
 
-- `--debug-log` works for host and join.
-- Server log includes joins, disconnects, inputs, snapshots, item targeting, and finish events.
-- Client log includes sent inputs, received snapshots, and connection errors.
+- `--debug-log` works for host and join. Implemented.
+- Server log includes joins, disconnects, inputs, sampled snapshots, results, and finish events. Item targeting will be added when server-owned items are implemented.
+- Client log includes sent inputs, received snapshots, and connection errors. Implemented.
 - Basic handling for a disconnected client.
 
 ## Testing Strategy

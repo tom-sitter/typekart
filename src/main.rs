@@ -58,6 +58,9 @@ enum Command {
         /// Maximum total players, including the host.
         #[arg(long, default_value_t = 6)]
         max_players: usize,
+        /// Write detailed network diagnostics to this file after the session exits.
+        #[arg(long)]
+        debug_log: Option<PathBuf>,
     },
     /// Join a local-network multiplayer lobby.
     Join {
@@ -67,6 +70,9 @@ enum Command {
         /// Host address and port to connect to.
         #[arg(long)]
         server: SocketAddr,
+        /// Write detailed network diagnostics to this file after the session exits.
+        #[arg(long)]
+        debug_log: Option<PathBuf>,
     },
 }
 
@@ -111,7 +117,12 @@ fn main() -> Result<()> {
             words,
             bind,
             max_players,
-        } => app::host(bind, name, words, max_players),
-        Command::Join { name, server } => app::join(server, name),
+            debug_log,
+        } => app::host(bind, name, words, max_players, debug_log),
+        Command::Join {
+            name,
+            server,
+            debug_log,
+        } => app::join(server, name, debug_log),
     }
 }

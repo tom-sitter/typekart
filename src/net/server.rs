@@ -24,6 +24,7 @@ use crate::game::{
     typing::KeyAction,
 };
 
+use super::log::{SharedNetworkLog, push_network_log};
 use super::protocol::{
     AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot,
     ProtocolKey, RaceSnapshot, ServerMessage, decode_client_message, encode_server_message,
@@ -38,7 +39,7 @@ const COLOR_ROTATION: [AssignedColor; 6] = [
     AssignedColor::Magenta,
 ];
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
-const RACE_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(50);
 static SERVER_CONSOLE_LOGGING: AtomicBool = AtomicBool::new(true);
 
 macro_rules! server_println {
@@ -65,6 +66,7 @@ pub struct HostConfig {
     pub max_players: usize,
     pub ready_signal: Option<Sender<SocketAddr>>,
     pub console_logging: bool,
+    pub debug_log: Option<SharedNetworkLog>,
 }
 
 struct ConnectedClient {
@@ -81,6 +83,8 @@ struct HostState {
     events: Vec<String>,
     placements: Vec<PlayerId>,
     first_finished_at: Option<Instant>,
+    debug_log: Option<SharedNetworkLog>,
+    race_results_sent: bool,
 }
 
 pub fn run_host(config: HostConfig) -> Result<()> {
@@ -98,6 +102,14 @@ pub fn run_host(config: HostConfig) -> Result<()> {
     if let Some(ready_signal) = config.ready_signal {
         let _ = ready_signal.send(local_addr);
     }
+    push_network_log(
+        &config.debug_log,
+        format!(
+            "server listening addr={local_addr} max_players={} words={}",
+            config.max_players,
+            config.track.len()
+        ),
+    );
 
     let mut race = RaceState::new(config.track);
     let mut players = Vec::new();
@@ -128,6 +140,8 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         events: Vec::new(),
         placements: Vec::new(),
         first_finished_at: None,
+        debug_log: config.debug_log,
+        race_results_sent: false,
     }));
 
     server_println!("TypeKart host listening on {local_addr}");
@@ -158,6 +172,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                         message: "Lobby is full".to_string(),
                     },
                 )?;
+                push_network_log(&state.debug_log, "join rejected: lobby full");
                 continue;
             }
 
@@ -170,6 +185,10 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                         message: format!("Name '{player_name}' is already in use"),
                     },
                 )?;
+                push_network_log(
+                    &state.debug_log,
+                    format!("join rejected: duplicate name={player_name}"),
+                );
                 continue;
             }
 
@@ -199,6 +218,13 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 player_name.clone(),
                 assigned_color.into(),
                 std::time::Instant::now(),
+            );
+            push_network_log(
+                &state.debug_log,
+                format!(
+                    "{player_name} joined player={} color={assigned_color:?}",
+                    player_id.0
+                ),
             );
             print_lobby_snapshot(&state.players);
             broadcast_lobby_snapshot(&mut state)?;
@@ -374,12 +400,10 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                     .iter_mut()
                     .find(|player| player.id == player_id)
                 {
+                    let name = player.name.clone();
                     player.ready = ready;
-                    server_println!(
-                        "{} is {}",
-                        player.name,
-                        if ready { "ready" } else { "not ready" }
-                    );
+                    server_println!("{} is {}", name, if ready { "ready" } else { "not ready" });
+                    push_network_log(&state.debug_log, format!("{name} ready={ready}"));
                 }
                 print_lobby_snapshot(&state.players);
                 if let Err(error) = broadcast_lobby_snapshot(&mut state) {
@@ -388,6 +412,10 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
             }
             ClientMessage::StartCountdown => {
                 if player_id == PlayerId(1) {
+                    {
+                        let state = state.lock().expect("host state poisoned");
+                        push_network_log(&state.debug_log, "host requested countdown");
+                    }
                     start_countdown(Arc::clone(&state));
                 } else {
                     server_println!(
@@ -403,6 +431,10 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                     continue;
                 }
                 let action = protocol_key_to_action(key);
+                push_network_log(
+                    &state.debug_log,
+                    format!("input player={} key={key:?}", player_id.0),
+                );
                 if state
                     .race
                     .apply_key_input(RacePlayerId(player_id.0), action, now)
@@ -414,7 +446,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                     }
                     if state.phase == NetworkRacePhase::Finished {
                         server_println!("Race finished");
-                        if let Err(error) = broadcast_race_results(&mut state) {
+                        if let Err(error) = broadcast_race_results_once(&mut state) {
                             server_eprintln!("Failed to broadcast race results: {error:#}");
                         }
                     }
@@ -431,9 +463,11 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         .iter_mut()
         .find(|player| player.id == player_id)
     {
+        let name = player.name.clone();
         player.connected = false;
         player.ready = false;
-        server_println!("{} disconnected", player.name);
+        server_println!("{name} disconnected");
+        push_network_log(&state.debug_log, format!("{name} disconnected"));
     }
     if let Some(player) = state
         .race
@@ -453,7 +487,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         if let Err(error) = broadcast_race_snapshot(&mut state) {
             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
         }
-        if let Err(error) = broadcast_race_results(&mut state) {
+        if let Err(error) = broadcast_race_results_once(&mut state) {
             server_eprintln!("Failed to broadcast race results: {error:#}");
         }
     }
@@ -527,6 +561,7 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
             remaining_seconds: 3,
         };
         push_event(&mut state, "Countdown started".to_string());
+        push_network_log(&state.debug_log, "countdown started remaining=3");
         server_println!("Countdown: 3");
         if let Err(error) = broadcast_race_snapshot(&mut state) {
             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -570,7 +605,8 @@ fn apply_line_input(state: &Arc<Mutex<HostState>>, player_id: PlayerId, line: &s
     }
     if state.phase == NetworkRacePhase::Finished {
         server_println!("Race finished");
-        if let Err(error) = broadcast_race_results(&mut state) {
+        push_network_log(&state.debug_log, "race finished after host line input");
+        if let Err(error) = broadcast_race_results_once(&mut state) {
             server_eprintln!("Failed to broadcast race results: {error:#}");
         }
     }
@@ -581,6 +617,10 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
         thread::sleep(Duration::from_secs(1));
         let mut guard = state.lock().expect("host state poisoned");
         guard.phase = NetworkRacePhase::Countdown { remaining_seconds };
+        push_network_log(
+            &guard.debug_log,
+            format!("countdown tick remaining={remaining_seconds}"),
+        );
         server_println!("Countdown: {remaining_seconds}");
         if let Err(error) = broadcast_race_snapshot(&mut guard) {
             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -591,36 +631,38 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
     let mut guard = state.lock().expect("host state poisoned");
     guard.phase = NetworkRacePhase::Racing;
     push_event(&mut guard, "Race started".to_string());
+    push_network_log(&guard.debug_log, "race started");
     server_println!("Race started");
     if let Err(error) = broadcast_race_snapshot(&mut guard) {
         server_eprintln!("Failed to broadcast race snapshot: {error:#}");
     }
     drop(guard);
-    spawn_race_status_loop(state);
+    spawn_race_snapshot_loop(state);
 }
 
-fn spawn_race_status_loop(state: Arc<Mutex<HostState>>) {
+fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
     thread::spawn(move || {
         loop {
-            thread::sleep(RACE_STATUS_POLL_INTERVAL);
+            thread::sleep(RACE_SNAPSHOT_INTERVAL);
             let mut state = state.lock().expect("host state poisoned");
             if state.phase != NetworkRacePhase::Racing {
                 break;
             }
 
             update_race_status(&mut state, Instant::now());
-            if state.phase != NetworkRacePhase::Finished {
-                continue;
-            }
 
-            server_println!("Race finished");
             if let Err(error) = broadcast_race_snapshot(&mut state) {
                 server_eprintln!("Failed to broadcast race snapshot: {error:#}");
             }
-            if let Err(error) = broadcast_race_results(&mut state) {
-                server_eprintln!("Failed to broadcast race results: {error:#}");
+
+            if state.phase == NetworkRacePhase::Finished {
+                server_println!("Race finished");
+                push_network_log(&state.debug_log, "race finished on snapshot tick");
+                if let Err(error) = broadcast_race_results_once(&mut state) {
+                    server_eprintln!("Failed to broadcast race results: {error:#}");
+                }
+                break;
             }
-            break;
         }
     });
 }
@@ -643,6 +685,7 @@ fn push_event(state: &mut HostState, event: String) {
 
 fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
     let snapshot = ServerMessage::RaceSnapshot(build_race_snapshot(state));
+    log_race_snapshot(state);
 
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
@@ -661,10 +704,41 @@ fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
     Ok(())
 }
 
+fn log_race_snapshot(state: &HostState) {
+    match state.phase {
+        NetworkRacePhase::Countdown { remaining_seconds } => push_network_log(
+            &state.debug_log,
+            format!(
+                "broadcast snapshot seq={} phase=countdown remaining={remaining_seconds}",
+                state.snapshot_sequence
+            ),
+        ),
+        NetworkRacePhase::Racing if state.snapshot_sequence % 20 == 0 => push_network_log(
+            &state.debug_log,
+            format!(
+                "broadcast snapshot seq={} phase=racing",
+                state.snapshot_sequence
+            ),
+        ),
+        NetworkRacePhase::Finished => push_network_log(
+            &state.debug_log,
+            format!(
+                "broadcast snapshot seq={} phase=finished",
+                state.snapshot_sequence
+            ),
+        ),
+        _ => {}
+    }
+}
+
 fn broadcast_race_results(state: &mut HostState) -> Result<()> {
     let results = ServerMessage::RaceResults {
         placements: state.placements.clone(),
     };
+    push_network_log(
+        &state.debug_log,
+        format!("broadcast race results placements={:?}", state.placements),
+    );
 
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
@@ -680,6 +754,17 @@ fn broadcast_race_results(state: &mut HostState) -> Result<()> {
     state
         .clients
         .retain(|client| !failed_clients.contains(&client.player_id));
+    Ok(())
+}
+
+fn broadcast_race_results_once(state: &mut HostState) -> Result<()> {
+    if state.race_results_sent {
+        push_network_log(&state.debug_log, "skipped duplicate race results broadcast");
+        return Ok(());
+    }
+
+    broadcast_race_results(state)?;
+    state.race_results_sent = true;
     Ok(())
 }
 
@@ -702,6 +787,10 @@ fn update_race_status(state: &mut HostState, now: Instant) {
             let name = player_name(state, id).unwrap_or_else(|| format!("player {}", id.0));
             push_event(
                 state,
+                format!("{}. {name} finished", state.placements.len()),
+            );
+            push_network_log(
+                &state.debug_log,
                 format!("{}. {name} finished", state.placements.len()),
             );
         }
@@ -732,6 +821,12 @@ fn update_race_status(state: &mut HostState, now: Instant) {
         append_unfinished_connected_placements(state);
         state.phase = NetworkRacePhase::Finished;
         push_event(state, "Race finished".to_string());
+        push_network_log(
+            &state.debug_log,
+            format!(
+                "race finished all_connected_finished={all_connected_finished} timeout_expired={timeout_expired}"
+            ),
+        );
     }
 }
 
@@ -852,9 +947,10 @@ mod tests {
 
     use super::{
         AssignedColor, ConnectedClient, HostState, NetworkRacePhase, POST_FIRST_FINISH_TIMEOUT,
-        PlayerId, all_connected_players_ready, broadcast_lobby_snapshot, build_race_snapshot,
-        connected_player_count, first_available_color, handle_client_messages, push_event,
-        read_join_hello, update_host_ready, update_race_status, welcome_joiner,
+        PlayerId, all_connected_players_ready, broadcast_lobby_snapshot,
+        broadcast_race_results_once, build_race_snapshot, connected_player_count,
+        first_available_color, handle_client_messages, push_event, read_join_hello,
+        update_host_ready, update_race_status, welcome_joiner,
     };
     use crate::game::{
         race::{PlayerColorId, RacePlayerId, RaceState},
@@ -919,6 +1015,8 @@ mod tests {
                 events: Vec::new(),
                 placements: Vec::new(),
                 first_finished_at: None,
+                debug_log: None,
+                race_results_sent: false,
             };
 
             broadcast_lobby_snapshot(&mut state).unwrap();
@@ -966,6 +1064,8 @@ mod tests {
                 events: Vec::new(),
                 placements: Vec::new(),
                 first_finished_at: None,
+                debug_log: None,
+                race_results_sent: false,
             }));
             handle_client_messages(PlayerId(2), read_stream, Arc::clone(&state));
             state
@@ -1039,6 +1139,8 @@ mod tests {
             events: Vec::new(),
             placements: Vec::new(),
             first_finished_at: None,
+            debug_log: None,
+            race_results_sent: false,
         }));
 
         update_host_ready(&state, true);
@@ -1071,6 +1173,8 @@ mod tests {
             events: Vec::new(),
             placements: Vec::new(),
             first_finished_at: None,
+            debug_log: None,
+            race_results_sent: false,
         };
         push_event(&mut state, "Countdown started".to_string());
 
@@ -1099,6 +1203,8 @@ mod tests {
             events: Vec::new(),
             placements: Vec::new(),
             first_finished_at: None,
+            debug_log: None,
+            race_results_sent: false,
         };
 
         state
@@ -1134,6 +1240,8 @@ mod tests {
             events: Vec::new(),
             placements: Vec::new(),
             first_finished_at: None,
+            debug_log: None,
+            race_results_sent: false,
         };
 
         finish_player(&mut state, RacePlayerId(2), now);
@@ -1162,6 +1270,8 @@ mod tests {
             events: Vec::new(),
             placements: Vec::new(),
             first_finished_at: None,
+            debug_log: None,
+            race_results_sent: false,
         };
         finish_player(&mut state, RacePlayerId(2), now);
         state
@@ -1174,6 +1284,28 @@ mod tests {
 
         assert_eq!(state.phase, NetworkRacePhase::Finished);
         assert_eq!(state.placements, vec![PlayerId(2), PlayerId(1)]);
+    }
+
+    #[test]
+    fn race_results_are_broadcast_only_once() {
+        let mut state = HostState {
+            clients: Vec::new(),
+            players: test_players(true),
+            race: test_race_state(),
+            phase: NetworkRacePhase::Finished,
+            snapshot_sequence: 0,
+            events: Vec::new(),
+            placements: vec![PlayerId(2), PlayerId(1)],
+            first_finished_at: None,
+            debug_log: None,
+            race_results_sent: false,
+        };
+
+        broadcast_race_results_once(&mut state).unwrap();
+        assert!(state.race_results_sent);
+
+        broadcast_race_results_once(&mut state).unwrap();
+        assert!(state.race_results_sent);
     }
 
     fn send_hello(client: &mut std::net::TcpStream) {

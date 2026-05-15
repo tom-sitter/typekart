@@ -20,6 +20,7 @@ use crate::game::{
 };
 use crate::net::{
     client::{JoinConfig, run_join},
+    log::{NetworkLog, write_network_log},
     server::{HostConfig, run_host},
 };
 use crate::ui::{render::IconMode, terminal::run_typing_session};
@@ -46,10 +47,20 @@ pub fn play(
     )
 }
 
-pub fn host(bind: SocketAddr, name: String, word_count: usize, max_players: usize) -> Result<()> {
+pub fn host(
+    bind: SocketAddr,
+    name: String,
+    word_count: usize,
+    max_players: usize,
+    debug_log: Option<PathBuf>,
+) -> Result<()> {
     let word_list = WordList::load("words_alpha.txt").context("failed to load word list")?;
     let track = Track::generate(&word_list, word_count).context("failed to generate track")?;
     let (ready_sender, ready_receiver) = mpsc::channel();
+    let network_log = debug_log
+        .as_ref()
+        .map(|_| NetworkLog::shared(Instant::now(), 2_000));
+    let server_log = network_log.clone();
 
     thread::spawn(move || {
         if let Err(error) = run_host(HostConfig {
@@ -59,6 +70,7 @@ pub fn host(bind: SocketAddr, name: String, word_count: usize, max_players: usiz
             max_players,
             ready_signal: Some(ready_sender),
             console_logging: false,
+            debug_log: server_log,
         }) {
             eprintln!("Host server stopped: {error:#}");
         }
@@ -69,7 +81,19 @@ pub fn host(bind: SocketAddr, name: String, word_count: usize, max_players: usiz
         .context("host server did not start")?;
     let server = loopback_server_addr(server);
 
-    run_join(JoinConfig { server, name })
+    let result = run_join(JoinConfig {
+        server,
+        name,
+        debug_log: None,
+        shared_log: network_log.clone(),
+    });
+
+    if let (Some(path), Some(log)) = (debug_log, network_log) {
+        thread::sleep(Duration::from_millis(50));
+        write_network_log(path, &log)?;
+    }
+
+    result
 }
 
 fn loopback_server_addr(address: SocketAddr) -> SocketAddr {
@@ -82,6 +106,11 @@ fn loopback_server_addr(address: SocketAddr) -> SocketAddr {
     SocketAddr::new(ip, address.port())
 }
 
-pub fn join(server: SocketAddr, name: String) -> Result<()> {
-    run_join(JoinConfig { server, name })
+pub fn join(server: SocketAddr, name: String, debug_log: Option<PathBuf>) -> Result<()> {
+    run_join(JoinConfig {
+        server,
+        name,
+        debug_log,
+        shared_log: None,
+    })
 }

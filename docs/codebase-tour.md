@@ -24,7 +24,7 @@ It uses `clap` to parse command-line arguments:
 typekart play --words 40
 ```
 
-Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--unicode-icons`, and `--debug-log <PATH>`.
+Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--unicode-icons`, and `--debug-log <PATH>`. The network `host` and `join` commands also accept `--debug-log <PATH>` for protocol/session diagnostics.
 
 The important Rust idea here is that `main` returns `anyhow::Result<()>`. That lets us use the `?` operator inside the call chain and let errors bubble up cleanly instead of manually matching every error.
 
@@ -519,7 +519,7 @@ The server uses `Arc<Mutex<HostState>>` because multiple threads need shared mut
 - One command thread reads host terminal commands.
 - One reader thread per connected client reads client messages.
 - Countdown runs in a short background thread.
-- A race-status thread checks the post-first-place timeout while no one is typing.
+- A race snapshot thread broadcasts snapshots at 20 snapshots per second while racing and checks the post-first-place timeout while no one is typing.
 
 Important Rust concepts:
 

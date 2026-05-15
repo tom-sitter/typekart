@@ -7,6 +7,7 @@ use std::{
     collections::VecDeque,
     io::{self, BufRead, BufReader, Write},
     net::SocketAddr,
+    path::PathBuf,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -27,6 +28,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use super::log::{NetworkLog, SharedNetworkLog, push_network_log, write_network_log};
 use super::protocol::{
     AssignedColor, ClientMessage, ClientSequence, LobbyPlayer, NetworkRacePhase, PlayerId,
     PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage, decode_server_message,
@@ -40,9 +42,24 @@ const NETWORK_FINISHED_EDGE_MARKER: &str = ">!";
 pub struct JoinConfig {
     pub server: SocketAddr,
     pub name: String,
+    pub debug_log: Option<PathBuf>,
+    pub shared_log: Option<SharedNetworkLog>,
 }
 
 pub fn run_join(config: JoinConfig) -> Result<()> {
+    let log = config.shared_log.clone().or_else(|| {
+        config
+            .debug_log
+            .as_ref()
+            .map(|_| NetworkLog::shared(std::time::Instant::now(), 2_000))
+    });
+    push_network_log(
+        &log,
+        format!(
+            "client connecting server={} name={}",
+            config.server, config.name
+        ),
+    );
     let mut stream = std::net::TcpStream::connect(config.server)
         .with_context(|| format!("failed to connect to {}", config.server))?;
     let hello = ClientMessage::Hello {
@@ -52,6 +69,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
     let encoded = encode_client_message(&hello).context("failed to encode hello message")?;
     writeln!(stream, "{encoded}").context("failed to send hello message")?;
     stream.flush().context("failed to flush hello message")?;
+    push_network_log(&log, "client sent hello");
 
     let read_stream = stream
         .try_clone()
@@ -72,14 +90,32 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                     "Joined TypeKart server as player {} ({assigned_color:?})",
                     player_id.0
                 );
+                push_network_log(
+                    &log,
+                    format!(
+                        "client welcomed player={} color={assigned_color:?}",
+                        player_id.0
+                    ),
+                );
                 player_id
             }
             ServerMessage::Error { message } => {
                 println!("Server rejected join: {message}");
+                push_network_log(&log, format!("client rejected: {message}"));
+                if let (Some(path), Some(log)) = (config.debug_log.as_ref(), log.as_ref()) {
+                    write_network_log(path, &log)?;
+                }
                 return Ok(());
             }
             other => {
                 println!("Unexpected server response: {other:?}");
+                push_network_log(
+                    &log,
+                    format!("client unexpected welcome response: {other:?}"),
+                );
+                if let (Some(path), Some(log)) = (config.debug_log.as_ref(), log.as_ref()) {
+                    write_network_log(path, &log)?;
+                }
                 return Ok(());
             }
         };
@@ -91,6 +127,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
     let reader_phase = Arc::clone(&phase);
     let view_state = Arc::new(Mutex::new(NetworkViewState::new(player_id)));
     let reader_view_state = Arc::clone(&view_state);
+    let reader_log = log.clone();
 
     thread::spawn(move || {
         for line in reader.lines() {
@@ -99,17 +136,27 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
             };
             match decode_server_message(line.trim_end()) {
                 Ok(ServerMessage::LobbySnapshot { players, host_id }) => {
+                    push_network_log(
+                        &reader_log,
+                        format!(
+                            "client received lobby players={} host={}",
+                            players.len(),
+                            host_id.0
+                        ),
+                    );
                     let mut state = reader_view_state.lock().expect("client view poisoned");
                     state.lobby_players = players;
                     state.host_id = Some(host_id);
                 }
                 Ok(ServerMessage::RaceEvent { message }) => {
+                    push_network_log(&reader_log, format!("client received event: {message}"));
                     reader_view_state
                         .lock()
                         .expect("client view poisoned")
                         .push_message(message);
                 }
                 Ok(ServerMessage::RaceSnapshot(snapshot)) => {
+                    log_client_snapshot(&reader_log, &snapshot);
                     *reader_phase.lock().expect("client phase poisoned") = snapshot.phase;
                     reader_view_state
                         .lock()
@@ -117,23 +164,30 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                         .race_snapshot = Some(snapshot);
                 }
                 Ok(ServerMessage::Error { message }) => {
+                    push_network_log(&reader_log, format!("client received error: {message}"));
                     reader_view_state
                         .lock()
                         .expect("client view poisoned")
                         .push_message(format!("Server error: {message}"));
                 }
                 Ok(ServerMessage::RaceResults { placements }) => {
+                    push_network_log(
+                        &reader_log,
+                        format!("client received results placements={placements:?}"),
+                    );
                     let mut state = reader_view_state.lock().expect("client view poisoned");
                     state.placements = placements;
                     state.push_message("Race results received".to_string());
                 }
                 Ok(other) => {
+                    push_network_log(&reader_log, format!("client received other: {other:?}"));
                     reader_view_state
                         .lock()
                         .expect("client view poisoned")
                         .push_message(format!("Received: {other:?}"));
                 }
                 Err(error) => {
+                    push_network_log(&reader_log, format!("client decode error: {error}"));
                     reader_view_state
                         .lock()
                         .expect("client view poisoned")
@@ -145,6 +199,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
         let mut state = reader_view_state.lock().expect("client view poisoned");
         state.disconnected = true;
         state.push_message("Disconnected from server".to_string());
+        push_network_log(&reader_log, "client disconnected from server");
     });
 
     let mut terminal = NetworkTerminal::setup()?;
@@ -169,23 +224,34 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
 
         if should_leave(key_event) {
             send_client_message(&mut stream, &ClientMessage::Leave)?;
+            push_network_log(&log, "client sent leave");
             break;
         }
 
         if *phase.lock().expect("client phase poisoned") == NetworkRacePhase::Racing {
-            if send_race_key(&mut stream, key_event, &mut sequence)? {
+            if send_race_key(&mut stream, key_event, &mut sequence, &log)? {
                 break;
             }
             continue;
         }
 
-        if handle_lobby_key(&mut stream, key_event, &mut lobby_command, state.is_host())? {
+        if handle_lobby_key(
+            &mut stream,
+            key_event,
+            &mut lobby_command,
+            state.is_host(),
+            &log,
+        )? {
             break;
         }
     }
 
     terminal.restore()?;
     println!("Left server");
+    push_network_log(&log, "client left server");
+    if let (Some(path), Some(log)) = (config.debug_log.as_ref(), log.as_ref()) {
+        write_network_log(path, &log)?;
+    }
 
     Ok(())
 }
@@ -289,14 +355,16 @@ fn handle_lobby_key(
     key_event: KeyEvent,
     lobby_command: &mut String,
     is_host: bool,
+    log: &Option<SharedNetworkLog>,
 ) -> Result<bool> {
     if is_host && lobby_command.is_empty() && key_event.code == KeyCode::Char(' ') {
         send_client_message(stream, &ClientMessage::StartCountdown)?;
+        push_network_log(log, "client sent start countdown");
         return Ok(false);
     }
 
     if is_enter_key(key_event) {
-        let should_leave = send_lobby_command(stream, lobby_command.trim(), is_host)?;
+        let should_leave = send_lobby_command(stream, lobby_command.trim(), is_host, log)?;
         lobby_command.clear();
         return Ok(should_leave);
     }
@@ -328,6 +396,7 @@ fn send_lobby_command(
     stream: &mut std::net::TcpStream,
     command: &str,
     is_host: bool,
+    log: &Option<SharedNetworkLog>,
 ) -> Result<bool> {
     let message = match command {
         "ready" => ClientMessage::SetReady { ready: true },
@@ -339,6 +408,7 @@ fn send_lobby_command(
     };
 
     send_client_message(stream, &message)?;
+    push_network_log(log, format!("client sent lobby command={command}"));
 
     Ok(matches!(message, ClientMessage::Leave))
 }
@@ -347,6 +417,7 @@ fn send_race_key(
     stream: &mut std::net::TcpStream,
     key_event: KeyEvent,
     sequence: &mut u64,
+    log: &Option<SharedNetworkLog>,
 ) -> Result<bool> {
     let key = match key_event.code {
         KeyCode::Char(' ') => Some(ProtocolKey::Space),
@@ -371,6 +442,10 @@ fn send_race_key(
             key,
         },
     )?;
+    push_network_log(
+        log,
+        format!("client sent key_input seq={} key={key:?}", *sequence),
+    );
     *sequence += 1;
 
     Ok(false)
@@ -380,6 +455,33 @@ fn send_client_message(stream: &mut std::net::TcpStream, message: &ClientMessage
     let encoded = encode_client_message(message).context("failed to encode client message")?;
     writeln!(stream, "{encoded}").context("failed to send client message")?;
     stream.flush().context("failed to flush client message")
+}
+
+fn log_client_snapshot(log: &Option<SharedNetworkLog>, snapshot: &RaceSnapshot) {
+    match snapshot.phase {
+        NetworkRacePhase::Countdown { remaining_seconds } => push_network_log(
+            log,
+            format!(
+                "client received snapshot seq={} phase=countdown remaining={remaining_seconds}",
+                snapshot.sequence
+            ),
+        ),
+        NetworkRacePhase::Racing if snapshot.sequence % 20 == 0 => push_network_log(
+            log,
+            format!(
+                "client received snapshot seq={} phase=racing",
+                snapshot.sequence
+            ),
+        ),
+        NetworkRacePhase::Finished => push_network_log(
+            log,
+            format!(
+                "client received snapshot seq={} phase=finished",
+                snapshot.sequence
+            ),
+        ),
+        _ => {}
+    }
 }
 
 fn render_network(frame: &mut Frame<'_>, state: &NetworkViewState, lobby_command: &str) {
