@@ -50,10 +50,11 @@ Implemented:
 - `RaceResults` broadcast after the race ends.
 - Local host-as-client architecture for the `host` command.
 - Host countdown start from the shared network UI with `Space` or `start`.
+- Network race screen with a windowed track, per-racer lanes, on-track typo coloring, and a minimap.
 
 Not implemented yet:
 
-- Full local-play-equivalent network track rendering, including bonus lanes and minimap.
+- Full local-play-equivalent network track rendering, including bonus lanes and item effect cues.
 - Fixed-rate race snapshot broadcast loop.
 - Server-owned bonus state.
 - Server-owned multiplayer item resolution.
@@ -129,7 +130,7 @@ After racing starts: character keys, Space, and Backspace are sent immediately
 Leave during network racing: Esc or Ctrl-C
 ```
 
-The join client now uses a focused Ratatui network screen. The next rendering slice should bring it closer to local `play` by reusing the richer track window, racer lanes, bonus lanes, and minimap.
+The network client now uses a focused Ratatui screen with a windowed track, racer lanes, typo coloring on the track, and a minimap. The next rendering slice should bring it closer to local `play` by adding bonus lanes and item effect cues once the server owns those systems.
 
 ## Proposed File Changes
 
@@ -412,10 +413,11 @@ Implemented:
 - Client receives lobby snapshots and race snapshots.
 - Client sends raw key-derived `KeyInput` after racing starts.
 - Client renders lobby/race snapshots in a focused Ratatui network screen.
+- Race screen includes a windowed track, local/remote racer lanes, on-track typo coloring, offscreen markers, and a minimap.
 
 Remaining:
 
-- Full client-side Ratatui rendering parity with local `play`.
+- Bonus/item rendering parity with local `play`.
 - Channels between input, network reader, and renderer.
 
 Deliverables:
@@ -447,7 +449,7 @@ Implemented:
 Remaining:
 
 - Fixed-rate snapshot loop.
-- Full two-terminal race UI.
+- Bonus/item race UI.
 
 Deliverables:
 

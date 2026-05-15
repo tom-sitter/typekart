@@ -565,7 +565,7 @@ Manual tests:
 
 See `docs/milestone-4-plan.md` for the detailed implementation plan.
 
-Current status: Milestone 4 has host/join, host-as-local-client, lobby readiness, countdown snapshots, server-owned race state, server-authoritative raw key input during racing, server-authoritative finish order, race end, `RaceResults`, and a focused Ratatui network client screen. Remaining major work is full local-play-equivalent rendering, fixed-rate snapshots, bonuses, items, and network diagnostics.
+Current status: Milestone 4 has host/join, host-as-local-client, lobby readiness, countdown snapshots, server-owned race state, server-authoritative raw key input during racing, server-authoritative finish order, race end, `RaceResults`, and a focused Ratatui network client screen with a windowed track, racer lanes, on-track typo coloring, and a minimap. Remaining major work is fixed-rate snapshots, server-owned bonuses/items, bonus/item rendering, and network diagnostics.
 
 ### Milestone 5: Multiplayer Polish
 

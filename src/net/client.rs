@@ -33,6 +33,9 @@ use super::protocol::{
     encode_client_message,
 };
 
+const NETWORK_RACER_MARKER: &str = "███";
+const NETWORK_FINISHED_EDGE_MARKER: &str = ">!";
+
 #[derive(Debug, Clone)]
 pub struct JoinConfig {
     pub server: SocketAddr,
@@ -483,53 +486,26 @@ fn render_race(
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(columns[1]);
 
-    frame.render_widget(track_view(state, snapshot), columns[0]);
+    frame.render_widget(track_view(state, snapshot, columns[0].width), columns[0]);
     frame.render_widget(player_list_view(state, snapshot), right[0]);
     frame.render_widget(messages_and_events_view(state, snapshot), right[1]);
 }
 
-fn track_view<'a>(state: &NetworkViewState, snapshot: &'a RaceSnapshot) -> Paragraph<'a> {
+fn track_view<'a>(
+    state: &NetworkViewState,
+    snapshot: &'a RaceSnapshot,
+    area_width: u16,
+) -> Paragraph<'a> {
     let local = snapshot
         .players
         .iter()
         .find(|player| player.id == state.player_id);
+    let width = usize::from(area_width.saturating_sub(2)).max(1);
     let current_word_index = local.map(|player| player.word_index).unwrap_or(0);
-    let input = local.map(|player| player.input.as_str()).unwrap_or("");
-
-    let mut spans = Vec::new();
-    for (index, word) in snapshot.track_words.iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::raw(" "));
-        }
-
-        let style = if Some(index) == local.map(|player| player.word_index) {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else if index < current_word_index {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default()
-        };
-        spans.push(Span::styled(word.as_str(), style));
-    }
-
-    let mut lines = vec![Line::from(spans), Line::from("")];
-    if let Some(local) = local {
-        lines.push(Line::from(vec![
-            Span::raw("Target: "),
-            Span::styled(
-                snapshot
-                    .track_words
-                    .get(local.word_index)
-                    .map(String::as_str)
-                    .unwrap_or("<finished>"),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw("    Input: "),
-            Span::styled(input.to_string(), input_style(local)),
-        ]));
-    }
+    let window = NetworkTrackWindow::new(&snapshot.track_words, current_word_index, width);
+    let mut lines = vec![network_track_word_line(&window, local)];
+    lines.extend(network_racer_lines(&window, state, snapshot));
+    lines.push(network_minimap_line(state, snapshot, width));
 
     Paragraph::new(lines).block(Block::default().title("Track").borders(Borders::ALL))
 }
@@ -564,7 +540,7 @@ fn player_list_view<'a>(state: &NetworkViewState, snapshot: &'a RaceSnapshot) ->
                 ),
                 Span::raw(format!(
                     "  word {}{}{}{}",
-                    player.word_index + 1,
+                    display_word_number(player, snapshot.track_words.len()),
                     placement_label(state, player.id),
                     if player.finished { " finished" } else { "" },
                     if player.connected {
@@ -578,6 +554,18 @@ fn player_list_view<'a>(state: &NetworkViewState, snapshot: &'a RaceSnapshot) ->
         .collect::<Vec<_>>();
 
     Paragraph::new(lines).block(Block::default().title("Players").borders(Borders::ALL))
+}
+
+fn display_word_number(player: &PlayerSnapshot, track_len: usize) -> usize {
+    if track_len == 0 {
+        return 0;
+    }
+
+    if player.finished {
+        track_len
+    } else {
+        (player.word_index + 1).min(track_len)
+    }
 }
 
 fn player_sort_key(
@@ -610,6 +598,443 @@ fn placement_label(state: &NetworkViewState, id: PlayerId) -> String {
         .position(|placement_id| *placement_id == id)
         .map(|index| format!(" place={}", index + 1))
         .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NetworkVisibleWord<'a> {
+    index: usize,
+    word: &'a str,
+    start_col: usize,
+    end_col: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NetworkTrackWindow<'a> {
+    words: Vec<NetworkVisibleWord<'a>>,
+    width: usize,
+    track_len: usize,
+}
+
+impl<'a> NetworkTrackWindow<'a> {
+    fn new(words: &'a [String], current_index: usize, width: usize) -> Self {
+        let width = width.max(1);
+        let track_len = words.len();
+        if words.is_empty() {
+            return Self {
+                words: Vec::new(),
+                width,
+                track_len,
+            };
+        }
+
+        let current_index = current_index.min(words.len().saturating_sub(1));
+        let mut first_index = current_index;
+        let mut used_width = words[current_index].chars().count().min(width);
+
+        while first_index > 0 {
+            let candidate_width = words[first_index - 1].chars().count() + 1;
+            if used_width + candidate_width > width {
+                break;
+            }
+            first_index -= 1;
+            used_width += candidate_width;
+        }
+
+        let mut visible = Vec::new();
+        let mut col = 0;
+        for (index, word) in words.iter().enumerate().skip(first_index) {
+            let word_width = word.chars().count();
+            let separator_width = usize::from(!visible.is_empty());
+            if !visible.is_empty() && col + separator_width + word_width > width {
+                break;
+            }
+            if !visible.is_empty() {
+                col += separator_width;
+            }
+
+            let start_col = col;
+            let available_width = width.saturating_sub(start_col);
+            let rendered_width = word_width.min(available_width);
+            visible.push(NetworkVisibleWord {
+                index,
+                word,
+                start_col,
+                end_col: start_col + rendered_width,
+            });
+            col += rendered_width;
+
+            if col >= width {
+                break;
+            }
+        }
+
+        Self {
+            words: visible,
+            width,
+            track_len,
+        }
+    }
+
+    fn marker_for_player(&self, player: &PlayerSnapshot) -> NetworkMarkerPosition {
+        let Some(first_visible) = self.words.first().map(|word| word.index) else {
+            return NetworkMarkerPosition::Visible { start: 0 };
+        };
+        let Some(last_visible) = self.words.last().map(|word| word.index) else {
+            return NetworkMarkerPosition::Visible { start: 0 };
+        };
+
+        if player.word_index < first_visible {
+            return NetworkMarkerPosition::Behind;
+        }
+
+        if player.finished
+            && self
+                .words
+                .iter()
+                .any(|word| word.index + 1 == self.track_len)
+        {
+            return NetworkMarkerPosition::Visible {
+                start: self
+                    .column_for_player(player)
+                    .saturating_sub(NETWORK_RACER_MARKER.chars().count() / 2)
+                    .min(
+                        self.width
+                            .saturating_sub(NETWORK_RACER_MARKER.chars().count()),
+                    ),
+            };
+        }
+
+        if player.finished {
+            return NetworkMarkerPosition::FinishedAhead;
+        }
+
+        if player.word_index > last_visible {
+            return NetworkMarkerPosition::Ahead;
+        }
+
+        NetworkMarkerPosition::Visible {
+            start: self
+                .column_for_player(player)
+                .saturating_sub(NETWORK_RACER_MARKER.chars().count() / 2)
+                .min(
+                    self.width
+                        .saturating_sub(NETWORK_RACER_MARKER.chars().count()),
+                ),
+        }
+    }
+
+    fn column_for_player(&self, player: &PlayerSnapshot) -> usize {
+        let target_stream_index = player
+            .typo_index
+            .unwrap_or_else(|| player.input.chars().count());
+
+        self.column_for_stream_index(player.word_index, target_stream_index)
+            .or_else(|| {
+                self.words
+                    .iter()
+                    .find(|word| word.index == player.word_index)
+                    .map(|word| word.start_col)
+            })
+            .unwrap_or(0)
+    }
+
+    fn column_for_stream_index(
+        &self,
+        current_word_index: usize,
+        target_stream_index: usize,
+    ) -> Option<usize> {
+        let mut stream_index = 0;
+        let mut previous_visible_word_index = None;
+
+        for visible in self
+            .words
+            .iter()
+            .filter(|word| word.index >= current_word_index)
+        {
+            if previous_visible_word_index.is_some() {
+                if target_stream_index == stream_index {
+                    return Some(visible.start_col.saturating_sub(1));
+                }
+                stream_index += 1;
+            }
+
+            let word_width = visible.word.chars().count();
+            if target_stream_index < stream_index + word_width {
+                return Some(visible.start_col + target_stream_index - stream_index);
+            }
+
+            stream_index += word_width;
+            previous_visible_word_index = Some(visible.index);
+        }
+
+        self.words
+            .last()
+            .map(|word| word.end_col.min(self.width.saturating_sub(1)))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NetworkMarkerPosition {
+    Visible { start: usize },
+    Behind,
+    Ahead,
+    FinishedAhead,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NetworkTrackCell {
+    ch: char,
+    style: Style,
+}
+
+impl Default for NetworkTrackCell {
+    fn default() -> Self {
+        Self {
+            ch: ' ',
+            style: Style::default(),
+        }
+    }
+}
+
+fn network_track_word_line<'a>(
+    window: &NetworkTrackWindow<'a>,
+    local: Option<&PlayerSnapshot>,
+) -> Line<'a> {
+    let mut spans = Vec::new();
+
+    for word in &window.words {
+        if word.start_col > spans_width(&spans) {
+            spans.push(Span::raw(" ".repeat(word.start_col - spans_width(&spans))));
+        }
+
+        for (char_index, ch) in word.word.chars().enumerate() {
+            spans.push(Span::styled(
+                ch.to_string(),
+                network_word_char_style(window, word, char_index, local),
+            ));
+        }
+    }
+
+    Line::from(spans)
+}
+
+fn network_word_char_style(
+    window: &NetworkTrackWindow<'_>,
+    word: &NetworkVisibleWord<'_>,
+    char_index: usize,
+    local: Option<&PlayerSnapshot>,
+) -> Style {
+    let Some(local) = local else {
+        return Style::default();
+    };
+
+    if word.index < local.word_index || local.finished {
+        return Style::default().fg(Color::DarkGray);
+    }
+
+    let Some(stream_index) = stream_index_for_word_char(window, local.word_index, word, char_index)
+    else {
+        return Style::default();
+    };
+    let input_len = local.input.chars().count();
+
+    if local
+        .typo_index
+        .is_some_and(|typo_index| stream_index >= typo_index)
+        && stream_index < input_len
+    {
+        return Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    }
+
+    if stream_index < input_len {
+        return Style::default().fg(Color::Green);
+    }
+
+    if word.index == local.word_index {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    }
+}
+
+fn stream_index_for_word_char(
+    window: &NetworkTrackWindow<'_>,
+    current_word_index: usize,
+    target_word: &NetworkVisibleWord<'_>,
+    target_char_index: usize,
+) -> Option<usize> {
+    if target_word.index < current_word_index {
+        return None;
+    }
+
+    let mut stream_index = 0;
+    let mut previous_visible_word_index = None;
+    for visible in window
+        .words
+        .iter()
+        .filter(|word| word.index >= current_word_index)
+    {
+        if previous_visible_word_index.is_some() {
+            stream_index += 1;
+        }
+
+        if visible.index == target_word.index {
+            return Some(stream_index + target_char_index);
+        }
+
+        stream_index += visible.word.chars().count();
+        previous_visible_word_index = Some(visible.index);
+    }
+
+    None
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|span| span.content.chars().count()).sum()
+}
+
+fn network_racer_lines<'a>(
+    window: &NetworkTrackWindow<'_>,
+    state: &NetworkViewState,
+    snapshot: &'a RaceSnapshot,
+) -> Vec<Line<'a>> {
+    let mut players = snapshot.players.clone();
+    players.sort_by_key(|player| {
+        if player.id == state.player_id {
+            (0, 0)
+        } else {
+            (1, player.id.0)
+        }
+    });
+
+    players
+        .iter()
+        .map(|player| network_racer_line(window, player, player.id == state.player_id))
+        .collect()
+}
+
+fn network_racer_line<'a>(
+    window: &NetworkTrackWindow<'_>,
+    player: &PlayerSnapshot,
+    is_local: bool,
+) -> Line<'a> {
+    let mut cells = vec![NetworkTrackCell::default(); window.width];
+    let color = assigned_color(player.color);
+    let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+
+    let (start, marker) = match window.marker_for_player(player) {
+        NetworkMarkerPosition::Visible { start } => (start, NETWORK_RACER_MARKER),
+        NetworkMarkerPosition::Behind => (0, "<"),
+        NetworkMarkerPosition::Ahead => (window.width.saturating_sub(1), ">"),
+        NetworkMarkerPosition::FinishedAhead => (
+            window
+                .width
+                .saturating_sub(NETWORK_FINISHED_EDGE_MARKER.chars().count()),
+            NETWORK_FINISHED_EDGE_MARKER,
+        ),
+    };
+
+    write_network_marker(&mut cells, start, marker, style);
+    let label = if is_local { " you" } else { "" };
+    if !label.is_empty() {
+        write_network_marker(&mut cells, start + marker.chars().count(), label, style);
+    }
+
+    Line::from(
+        cells
+            .into_iter()
+            .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn write_network_marker(cells: &mut [NetworkTrackCell], start: usize, marker: &str, style: Style) {
+    for (offset, ch) in marker.chars().enumerate() {
+        if let Some(cell) = cells.get_mut(start + offset) {
+            *cell = NetworkTrackCell { ch, style };
+        }
+    }
+}
+
+fn network_minimap_line<'a>(
+    state: &NetworkViewState,
+    snapshot: &'a RaceSnapshot,
+    width: usize,
+) -> Line<'a> {
+    let label = "Map  ";
+    let label_width = label.chars().count();
+    if width <= label_width {
+        return Line::from(label.chars().take(width).collect::<String>());
+    }
+
+    let map_width = width - label_width;
+    if map_width < 2 {
+        return Line::from(format!("{label}{}", "|".repeat(map_width)));
+    }
+
+    let mut cells = vec![
+        NetworkTrackCell {
+            ch: '-',
+            style: Style::default().fg(Color::DarkGray),
+        };
+        map_width
+    ];
+    cells[0].ch = '|';
+    cells[map_width - 1].ch = '|';
+
+    let usable_width = map_width.saturating_sub(2);
+    for player in &snapshot.players {
+        let col = network_minimap_column(snapshot.track_words.len(), usable_width, player);
+        let marker = if player.id == state.player_id {
+            '@'
+        } else if cells[col].ch != '-' && cells[col].ch != '|' {
+            '*'
+        } else {
+            network_player_marker_char(player)
+        };
+        cells[col] = NetworkTrackCell {
+            ch: marker,
+            style: Style::default()
+                .fg(if player.id == state.player_id {
+                    Color::Cyan
+                } else {
+                    assigned_color(player.color)
+                })
+                .add_modifier(Modifier::BOLD),
+        };
+    }
+
+    let mut spans = label
+        .chars()
+        .map(|ch| Span::raw(ch.to_string()))
+        .collect::<Vec<_>>();
+    spans.extend(
+        cells
+            .into_iter()
+            .map(|cell| Span::styled(cell.ch.to_string(), cell.style)),
+    );
+    Line::from(spans)
+}
+
+fn network_minimap_column(track_len: usize, usable_width: usize, player: &PlayerSnapshot) -> usize {
+    let finish_col = usable_width + 1;
+    if player.finished {
+        return finish_col;
+    }
+
+    if track_len <= 1 {
+        return 1;
+    }
+
+    let final_word_index = track_len - 1;
+    let word_index = player.word_index.min(final_word_index);
+    1 + ((word_index * usable_width) + (final_word_index / 2)) / final_word_index
+}
+
+fn network_player_marker_char(player: &PlayerSnapshot) -> char {
+    char::from_digit((player.id.0 % 10) as u32, 10).unwrap_or('*')
 }
 
 fn messages_and_events_view<'a>(
@@ -676,13 +1101,6 @@ fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragrap
     Paragraph::new(line).block(Block::default().borders(Borders::TOP))
 }
 
-fn input_style(player: &PlayerSnapshot) -> Style {
-    match player.typo_index {
-        Some(_) => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        None => Style::default().fg(Color::Green),
-    }
-}
-
 fn connection_style(disconnected: bool) -> Style {
     if disconnected {
         Style::default().fg(Color::Red)
@@ -711,5 +1129,98 @@ fn format_phase(phase: NetworkRacePhase) -> String {
         }
         NetworkRacePhase::Racing => "racing".to_string(),
         NetworkRacePhase::Finished => "finished".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, PlayerId, PlayerSnapshot,
+        display_word_number, network_minimap_column, stream_index_for_word_char,
+    };
+
+    #[test]
+    fn network_track_window_keeps_current_word_visible() {
+        let words = words(["zero", "one", "two", "three", "four"]);
+        let window = NetworkTrackWindow::new(&words, 3, 13);
+
+        assert!(window.words.iter().any(|word| word.index == 3));
+        assert!(window.words.iter().all(|word| word.end_col <= window.width));
+    }
+
+    #[test]
+    fn network_marker_tracks_current_character_position() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 1, 20);
+        let player = player(PlayerId(1), 1, "tw", None, false);
+
+        assert_eq!(window.column_for_player(&player), 6);
+    }
+
+    #[test]
+    fn network_marker_pins_to_first_typo() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 1, 20);
+        let player = player(PlayerId(1), 1, "txxx", Some(1), false);
+
+        assert_eq!(window.column_for_player(&player), 5);
+    }
+
+    #[test]
+    fn network_marker_uses_finished_edge_marker_when_finish_is_offscreen() {
+        let words = words(["one", "two", "three", "four"]);
+        let window = NetworkTrackWindow::new(&words, 1, 7);
+        let player = player(PlayerId(2), 3, "", None, true);
+
+        assert_eq!(
+            window.marker_for_player(&player),
+            NetworkMarkerPosition::FinishedAhead
+        );
+    }
+
+    #[test]
+    fn network_minimap_pins_finished_player_to_finish_edge() {
+        let player = player(PlayerId(1), 2, "", None, true);
+
+        assert_eq!(network_minimap_column(4, 10, &player), 11);
+    }
+
+    #[test]
+    fn network_stream_index_counts_spaces_between_words() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 0, 20);
+        let target = window.words.iter().find(|word| word.index == 1).unwrap();
+
+        assert_eq!(stream_index_for_word_char(&window, 0, target, 0), Some(4));
+    }
+
+    #[test]
+    fn display_word_number_clamps_finished_player_to_track_length() {
+        let player = player(PlayerId(1), 3, "", None, true);
+
+        assert_eq!(display_word_number(&player, 3), 3);
+    }
+
+    fn words<const N: usize>(words: [&str; N]) -> Vec<String> {
+        words.into_iter().map(str::to_string).collect()
+    }
+
+    fn player(
+        id: PlayerId,
+        word_index: usize,
+        input: &str,
+        typo_index: Option<usize>,
+        finished: bool,
+    ) -> PlayerSnapshot {
+        PlayerSnapshot {
+            id,
+            name: format!("player-{}", id.0),
+            color: AssignedColor::Cyan,
+            word_index,
+            input: input.to_string(),
+            typo_index,
+            finished,
+            connected: true,
+        }
     }
 }

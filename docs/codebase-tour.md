@@ -450,7 +450,7 @@ join terminal key event
   net::client prints track words and player progress
 ```
 
-This is intentionally transitional. Local `play` uses the richer production race renderer; network `join` now uses raw key events during racing and a focused Ratatui network screen. The next network UI step is to bring this screen closer to the local renderer with proper track windows, racer lanes, bonus lanes, and minimap support.
+This is intentionally transitional. Local `play` uses the richer production race renderer; network `join` now uses raw key events during racing and a focused Ratatui network screen. The network screen has its own windowed track, racer lanes, on-track typo coloring, and minimap. The next network UI step is bonus lanes and item effect cues after the server owns those systems.
 
 ## Network Modules
 
@@ -544,7 +544,7 @@ Current responsibilities:
 - During `Racing`, convert raw character, Space, and Backspace key events into `KeyInput` messages.
 - Render lobby and race snapshots in an alternate-screen Ratatui UI.
 
-Current limitation: this client uses a simpler network-specific Ratatui screen, not the full local race renderer.
+Current limitation: this client uses a network-specific Ratatui screen, not the full local race renderer. It has track/lane/minimap basics, but not bonus lanes or item effect cues.
 
 ## Borrowing And Ownership In This Code
 
@@ -683,9 +683,8 @@ Recommended order:
 ## Things That Are Intentionally Simple For Now
 
 - The UI is functional, not final.
-- Network multiplayer is skeletal: lobby, countdown, and server-authoritative typing work, but the network client does not yet use the full terminal renderer.
+- Network multiplayer is still incomplete: lobby, countdown, server-authoritative typing, results, and basic race rendering work, but bonuses and items are not server-owned yet.
 - The network client uses a simpler Ratatui screen instead of the full local race renderer.
-- The host is a player but does not yet connect through the same client path as joiners.
 - Bonus and item behavior is local-only in `play`; network bonus and item resolution are not implemented yet.
 - The typing engine still only owns main-track typing. Bonus attempts are coordinated by `LocalSession`.
 - Track generation samples with replacement, so repeated words can appear.
