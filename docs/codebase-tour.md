@@ -167,7 +167,7 @@ Important Rust concepts:
 - The network layer maps protocol ids and colors into game-level ids and colors.
 - `RaceState::apply_key_input` returns `Option<Vec<TypingEvent>>`: `None` means the player id was unknown; `Some(events)` means input was applied and produced zero or more typing events.
 
-This module is still small. Bonus state, item resolution, finish order, and race-end status have not been moved into it yet.
+This module is still small. Bonus state and item resolution have not been moved into it yet. For now, network finish order and race-end status live in `src/net/server.rs` because they depend on connected-player handling and wall-clock timeouts.
 
 ### `src/game/effects.rs`
 
@@ -450,7 +450,7 @@ join terminal key event
   net::client prints track words and player progress
 ```
 
-This is intentionally transitional. Local `play` uses raw terminal key events and Ratatui rendering; network `join` now uses raw key events during racing but still prints snapshots as text. The next network UI step is to reuse the Ratatui rendering approach for snapshots.
+This is intentionally transitional. Local `play` uses the richer production race renderer; network `join` now uses raw key events during racing and a focused Ratatui network screen. The next network UI step is to bring this screen closer to the local renderer with proper track windows, racer lanes, bonus lanes, and minimap support.
 
 ## Network Modules
 
@@ -508,14 +508,18 @@ Current responsibilities:
 - Start a 3-second countdown.
 - Store the authoritative `RaceState`.
 - Apply `KeyInput` to server-owned player state.
+- Track finish order.
+- End races when all connected racers finish or the post-first-place timeout expires.
 - Broadcast `LobbySnapshot` and `RaceSnapshot` messages.
+- Broadcast `RaceResults` messages.
 
 The server uses `Arc<Mutex<HostState>>` because multiple threads need shared mutable access:
 
 - The listener thread accepts new connections.
 - One command thread reads host terminal commands.
-- One reader thread per joiner reads client messages.
+- One reader thread per connected client reads client messages.
 - Countdown runs in a short background thread.
+- A race-status thread checks the post-first-place timeout while no one is typing.
 
 Important Rust concepts:
 
@@ -523,7 +527,7 @@ Important Rust concepts:
 - `Mutex<T>` protects mutable state so only one thread mutates it at a time.
 - `TcpStream::try_clone` creates another handle to the same socket, letting the server keep a write stream while a reader thread owns the read stream.
 
-Current limitation: the host is a player, but host input is handled directly in the host process. The target architecture is for the host to use the same client path as joiners.
+The `host` command now starts this server in a background thread and connects a local client to it. That keeps the host as a normal player from the protocol's point of view while preserving a single terminal command for hosting.
 
 ### `src/net/client.rs`
 
@@ -533,13 +537,14 @@ Current responsibilities:
 
 - Connect to a host.
 - Send `Hello`.
-- Print lobby snapshots.
-- Send `ready`, `unready`, and `quit`.
+- Render lobby snapshots.
+- Send `ready`, `unready`, `start` for the host player, and `quit`.
 - Track the latest network race phase.
+- Track received race placements.
 - During `Racing`, convert raw character, Space, and Backspace key events into `KeyInput` messages.
-- Print race snapshots with track words and player progress.
+- Render lobby and race snapshots in an alternate-screen Ratatui UI.
 
-Current limitation: this client does not yet use the Ratatui renderer, so it is useful for proving networking but not yet the final racing experience.
+Current limitation: this client uses a simpler network-specific Ratatui screen, not the full local race renderer.
 
 ## Borrowing And Ownership In This Code
 
@@ -679,7 +684,7 @@ Recommended order:
 
 - The UI is functional, not final.
 - Network multiplayer is skeletal: lobby, countdown, and server-authoritative typing work, but the network client does not yet use the full terminal renderer.
-- The network client still prints text snapshots instead of using the full race renderer.
+- The network client uses a simpler Ratatui screen instead of the full local race renderer.
 - The host is a player but does not yet connect through the same client path as joiners.
 - Bonus and item behavior is local-only in `play`; network bonus and item resolution are not implemented yet.
 - The typing engine still only owns main-track typing. Bonus attempts are coordinated by `LocalSession`.

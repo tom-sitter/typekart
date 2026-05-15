@@ -213,4 +213,16 @@ mod tests {
 
         assert_eq!(decoded, message);
     }
+
+    #[test]
+    fn server_message_round_trips_race_results() {
+        let message = ServerMessage::RaceResults {
+            placements: vec![PlayerId(2), PlayerId(1)],
+        };
+
+        let encoded = encode_server_message(&message).unwrap();
+        let decoded = decode_server_message(&encoded).unwrap();
+
+        assert_eq!(decoded, message);
+    }
 }

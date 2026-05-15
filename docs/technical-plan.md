@@ -170,7 +170,7 @@ Target architecture: the host process should run both:
 
 This matches the product decision that the host is always a player.
 
-Current implementation: the host process is still the authoritative server and a player, but host input is read directly from the host terminal instead of going through a local client connection. This is a useful stepping stone, but we should still converge on a shared client path so host and joiner behavior do not drift.
+Current implementation: the `host` command starts the authoritative server in a background thread, then connects a local client to that server. The first connected player is the host, so host and joiner input/rendering now share the same client path.
 
 Later, the code can expose separate server and client binaries if internet hosting needs it:
 
@@ -283,7 +283,7 @@ Current network prototype:
 - `KeyInput` messages mutate server-owned player state.
 - The server sends a `RaceSnapshot` immediately after accepted input.
 - The join client uses raw terminal input during racing and sends character, Space, and Backspace events immediately.
-- The join client prints snapshots instead of using the Ratatui race renderer.
+- The join client renders lobby/race snapshots in a focused Ratatui alternate-screen UI.
 
 This proves the protocol and authoritative input path. It is not the final client experience.
 
@@ -565,7 +565,7 @@ Manual tests:
 
 See `docs/milestone-4-plan.md` for the detailed implementation plan.
 
-Current status: Milestone 4 has host/join, lobby readiness, countdown snapshots, server-owned race state, and server-authoritative raw key input for joiners during racing. Remaining major work is rendering snapshots through the real UI, fixed-rate snapshots, finish order, race end, bonuses, items, and network diagnostics.
+Current status: Milestone 4 has host/join, host-as-local-client, lobby readiness, countdown snapshots, server-owned race state, server-authoritative raw key input during racing, server-authoritative finish order, race end, `RaceResults`, and a focused Ratatui network client screen. Remaining major work is full local-play-equivalent rendering, fixed-rate snapshots, bonuses, items, and network diagnostics.
 
 ### Milestone 5: Multiplayer Polish
 

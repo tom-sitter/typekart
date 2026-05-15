@@ -7,9 +7,13 @@
 use std::{
     io::{self, BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+    },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -33,13 +37,34 @@ const COLOR_ROTATION: [AssignedColor; 6] = [
     AssignedColor::Yellow,
     AssignedColor::Magenta,
 ];
+const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
+const RACE_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+static SERVER_CONSOLE_LOGGING: AtomicBool = AtomicBool::new(true);
+
+macro_rules! server_println {
+    ($($arg:tt)*) => {
+        if SERVER_CONSOLE_LOGGING.load(std::sync::atomic::Ordering::Relaxed) {
+            println!($($arg)*);
+        }
+    };
+}
+
+macro_rules! server_eprintln {
+    ($($arg:tt)*) => {
+        if SERVER_CONSOLE_LOGGING.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub bind: SocketAddr,
-    pub host_name: String,
+    pub host_name: Option<String>,
     pub track: Track,
     pub max_players: usize,
+    pub ready_signal: Option<Sender<SocketAddr>>,
+    pub console_logging: bool,
 }
 
 struct ConnectedClient {
@@ -54,9 +79,13 @@ struct HostState {
     phase: NetworkRacePhase,
     snapshot_sequence: u64,
     events: Vec<String>,
+    placements: Vec<PlayerId>,
+    first_finished_at: Option<Instant>,
 }
 
 pub fn run_host(config: HostConfig) -> Result<()> {
+    SERVER_CONSOLE_LOGGING.store(config.console_logging, Ordering::Relaxed);
+
     if config.max_players == 0 || config.max_players > COLOR_ROTATION.len() {
         bail!("max players must be between 1 and {}", COLOR_ROTATION.len());
     }
@@ -66,33 +95,47 @@ pub fn run_host(config: HostConfig) -> Result<()> {
     let local_addr = listener
         .local_addr()
         .context("failed to read host address")?;
+    if let Some(ready_signal) = config.ready_signal {
+        let _ = ready_signal.send(local_addr);
+    }
+
     let mut race = RaceState::new(config.track);
-    race.add_player(
-        RacePlayerId(1),
-        config.host_name.clone(),
-        PlayerColorId::Cyan,
-        std::time::Instant::now(),
-    );
-    let state = Arc::new(Mutex::new(HostState {
-        players: vec![LobbyPlayer {
+    let mut players = Vec::new();
+    let mut next_player_id = 1;
+    if let Some(host_name) = config.host_name {
+        race.add_player(
+            RacePlayerId(1),
+            host_name.clone(),
+            PlayerColorId::Cyan,
+            std::time::Instant::now(),
+        );
+        players.push(LobbyPlayer {
             id: PlayerId(1),
-            name: config.host_name,
+            name: host_name,
             color: COLOR_ROTATION[0],
             ready: false,
             connected: true,
-        }],
+        });
+        next_player_id = 2;
+    }
+
+    let state = Arc::new(Mutex::new(HostState {
+        players,
         clients: Vec::new(),
         race,
         phase: NetworkRacePhase::WaitingForHost,
         snapshot_sequence: 0,
         events: Vec::new(),
+        placements: Vec::new(),
+        first_finished_at: None,
     }));
-    let mut next_player_id = 2;
 
-    println!("TypeKart host listening on {local_addr}");
-    println!("Host lobby commands: ready, unready, lobby, start");
-    println!("Waiting for joiners. Press Ctrl-C to stop.");
-    spawn_host_command_loop(Arc::clone(&state));
+    server_println!("TypeKart host listening on {local_addr}");
+    if has_embedded_host_player(&state) {
+        server_println!("Host lobby commands: ready, unready, lobby, start");
+        spawn_host_command_loop(Arc::clone(&state));
+    }
+    server_println!("Waiting for joiners. Press Ctrl-C to stop.");
 
     for stream in listener.incoming() {
         let stream = stream.context("failed to accept client connection")?;
@@ -101,7 +144,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         let player_name = match read_join_hello(&stream) {
             Ok(name) => name,
             Err(error) => {
-                eprintln!("Rejected connection: {error:#}");
+                server_eprintln!("Rejected connection: {error:#}");
                 continue;
             }
         };
@@ -135,7 +178,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
             let write_stream = match welcome_joiner(&stream, player_id, assigned_color) {
                 Ok(write_stream) => write_stream,
                 Err(error) => {
-                    eprintln!("Rejected connection: {error:#}");
+                    server_eprintln!("Rejected connection: {error:#}");
                     continue;
                 }
             };
@@ -163,7 +206,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
             (player_id, assigned_color)
         };
 
-        println!(
+        server_println!(
             "{} joined as player {} ({assigned_color:?}){}",
             player_name,
             player_id.0,
@@ -199,12 +242,21 @@ fn spawn_host_command_loop(state: Arc<Mutex<HostState>>) {
                     if current_phase(&state) == NetworkRacePhase::Racing {
                         apply_line_input(&state, PlayerId(1), other);
                     } else {
-                        println!("Unknown host command: {other}");
+                        server_println!("Unknown host command: {other}");
                     }
                 }
             }
         }
     });
+}
+
+fn has_embedded_host_player(state: &Arc<Mutex<HostState>>) -> bool {
+    state
+        .lock()
+        .expect("host state poisoned")
+        .players
+        .iter()
+        .any(|player| player.id == PlayerId(1))
 }
 
 fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
@@ -215,7 +267,7 @@ fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
         .find(|player| player.id == PlayerId(1))
     {
         host.ready = ready;
-        println!(
+        server_println!(
             "{} is {}",
             host.name,
             if ready { "ready" } else { "not ready" }
@@ -223,7 +275,7 @@ fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
     }
     print_lobby_snapshot(&state.players);
     if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-        eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+        server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
     }
 }
 
@@ -323,7 +375,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                     .find(|player| player.id == player_id)
                 {
                     player.ready = ready;
-                    println!(
+                    server_println!(
                         "{} is {}",
                         player.name,
                         if ready { "ready" } else { "not ready" }
@@ -331,14 +383,18 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                 }
                 print_lobby_snapshot(&state.players);
                 if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-                    eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
                 }
             }
             ClientMessage::StartCountdown => {
-                println!(
-                    "Ignoring start request from non-host player {}",
-                    player_id.0
-                );
+                if player_id == PlayerId(1) {
+                    start_countdown(Arc::clone(&state));
+                } else {
+                    server_println!(
+                        "Ignoring start request from non-host player {}",
+                        player_id.0
+                    );
+                }
             }
             ClientMessage::KeyInput { key, .. } => {
                 let now = std::time::Instant::now();
@@ -352,8 +408,15 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                     .apply_key_input(RacePlayerId(player_id.0), action, now)
                     .is_some()
                 {
+                    update_race_status(&mut state, now);
                     if let Err(error) = broadcast_race_snapshot(&mut state) {
-                        eprintln!("Failed to broadcast race snapshot: {error:#}");
+                        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+                    }
+                    if state.phase == NetworkRacePhase::Finished {
+                        server_println!("Race finished");
+                        if let Err(error) = broadcast_race_results(&mut state) {
+                            server_eprintln!("Failed to broadcast race results: {error:#}");
+                        }
                     }
                 }
             }
@@ -370,7 +433,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
     {
         player.connected = false;
         player.ready = false;
-        println!("{} disconnected", player.name);
+        server_println!("{} disconnected", player.name);
     }
     if let Some(player) = state
         .race
@@ -381,16 +444,25 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         player.connected = false;
     }
     state.clients.retain(|client| client.player_id != player_id);
+    update_race_status(&mut state, std::time::Instant::now());
     print_lobby_snapshot(&state.players);
     if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-        eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+        server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+    }
+    if state.phase == NetworkRacePhase::Finished {
+        if let Err(error) = broadcast_race_snapshot(&mut state) {
+            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+        }
+        if let Err(error) = broadcast_race_results(&mut state) {
+            server_eprintln!("Failed to broadcast race results: {error:#}");
+        }
     }
 }
 
 fn print_lobby_snapshot(players: &[LobbyPlayer]) {
-    println!("Lobby:");
+    server_println!("Lobby:");
     for player in players {
-        println!(
+        server_println!(
             "  {}: {} ({:?}){}{}{}",
             player.id.0,
             player.name,
@@ -419,7 +491,7 @@ fn broadcast_lobby_snapshot(state: &mut HostState) -> Result<()> {
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
         if let Err(error) = write_server_message(&mut client.stream, &snapshot) {
-            eprintln!(
+            server_eprintln!(
                 "Failed to send lobby snapshot to player {}: {error:#}",
                 client.player_id.0
             );
@@ -441,13 +513,13 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
             NetworkRacePhase::Countdown { .. }
             | NetworkRacePhase::Racing
             | NetworkRacePhase::Finished => {
-                println!("Race has already started");
+                server_println!("Race has already started");
                 return;
             }
         }
 
         if !all_connected_players_ready(&state.players) {
-            println!("Cannot start: all connected players must be ready");
+            server_println!("Cannot start: all connected players must be ready");
             return;
         }
 
@@ -455,9 +527,9 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
             remaining_seconds: 3,
         };
         push_event(&mut state, "Countdown started".to_string());
-        println!("Countdown: 3");
+        server_println!("Countdown: 3");
         if let Err(error) = broadcast_race_snapshot(&mut state) {
-            eprintln!("Failed to broadcast race snapshot: {error:#}");
+            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
         }
         true
     };
@@ -492,30 +564,65 @@ fn apply_line_input(state: &Arc<Mutex<HostState>>, player_id: PlayerId, line: &s
         .race
         .apply_key_input(RacePlayerId(player_id.0), KeyAction::Space, now);
 
+    update_race_status(&mut state, now);
     if let Err(error) = broadcast_race_snapshot(&mut state) {
-        eprintln!("Failed to broadcast race snapshot: {error:#}");
+        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+    }
+    if state.phase == NetworkRacePhase::Finished {
+        server_println!("Race finished");
+        if let Err(error) = broadcast_race_results(&mut state) {
+            server_eprintln!("Failed to broadcast race results: {error:#}");
+        }
     }
 }
 
 fn run_countdown(state: Arc<Mutex<HostState>>) {
     for remaining_seconds in [2, 1] {
         thread::sleep(Duration::from_secs(1));
-        let mut state = state.lock().expect("host state poisoned");
-        state.phase = NetworkRacePhase::Countdown { remaining_seconds };
-        println!("Countdown: {remaining_seconds}");
-        if let Err(error) = broadcast_race_snapshot(&mut state) {
-            eprintln!("Failed to broadcast race snapshot: {error:#}");
+        let mut guard = state.lock().expect("host state poisoned");
+        guard.phase = NetworkRacePhase::Countdown { remaining_seconds };
+        server_println!("Countdown: {remaining_seconds}");
+        if let Err(error) = broadcast_race_snapshot(&mut guard) {
+            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
         }
     }
 
     thread::sleep(Duration::from_secs(1));
-    let mut state = state.lock().expect("host state poisoned");
-    state.phase = NetworkRacePhase::Racing;
-    push_event(&mut state, "Race started".to_string());
-    println!("Race started");
-    if let Err(error) = broadcast_race_snapshot(&mut state) {
-        eprintln!("Failed to broadcast race snapshot: {error:#}");
+    let mut guard = state.lock().expect("host state poisoned");
+    guard.phase = NetworkRacePhase::Racing;
+    push_event(&mut guard, "Race started".to_string());
+    server_println!("Race started");
+    if let Err(error) = broadcast_race_snapshot(&mut guard) {
+        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
     }
+    drop(guard);
+    spawn_race_status_loop(state);
+}
+
+fn spawn_race_status_loop(state: Arc<Mutex<HostState>>) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(RACE_STATUS_POLL_INTERVAL);
+            let mut state = state.lock().expect("host state poisoned");
+            if state.phase != NetworkRacePhase::Racing {
+                break;
+            }
+
+            update_race_status(&mut state, Instant::now());
+            if state.phase != NetworkRacePhase::Finished {
+                continue;
+            }
+
+            server_println!("Race finished");
+            if let Err(error) = broadcast_race_snapshot(&mut state) {
+                server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+            }
+            if let Err(error) = broadcast_race_results(&mut state) {
+                server_eprintln!("Failed to broadcast race results: {error:#}");
+            }
+            break;
+        }
+    });
 }
 
 fn all_connected_players_ready(players: &[LobbyPlayer]) -> bool {
@@ -540,7 +647,7 @@ fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
         if let Err(error) = write_server_message(&mut client.stream, &snapshot) {
-            eprintln!(
+            server_eprintln!(
                 "Failed to send race snapshot to player {}: {error:#}",
                 client.player_id.0
             );
@@ -552,6 +659,117 @@ fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
         .clients
         .retain(|client| !failed_clients.contains(&client.player_id));
     Ok(())
+}
+
+fn broadcast_race_results(state: &mut HostState) -> Result<()> {
+    let results = ServerMessage::RaceResults {
+        placements: state.placements.clone(),
+    };
+
+    let mut failed_clients = Vec::new();
+    for client in state.clients.iter_mut() {
+        if let Err(error) = write_server_message(&mut client.stream, &results) {
+            server_eprintln!(
+                "Failed to send race results to player {}: {error:#}",
+                client.player_id.0
+            );
+            failed_clients.push(client.player_id);
+        }
+    }
+
+    state
+        .clients
+        .retain(|client| !failed_clients.contains(&client.player_id));
+    Ok(())
+}
+
+fn update_race_status(state: &mut HostState, now: Instant) {
+    if state.phase != NetworkRacePhase::Racing {
+        return;
+    }
+
+    let finished_ids = state
+        .race
+        .players
+        .iter()
+        .filter(|player| player.connected && player.state.is_finished())
+        .map(|player| PlayerId(player.id.0))
+        .collect::<Vec<_>>();
+
+    for id in finished_ids {
+        if !state.placements.contains(&id) {
+            state.placements.push(id);
+            let name = player_name(state, id).unwrap_or_else(|| format!("player {}", id.0));
+            push_event(
+                state,
+                format!("{}. {name} finished", state.placements.len()),
+            );
+        }
+    }
+
+    if state.first_finished_at.is_none() && !state.placements.is_empty() {
+        state.first_finished_at = Some(now);
+    }
+
+    let connected_racers = state
+        .race
+        .players
+        .iter()
+        .filter(|player| player.connected)
+        .count();
+    let connected_finished = state
+        .race
+        .players
+        .iter()
+        .filter(|player| player.connected && player.state.is_finished())
+        .count();
+    let all_connected_finished = connected_racers > 0 && connected_finished == connected_racers;
+    let timeout_expired = state.first_finished_at.is_some_and(|first_finished_at| {
+        now.duration_since(first_finished_at) >= POST_FIRST_FINISH_TIMEOUT
+    });
+
+    if all_connected_finished || timeout_expired {
+        append_unfinished_connected_placements(state);
+        state.phase = NetworkRacePhase::Finished;
+        push_event(state, "Race finished".to_string());
+    }
+}
+
+fn append_unfinished_connected_placements(state: &mut HostState) {
+    let mut remaining = state
+        .race
+        .players
+        .iter()
+        .filter(|player| player.connected)
+        .map(|player| {
+            (
+                PlayerId(player.id.0),
+                player.state.word_index,
+                player.state.input.chars().count(),
+            )
+        })
+        .filter(|(id, _, _)| !state.placements.contains(id))
+        .collect::<Vec<_>>();
+
+    remaining.sort_by_key(|(_, word_index, input_len)| {
+        (
+            std::cmp::Reverse(*word_index),
+            std::cmp::Reverse(*input_len),
+        )
+    });
+
+    state
+        .placements
+        .extend(remaining.into_iter().map(|(id, _, _)| id));
+}
+
+fn player_name(state: &HostState, id: PlayerId) -> Option<String> {
+    state
+        .race
+        .players
+        .iter()
+        .find(|player| player.id == RacePlayerId(id.0))
+        .map(|player| player.name.clone())
 }
 
 fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
@@ -633,10 +851,10 @@ mod tests {
     };
 
     use super::{
-        AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
-        all_connected_players_ready, broadcast_lobby_snapshot, build_race_snapshot,
+        AssignedColor, ConnectedClient, HostState, NetworkRacePhase, POST_FIRST_FINISH_TIMEOUT,
+        PlayerId, all_connected_players_ready, broadcast_lobby_snapshot, build_race_snapshot,
         connected_player_count, first_available_color, handle_client_messages, push_event,
-        read_join_hello, update_host_ready, welcome_joiner,
+        read_join_hello, update_host_ready, update_race_status, welcome_joiner,
     };
     use crate::game::{
         race::{PlayerColorId, RacePlayerId, RaceState},
@@ -699,6 +917,8 @@ mod tests {
                 phase: NetworkRacePhase::WaitingForHost,
                 snapshot_sequence: 0,
                 events: Vec::new(),
+                placements: Vec::new(),
+                first_finished_at: None,
             };
 
             broadcast_lobby_snapshot(&mut state).unwrap();
@@ -744,6 +964,8 @@ mod tests {
                 phase: NetworkRacePhase::WaitingForHost,
                 snapshot_sequence: 0,
                 events: Vec::new(),
+                placements: Vec::new(),
+                first_finished_at: None,
             }));
             handle_client_messages(PlayerId(2), read_stream, Arc::clone(&state));
             state
@@ -815,6 +1037,8 @@ mod tests {
             phase: NetworkRacePhase::WaitingForHost,
             snapshot_sequence: 0,
             events: Vec::new(),
+            placements: Vec::new(),
+            first_finished_at: None,
         }));
 
         update_host_ready(&state, true);
@@ -845,6 +1069,8 @@ mod tests {
             },
             snapshot_sequence: 0,
             events: Vec::new(),
+            placements: Vec::new(),
+            first_finished_at: None,
         };
         push_event(&mut state, "Countdown started".to_string());
 
@@ -871,6 +1097,8 @@ mod tests {
             phase: NetworkRacePhase::Racing,
             snapshot_sequence: 0,
             events: Vec::new(),
+            placements: Vec::new(),
+            first_finished_at: None,
         };
 
         state
@@ -892,6 +1120,60 @@ mod tests {
         assert_eq!(alex.word_index, 0);
         assert_eq!(alex.input, "o");
         assert_eq!(alex.typo_index, None);
+    }
+
+    #[test]
+    fn race_status_records_finish_order_and_finishes_when_all_connected_finish() {
+        let now = std::time::Instant::now();
+        let mut state = HostState {
+            clients: Vec::new(),
+            players: test_players(true),
+            race: test_race_state(),
+            phase: NetworkRacePhase::Racing,
+            snapshot_sequence: 0,
+            events: Vec::new(),
+            placements: Vec::new(),
+            first_finished_at: None,
+        };
+
+        finish_player(&mut state, RacePlayerId(2), now);
+        update_race_status(&mut state, now);
+
+        assert_eq!(state.phase, NetworkRacePhase::Racing);
+        assert_eq!(state.placements, vec![PlayerId(2)]);
+
+        finish_player(&mut state, RacePlayerId(1), now);
+        update_race_status(&mut state, now);
+
+        assert_eq!(state.phase, NetworkRacePhase::Finished);
+        assert_eq!(state.placements, vec![PlayerId(2), PlayerId(1)]);
+        assert!(state.events.iter().any(|event| event == "Race finished"));
+    }
+
+    #[test]
+    fn race_status_timeout_places_unfinished_connected_racers_by_progress() {
+        let now = std::time::Instant::now();
+        let mut state = HostState {
+            clients: Vec::new(),
+            players: test_players(true),
+            race: test_race_state(),
+            phase: NetworkRacePhase::Racing,
+            snapshot_sequence: 0,
+            events: Vec::new(),
+            placements: Vec::new(),
+            first_finished_at: None,
+        };
+        finish_player(&mut state, RacePlayerId(2), now);
+        state
+            .race
+            .apply_key_input(RacePlayerId(1), KeyAction::Char('o'), now)
+            .unwrap();
+
+        update_race_status(&mut state, now);
+        update_race_status(&mut state, now + POST_FIRST_FINISH_TIMEOUT);
+
+        assert_eq!(state.phase, NetworkRacePhase::Finished);
+        assert_eq!(state.placements, vec![PlayerId(2), PlayerId(1)]);
     }
 
     fn send_hello(client: &mut std::net::TcpStream) {
@@ -928,5 +1210,16 @@ mod tests {
         race.add_player(RacePlayerId(1), "host", PlayerColorId::Cyan, now);
         race.add_player(RacePlayerId(2), "alex", PlayerColorId::Red, now);
         race
+    }
+
+    fn finish_player(state: &mut HostState, id: RacePlayerId, now: std::time::Instant) {
+        let player = state
+            .race
+            .players
+            .iter_mut()
+            .find(|player| player.id == id)
+            .unwrap();
+        player.state.word_index = state.race.track.len();
+        player.state.finished_at = Some(now);
     }
 }

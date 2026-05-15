@@ -44,16 +44,20 @@ Implemented:
 - Server-authoritative key input for joined players and the host.
 - Raw per-keystroke terminal input for `join` after the race starts.
 - Race snapshots containing track words, player word index, current input, typo index, finished state, and connection state.
+- Server-authoritative finish order.
+- Race end when all connected racers finish.
+- Post-first-place timeout that ranks unfinished connected racers by progress.
+- `RaceResults` broadcast after the race ends.
+- Local host-as-client architecture for the `host` command.
+- Host countdown start from the shared network UI with `Space` or `start`.
 
 Not implemented yet:
 
-- Ratatui race rendering for network snapshots.
+- Full local-play-equivalent network track rendering, including bonus lanes and minimap.
 - Fixed-rate race snapshot broadcast loop.
 - Server-owned bonus state.
 - Server-owned multiplayer item resolution.
-- Finish order and race-end timeout.
 - Network debug-log file support.
-- Local host-as-client architecture. The current host process is also the player, but it reads host commands directly rather than connecting to itself as a normal client.
 
 Milestone 4 excludes:
 
@@ -116,16 +120,16 @@ Useful debug option on both:
 
 `--debug-log` is planned but is not implemented for `host` or `join` yet.
 
-Current transitional network controls:
+Current network controls:
 
 ```text
-Host lobby: ready, unready, lobby, start
+Host lobby: ready, unready, start, Space, quit
 Join lobby: ready, unready, quit
 After racing starts: character keys, Space, and Backspace are sent immediately
 Leave during network racing: Esc or Ctrl-C
 ```
 
-The join client still renders snapshots as plain text. The next client slice should switch network play to a Ratatui renderer so it feels like local `play`.
+The join client now uses a focused Ratatui network screen. The next rendering slice should bring it closer to local `play` by reusing the richer track window, racer lanes, bonus lanes, and minimap.
 
 ## Proposed File Changes
 
@@ -290,7 +294,7 @@ This keeps the host code path closer to every other client path, but we have not
 4. When all connected players are ready, the host can start countdown.
 5. During `Racing`, `KeyInput` messages mutate the authoritative `RaceState`.
 6. The server immediately broadcasts a `RaceSnapshot` after accepted key input.
-7. The join client captures raw key events during racing and prints text snapshots.
+7. The join client captures raw key events during racing and renders snapshots in a Ratatui alternate-screen UI.
 
 Current manual test shape:
 
@@ -407,11 +411,11 @@ Implemented:
 - `join` connects and sends lobby commands.
 - Client receives lobby snapshots and race snapshots.
 - Client sends raw key-derived `KeyInput` after racing starts.
-- Client prints text snapshots.
+- Client renders lobby/race snapshots in a focused Ratatui network screen.
 
 Remaining:
 
-- Client-side Ratatui rendering from snapshots.
+- Full client-side Ratatui rendering parity with local `play`.
 - Channels between input, network reader, and renderer.
 
 Deliverables:
@@ -435,12 +439,14 @@ Implemented:
 - Server applies client key input to `RaceState`.
 - Server broadcasts immediate snapshots after key input.
 - Final-word completion behavior comes from the shared typing engine.
+- Server records finish order.
+- Race ends when all connected racers finish.
+- Race ends after a post-first-place timeout.
+- Server broadcasts `RaceResults`.
 
 Remaining:
 
 - Fixed-rate snapshot loop.
-- Finish order.
-- Race end when all racers finish or timeout expires.
 - Full two-terminal race UI.
 
 Deliverables:
