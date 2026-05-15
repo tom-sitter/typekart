@@ -228,11 +228,20 @@ Balance:
 
 Banana disrupts a player who is actively typing.
 
-Effect:
+Design target effect:
 
 - If the target is in the middle of a word, their current target word is swapped with a different word of similar length.
 - Existing partial input may become incorrect.
 - The target must adapt, backspace, or recover using an active defensive effect.
+
+Current local prototype effect:
+
+- Banana immediately targets the nearest valid racer within range.
+- Against a human player, it clears current input, clears typo state, cancels any bonus attempt, and shows the short impact blink.
+- Against an AI racer, it applies a short stun, resets typing budget, and shows the short impact blink.
+- Shield blocks Banana and is consumed.
+
+The current prototype uses the spin-out/input-clear version because it is easier to read in the terminal and has clear immediate feedback. The word-swap design remains a possible future refinement, but implementation should treat the current spin-out behavior as the active game rule until we explicitly change it.
 
 Targeting:
 

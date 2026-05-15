@@ -26,15 +26,17 @@ The most important technical risk is not raw performance. It is keeping typing r
 
 Use Rust for the first implementation.
 
-Recommended libraries:
+Current libraries:
 
-- `tokio` for async networking and timers.
 - `ratatui` for terminal UI rendering.
 - `crossterm` for terminal input, colors, and alternate-screen handling.
 - `serde` for message serialization.
-- `serde_json` or `postcard` for the first network protocol.
+- `serde_json` for the first network protocol.
+- Standard library TCP sockets and threads for the first local-network server/client.
 
 Start with JSON messages for debuggability. If bandwidth or latency becomes a problem, switch to a compact binary format later.
+
+`tokio` remains a reasonable future option, but the current Milestone 4 implementation intentionally uses a thread-per-client model. For 2 to 6 players this keeps the networking code easier to learn and debug.
 
 ### Why Rust Fits This Project
 
@@ -161,12 +163,14 @@ typekart host
 typekart join 192.168.1.20:4000
 ```
 
-The host process should run both:
+Target architecture: the host process should run both:
 
 - The authoritative game server.
 - A local client connected to that server.
 
 This matches the product decision that the host is always a player.
+
+Current implementation: the host process is still the authoritative server and a player, but host input is read directly from the host terminal instead of going through a local client connection. This is a useful stepping stone, but we should still converge on a shared client path so host and joiner behavior do not drift.
 
 Later, the code can expose separate server and client binaries if internet hosting needs it:
 
@@ -271,6 +275,17 @@ The client loop should:
 4. Render the latest known state.
 
 Keep game rules out of the terminal renderer. The renderer should display state, not decide state.
+
+Current network prototype:
+
+- The server accepts TCP clients and handles one reader thread per joiner.
+- The server owns `RaceState`.
+- `KeyInput` messages mutate server-owned player state.
+- The server sends a `RaceSnapshot` immediately after accepted input.
+- The join client temporarily reads submitted text lines and converts them into key events.
+- The join client prints snapshots instead of using the Ratatui race renderer.
+
+This proves the protocol and authoritative input path. It is not the final client experience.
 
 ## Core State Model
 
@@ -550,6 +565,8 @@ Manual tests:
 
 See `docs/milestone-4-plan.md` for the detailed implementation plan.
 
+Current status: Milestone 4 has host/join, lobby readiness, countdown snapshots, server-owned race state, and server-authoritative line-derived key input. Remaining major work is raw network terminal input, rendering snapshots through the real UI, fixed-rate snapshots, finish order, race end, bonuses, items, and network diagnostics.
+
 ### Milestone 5: Multiplayer Polish
 
 - Better disconnect handling.
@@ -582,8 +599,10 @@ This creates a stable foundation. The UI and networking can then call into the s
 
 ## Current Open Technical Questions
 
-- Which terminal key should activate normal item use?
-- Which terminal key or key combination should activate modified item use?
 - How much local prediction is needed for typing feel?
 - What snapshot rate feels smooth without overcomplicating networking?
+- Should the host be refactored next into an in-process client, or should we first finish joiner raw input/rendering?
+- Should disconnected racers remain visible through the whole race or disappear after a timeout?
 - After local network play works, should internet play use direct port forwarding, a relay server, or hosted authoritative servers?
+
+Item activation keys are lower priority while item pickup remains automatic. If manual activation returns, we should run the key-inspector spike described above before committing to `Enter`, `Shift+Enter`, or control-key combinations.

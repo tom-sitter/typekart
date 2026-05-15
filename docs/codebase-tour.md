@@ -8,6 +8,7 @@ The implementation is intentionally split into two broad areas:
 
 - `game`: pure game rules and state.
 - `ui`: terminal input and rendering.
+- `net`: local-network protocol, host, and join client scaffolding.
 
 That separation matters. The game rules should be testable without a terminal, networking, or real-time rendering. The UI should display state and translate key presses into game actions, not decide game rules.
 
@@ -34,6 +35,8 @@ main
   parse CLI
   match command
   app::play(settings)
+  app::host(settings)
+  app::join(settings)
 ```
 
 ### `src/app.rs`
@@ -44,8 +47,7 @@ It:
 
 1. Loads `words_alpha.txt`.
 2. Generates a `Track`.
-3. Creates a `PlayerState`.
-4. Starts the terminal session.
+3. Starts either local play or the current network host/client path.
 
 This file should stay thin. As the project grows, it can coordinate host/join/play commands, but it should not become the place where game rules live.
 
@@ -64,6 +66,7 @@ pub mod bonus;
 pub mod ai;
 pub mod effects;
 pub mod items;
+pub mod race;
 ```
 
 In Rust, a module needs to be declared before other parts of the crate can use it. `pub mod` means the module is visible to parent modules such as `app` and `ui`.
@@ -141,6 +144,30 @@ Important Rust concepts:
 Banana target selection is already represented as reusable game logic. With automatic activation, it chooses the nearest valid racer within range rather than asking for a direction.
 
 Shield is intentionally not a `HeldItem`. When rolled from a bonus word, it activates immediately as an `ActiveEffect`.
+
+### `src/game/race.rs`
+
+This module is the migration point for server-authoritative multiplayer state.
+
+Main types:
+
+- `RaceState`: a track plus all racers in that race.
+- `RacePlayer`: one player's identity, color, connection state, and `PlayerState`.
+- `RacePlayerId`: a small game-level player id.
+- `PlayerColorId`: game-level color identity, separate from terminal color types.
+
+Current responsibilities:
+
+- Add players to a shared race.
+- Apply `KeyAction` input to one selected player.
+- Reuse the existing deterministic typing engine for final-word completion and typo behavior.
+
+Important Rust concepts:
+
+- The network layer maps protocol ids and colors into game-level ids and colors.
+- `RaceState::apply_key_input` returns `Option<Vec<TypingEvent>>`: `None` means the player id was unknown; `Some(events)` means input was applied and produced zero or more typing events.
+
+This module is still small. Bonus state, item resolution, finish order, and race-end status have not been moved into it yet.
 
 ### `src/game/effects.rs`
 
@@ -412,6 +439,108 @@ crossterm KeyEvent  ->  KeyAction  ->  game rules
 
 This keeps terminal-specific code out of the game engine.
 
+The current network prototype has a separate, simpler data flow:
+
+```text
+join terminal line
+  net::client converts characters to ClientMessage::KeyInput
+  net::server receives KeyInput
+  game::race::RaceState applies KeyAction to the selected RacePlayer
+  net::server broadcasts RaceSnapshot
+  net::client prints track words and player progress
+```
+
+This is intentionally transitional. Local `play` already uses raw terminal key events and Ratatui rendering; network `join` still reads submitted text lines and prints snapshots. The next network UI step is to reuse the raw terminal event/rendering approach for snapshots.
+
+## Network Modules
+
+### `src/net/mod.rs`
+
+This declares the network submodules:
+
+```rust
+pub mod client;
+pub mod protocol;
+pub mod server;
+```
+
+### `src/net/protocol.rs`
+
+This module defines the JSON messages sent over TCP.
+
+Main client messages:
+
+- `Hello`
+- `SetReady`
+- `StartCountdown`
+- `KeyInput`
+- `RestartRace`
+- `Leave`
+
+Main server messages:
+
+- `Welcome`
+- `LobbySnapshot`
+- `RaceSnapshot`
+- `RaceEvent`
+- `RaceResults`
+- `Error`
+
+Important Rust concepts:
+
+- `#[derive(Serialize, Deserialize)]` lets `serde_json` encode/decode these types.
+- `#[serde(tag = "type", rename_all = "snake_case")]` makes enum JSON explicit and readable.
+- Small wrapper types such as `PlayerId(pub u64)` and `ClientSequence(pub u64)` keep numeric ids from being mixed up accidentally.
+
+### `src/net/server.rs`
+
+This module owns the current local-network host.
+
+Current responsibilities:
+
+- Bind a TCP listener.
+- Accept joiners.
+- Validate lobby capacity.
+- Reject duplicate active display names.
+- Assign player ids and colors.
+- Track connected clients.
+- Track lobby readiness.
+- Start a 3-second countdown.
+- Store the authoritative `RaceState`.
+- Apply `KeyInput` to server-owned player state.
+- Broadcast `LobbySnapshot` and `RaceSnapshot` messages.
+
+The server uses `Arc<Mutex<HostState>>` because multiple threads need shared mutable access:
+
+- The listener thread accepts new connections.
+- One command thread reads host terminal commands.
+- One reader thread per joiner reads client messages.
+- Countdown runs in a short background thread.
+
+Important Rust concepts:
+
+- `Arc<T>` is atomically reference-counted shared ownership across threads.
+- `Mutex<T>` protects mutable state so only one thread mutates it at a time.
+- `TcpStream::try_clone` creates another handle to the same socket, letting the server keep a write stream while a reader thread owns the read stream.
+
+Current limitation: the host is a player, but host input is handled directly in the host process. The target architecture is for the host to use the same client path as joiners.
+
+### `src/net/client.rs`
+
+This module owns the current join command.
+
+Current responsibilities:
+
+- Connect to a host.
+- Send `Hello`.
+- Print lobby snapshots.
+- Send `ready`, `unready`, and `quit`.
+- Track the latest network race phase.
+- During `Racing`, convert submitted text lines into `KeyInput` messages.
+- Print race snapshots with track words and player progress.
+
+Current limitation: this client is line-based. It does not yet use raw terminal input or the Ratatui renderer, so it is useful for proving networking but not yet the final racing experience.
+
 ## Borrowing And Ownership In This Code
 
 Some useful examples:
@@ -492,6 +621,37 @@ Run with AI racers and write detailed item diagnostics after quitting:
 cargo run -- play --ai-racers 6 --debug-log typekart-debug.log
 ```
 
+Host a local-network lobby:
+
+```sh
+cargo run -- host --name host --words 20 --bind 127.0.0.1:4000 --max-players 2
+```
+
+Join from another terminal:
+
+```sh
+cargo run -- join --name alex --server 127.0.0.1:4000
+```
+
+Current network lobby commands:
+
+```text
+host> ready
+host> start
+join> ready
+join> quit
+```
+
+After the race starts, network typing is temporarily line-based:
+
+```text
+join> currentword
+join> nextword
+join> backspace
+```
+
+Each submitted race line is converted into key-level protocol messages on the client, then validated by the server-owned typing engine.
+
 Format code:
 
 ```sh
@@ -508,16 +668,19 @@ Recommended order:
 4. Read `src/game/typing.rs` slowly. This is where the main rules live.
 5. Read the tests in `typing.rs`; they explain expected behavior very directly.
 6. Read `src/ui/session.rs` to see how local state and display events are bundled.
-7. Read `src/ui/terminal.rs` to see the runtime loop.
-8. Read `src/ui/render.rs` to understand how state becomes terminal output.
+7. Read `src/game/race.rs` to see the shared race-state extraction for multiplayer.
+8. Read `src/net/protocol.rs` to understand the TCP JSON messages.
+9. Read `src/net/server.rs` and `src/net/client.rs` for the current host/join path.
+10. Read `src/ui/terminal.rs` to see the local runtime loop.
+11. Read `src/ui/render.rs` to understand how state becomes terminal output.
 
 ## Things That Are Intentionally Simple For Now
 
 - The UI is functional, not final.
-- There is no multiplayer yet.
-- The racer layer only shows the local player.
-- The player list and event feed are local placeholders for future multiplayer.
-- Bonus and item behavior is local-only; there are no real remote targets yet.
+- Network multiplayer is skeletal: lobby, countdown, and server-authoritative typing work, but the network client does not yet use the full terminal renderer.
+- The network client is line-based during racing.
+- The host is a player but does not yet connect through the same client path as joiners.
+- Bonus and item behavior is local-only in `play`; network bonus and item resolution are not implemented yet.
 - The typing engine still only owns main-track typing. Bonus attempts are coordinated by `LocalSession`.
 - Track generation samples with replacement, so repeated words can appear.
 - Most state fields are public to keep early iteration straightforward.

@@ -40,10 +40,14 @@ pub fn play(
     )
 }
 
-pub fn host(bind: SocketAddr, name: String, max_players: usize) -> Result<()> {
+pub fn host(bind: SocketAddr, name: String, word_count: usize, max_players: usize) -> Result<()> {
+    let word_list = WordList::load("words_alpha.txt").context("failed to load word list")?;
+    let track = Track::generate(&word_list, word_count).context("failed to generate track")?;
+
     run_host(HostConfig {
         bind,
         host_name: name,
+        track,
         max_players,
     })
 }

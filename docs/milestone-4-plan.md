@@ -22,6 +22,40 @@ Milestone 4 includes:
 - Basic disconnect handling.
 - Debug logs for network messages and item resolution.
 
+## Current Implementation Status
+
+Milestone 4 is in progress.
+
+Implemented:
+
+- `host` and `join` CLI commands.
+- TCP listener/client connection using newline-delimited JSON.
+- Protocol message types and round-trip tests.
+- Lobby join flow with capacity checks.
+- Unique active display names.
+- Host-as-player lobby entry.
+- Up to 6 connected players.
+- Color assignment with slot reuse after disconnects.
+- Readiness commands for host and joiners.
+- Basic disconnect handling.
+- Host-started countdown.
+- Server-broadcast `RaceSnapshot` messages for countdown and racing phases.
+- Server-owned `RaceState` with generated track words.
+- Server-authoritative key input for joined players and the host.
+- Transitional line-based network input after the race starts.
+- Race snapshots containing track words, player word index, current input, typo index, finished state, and connection state.
+
+Not implemented yet:
+
+- Raw per-keystroke terminal input for `join`.
+- Ratatui race rendering for network snapshots.
+- Fixed-rate race snapshot broadcast loop.
+- Server-owned bonus state.
+- Server-owned multiplayer item resolution.
+- Finish order and race-end timeout.
+- Network debug-log file support.
+- Local host-as-client architecture. The current host process is also the player, but it reads host commands directly rather than connecting to itself as a normal client.
+
 Milestone 4 excludes:
 
 - Internet matchmaking or relay hosting.
@@ -80,6 +114,19 @@ Useful debug option on both:
 ```sh
 --debug-log typekart-debug.log
 ```
+
+`--debug-log` is planned but is not implemented for `host` or `join` yet.
+
+Current transitional network controls:
+
+```text
+Host lobby: ready, unready, lobby, start
+Join lobby: ready, unready, quit
+After racing starts: type one submitted line at a time
+Backspace during network racing: type the literal command backspace
+```
+
+This line-based input is a temporary bridge. The next client slice should switch network play to raw terminal key events so it behaves like local `play`.
 
 ## Proposed File Changes
 
@@ -220,15 +267,50 @@ For Milestone 4, every client can receive the same snapshot. Later, if bonus vis
 ## Host Flow
 
 1. Host runs `typekart host`.
-2. App starts a server thread bound to the requested address.
-3. App also starts a local client connected to that server.
+2. App starts a TCP server bound to the requested address.
+3. Current implementation reads host lobby and race input directly from the host terminal.
 4. Host appears in the lobby as a normal player.
 5. Other players join.
-6. Host presses Space to start countdown.
-7. Server broadcasts countdown snapshots.
-8. Race starts simultaneously for all clients.
+6. Host marks ready.
+7. Host runs `start` to start countdown.
+8. Server broadcasts countdown snapshots.
+9. Race starts simultaneously for connected clients.
 
-This keeps the host code path close to every other client path.
+Target later flow:
+
+1. Host process also starts a local client connected to its own server.
+2. Host presses Space to start countdown from the same raw terminal path used by joiners.
+
+This keeps the host code path closer to every other client path, but we have not moved to that architecture yet.
+
+## Current Network Race Flow
+
+1. Host generates the race track from `words_alpha.txt`.
+2. Server stores the track in `RaceState`.
+3. When joiners connect, the server adds them to lobby state and race state.
+4. When all connected players are ready, the host can start countdown.
+5. During `Racing`, `KeyInput` messages mutate the authoritative `RaceState`.
+6. The server immediately broadcasts a `RaceSnapshot` after accepted key input.
+7. The temporary join client prints text snapshots rather than drawing the full race UI.
+
+Current manual test shape:
+
+```sh
+cargo run -- host --name host --words 20 --bind 127.0.0.1:4000 --max-players 2
+cargo run -- join --name alex --server 127.0.0.1:4000
+```
+
+Then:
+
+```text
+join> ready
+host> ready
+host> start
+join> firstword
+join> secondword
+```
+
+Each submitted race line is converted into `KeyInput` messages for every character plus a trailing `Space`.
 
 ## Join Flow
 
@@ -244,6 +326,8 @@ This keeps the host code path close to every other client path.
 ### Phase 1: Protocol Types
 
 Add serializable message types and tests.
+
+Status: complete.
 
 Deliverables:
 
@@ -261,6 +345,21 @@ cargo test protocol
 ### Phase 2: Extract Shared Race State
 
 Move the authoritative local race rules out of `LocalSession` into a reusable game-level structure.
+
+Status: partially complete.
+
+Implemented:
+
+- `RaceState`.
+- `RacePlayer`.
+- Server-style method for applying normal key input to one player.
+
+Remaining:
+
+- Shared bonus state.
+- Shared item resolution.
+- Shared finish order/race status.
+- Adapting local `LocalSession` to the shared state, if we choose that path.
 
 Deliverables:
 
@@ -283,6 +382,8 @@ cargo run -- play --ai-racers 6
 
 Add a TCP server that can accept clients and broadcast lobby snapshots.
 
+Status: complete for the lobby skeleton.
+
 Deliverables:
 
 - `host` command starts the server.
@@ -301,6 +402,21 @@ Validation:
 
 Add a network client loop that sends inputs and renders snapshots.
 
+Status: partially complete.
+
+Implemented:
+
+- `join` connects and sends lobby commands.
+- Client receives lobby snapshots and race snapshots.
+- Client sends line-derived `KeyInput` after racing starts.
+- Client prints text snapshots.
+
+Remaining:
+
+- Raw terminal key input.
+- Client-side Ratatui rendering from snapshots.
+- Channels between input, network reader, and renderer.
+
 Deliverables:
 
 - `join` command connects to a host.
@@ -313,6 +429,22 @@ Implementation note: use channels between the terminal loop and a network thread
 ### Phase 5: Multiplayer Race Loop
 
 Wire the server to the shared authoritative race state.
+
+Status: started.
+
+Implemented:
+
+- Host-started countdown.
+- Server applies client key input to `RaceState`.
+- Server broadcasts immediate snapshots after key input.
+- Final-word completion behavior comes from the shared typing engine.
+
+Remaining:
+
+- Fixed-rate snapshot loop.
+- Finish order.
+- Race end when all racers finish or timeout expires.
+- Full two-terminal race UI.
 
 Deliverables:
 

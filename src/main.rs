@@ -49,6 +49,9 @@ enum Command {
         /// Display name for the host player.
         #[arg(long)]
         name: String,
+        /// Number of words in the generated track.
+        #[arg(short, long, default_value_t = 40)]
+        words: usize,
         /// Address and port to listen on.
         #[arg(long, default_value = "127.0.0.1:4000")]
         bind: SocketAddr,
@@ -105,9 +108,10 @@ fn main() -> Result<()> {
         ),
         Command::Host {
             name,
+            words,
             bind,
             max_players,
-        } => app::host(bind, name, max_players),
+        } => app::host(bind, name, words, max_players),
         Command::Join { name, server } => app::join(server, name),
     }
 }
