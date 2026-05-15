@@ -44,7 +44,7 @@ AI typing should use the same `game::typing::apply_key` path as the human player
 
 - Mushroom: same local speed boost idea as the player, advancing three words quickly enough to read.
 - Shield: activates immediately when picked up.
-- Banana: targets the nearest racer in the requested direction within 10 words.
+- Banana: targets the nearest racer within 10 words, regardless of whether that racer is ahead or behind.
 - If Banana hits an AI, stun that AI briefly.
 - If Banana hits the player, use the existing attack warning path.
 

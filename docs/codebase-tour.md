@@ -128,16 +128,15 @@ Main types:
 - `HeldItem`: items that occupy the held-item slot, currently Mushroom or Banana.
 - `ItemPickup`: either a held item or an immediate Shield pickup.
 - `ItemUse`: normal or modified item activation.
-- `TargetDirection`: behind or ahead.
 - `RacerPosition`: a small helper for target-selection tests.
 
 Important Rust concepts:
 
 - Enums are a good fit for closed sets of game states.
 - `match` over an enum makes each item behavior explicit.
-- Small pure helper functions, such as `select_banana_target`, are easy to unit test before multiplayer exists.
+- Small pure helper functions, such as `select_nearest_banana_target`, are easy to unit test before multiplayer exists.
 
-Banana target selection is already represented as reusable game logic, even though the current single-player UI has no real target.
+Banana target selection is already represented as reusable game logic. With automatic activation, it chooses the nearest valid racer within range rather than asking for a direction.
 
 Shield is intentionally not a `HeldItem`. When rolled from a bonus word, it activates immediately as an `ActiveEffect`.
 
@@ -362,8 +361,7 @@ Responsibilities:
 
 - Lay out the screen.
 - Render the responsive track window.
-- Render the separate racer layer.
-- Render the input buffer.
+- Render separate racer lanes.
 - Render stats.
 - Render bonus choices and item state.
 - Render the player list.
@@ -378,7 +376,7 @@ Important Rust concepts:
 - Ratatui widgets are values. We build them and pass them to `frame.render_widget`.
 - `TrackWindow<'a>` and `VisibleWord<'a>` borrow word strings from the existing `Track` instead of cloning them.
 
-The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw the word layer and each racer's lane. When Shield is active, the marker is rendered in bracketed form as `[███]`.
+The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw the word layer and each racer's lane. When Shield is active, the marker is rendered in bracketed form as `[███]`. When Mushroom is active, the marker gains a `>>>` suffix. Item impacts briefly blink the impacted racer's marker.
 
 The word layer is rendered through fixed-width track cells. Correctly typed characters are green, the next character has a cursor-like highlight, and `typo_index` makes typed characters from the first typo onward red. Since the renderer maps `PlayerState.input` over the visible track stream, typo overflow can continue across following words and spaces while `word_index` remains blocked at the real race position.
 

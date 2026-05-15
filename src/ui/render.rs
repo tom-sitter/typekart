@@ -15,24 +15,25 @@ use ratatui::{
 use crate::{
     game::{
         bonus::{BonusChoiceStatus, BonusState},
-        effects::AttackWarning,
         player::PlayerState,
         track::Track,
     },
-    ui::session::{AiRacer, BonusAttempt, EventLog},
+    ui::session::{AiRacer, BonusAttempt, EventLog, RaceStatus},
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 90;
 const TRACK_PANEL_HEIGHT: u16 = 10;
 const LOCAL_RACER_MARKER: &str = "███";
 const SHIELDED_RACER_MARKER: &str = "[███]";
+const BOOST_MARKER_SUFFIX: &str = ">>>";
 
 pub struct TypingScreen<'a> {
     pub track: &'a Track,
     pub player: &'a PlayerState,
     pub bonuses: &'a BonusState,
     pub bonus_attempt: Option<BonusAttempt>,
-    pub attack_warning: Option<AttackWarning>,
+    pub player_impact_until: Option<std::time::Instant>,
+    pub race_status: RaceStatus,
     pub ai_racers: &'a [AiRacer],
     pub events: &'a EventLog,
 }
@@ -74,6 +75,33 @@ impl<'a> TrackWindow<'a> {
         let marker_center = self.player_track_column(player);
         let marker_start = marker_center.saturating_sub(marker_width / 2);
         marker_start.min(self.width.saturating_sub(marker_width))
+    }
+
+    pub fn racer_marker_for_visible_player(
+        &self,
+        player: &PlayerState,
+        marker_width: usize,
+    ) -> Option<VisibleRacerMarker> {
+        let first_visible = self.words.first()?.index;
+        let last_visible = self.words.last()?.index;
+
+        if player.word_index < first_visible {
+            return Some(VisibleRacerMarker::Behind);
+        }
+
+        if player.is_finished() {
+            return Some(VisibleRacerMarker::Visible {
+                start: self.racer_marker_start_for_player(player, marker_width),
+            });
+        }
+
+        if player.word_index > last_visible {
+            return Some(VisibleRacerMarker::Ahead);
+        }
+
+        Some(VisibleRacerMarker::Visible {
+            start: self.racer_marker_start_for_player(player, marker_width),
+        })
     }
 
     fn player_track_column(&self, player: &PlayerState) -> usize {
@@ -121,6 +149,13 @@ impl<'a> TrackWindow<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibleRacerMarker {
+    Visible { start: usize },
+    Behind,
+    Ahead,
+}
+
 pub fn render(frame: &mut Frame<'_>, screen: TypingScreen<'_>) {
     let area = frame.size();
     let root = Layout::default()
@@ -157,7 +192,6 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         .constraints([
             Constraint::Length(4),
             Constraint::Length(5),
-            Constraint::Length(5),
             Constraint::Min(0),
         ])
         .split(columns[1]);
@@ -170,15 +204,18 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonuses,
         screen.bonus_attempt,
         screen.ai_racers,
+        screen.player_impact_until,
     );
-    frame.render_widget(finish_or_empty(screen.player), left[1]);
+    frame.render_widget(
+        finish_or_empty(screen.player, screen.ai_racers, screen.race_status),
+        left[1],
+    );
     frame.render_widget(stats_view(screen.player), right[0]);
-    frame.render_widget(item_view(screen.player, screen.attack_warning), right[1]);
     frame.render_widget(
         player_list(screen.track, screen.player, screen.ai_racers),
-        right[2],
+        right[1],
     );
-    frame.render_widget(event_feed(screen.events), right[3]);
+    frame.render_widget(event_feed(screen.events), right[2]);
 }
 
 fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
@@ -187,7 +224,6 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         .constraints([
             Constraint::Length(TRACK_PANEL_HEIGHT),
             Constraint::Length(4),
-            Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Min(0),
         ])
@@ -201,14 +237,22 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonuses,
         screen.bonus_attempt,
         screen.ai_racers,
+        screen.player_impact_until,
     );
     frame.render_widget(stats_view(screen.player), rows[1]);
-    frame.render_widget(item_view(screen.player, screen.attack_warning), rows[2]);
     frame.render_widget(
         player_list(screen.track, screen.player, screen.ai_racers),
+        rows[2],
+    );
+    frame.render_widget(
+        results_or_events(
+            screen.player,
+            screen.ai_racers,
+            screen.race_status,
+            screen.events,
+        ),
         rows[3],
     );
-    frame.render_widget(results_or_events(screen.player, screen.events), rows[4]);
 }
 
 fn header<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
@@ -242,11 +286,19 @@ fn render_track(
     bonuses: &BonusState,
     bonus_attempt: Option<BonusAttempt>,
     ai_racers: &[AiRacer],
+    player_impact_until: Option<std::time::Instant>,
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let window = build_track_window(track, player.word_index, inner_width);
     frame.render_widget(
-        track_view(&window, player, bonuses, bonus_attempt, ai_racers),
+        track_view(
+            &window,
+            player,
+            bonuses,
+            bonus_attempt,
+            ai_racers,
+            player_impact_until,
+        ),
         area,
     );
 }
@@ -257,11 +309,12 @@ fn track_view<'a>(
     bonuses: &'a BonusState,
     bonus_attempt: Option<BonusAttempt>,
     ai_racers: &[AiRacer],
+    player_impact_until: Option<std::time::Instant>,
 ) -> Paragraph<'a> {
     let word_line = track_word_line(window, player);
 
     let now = std::time::Instant::now();
-    let racer_lines = racer_lines(window, player, ai_racers, now);
+    let racer_lines = racer_lines(window, player, ai_racers, player_impact_until, now);
 
     let mut lines = bonus_lines(window, player, bonuses, bonus_attempt, now);
     lines.push(word_line);
@@ -323,15 +376,34 @@ fn racer_lines(
     window: &TrackWindow<'_>,
     player: &PlayerState,
     ai_racers: &[AiRacer],
+    player_impact_until: Option<std::time::Instant>,
     now: std::time::Instant,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![racer_line_for_player(window, player, now, Color::Cyan)];
-    lines.extend(
-        ai_racers
-            .iter()
-            .map(|ai| racer_line_for_player(window, &ai.player, now, ai_color(ai.id))),
-    );
+    let mut lines = vec![racer_line_for_player(
+        window,
+        player,
+        now,
+        Color::Cyan,
+        player_impact_until,
+        RacerVisibility::Always,
+    )];
+    lines.extend(ai_racers.iter().map(|ai| {
+        racer_line_for_player(
+            window,
+            &ai.player,
+            now,
+            ai_color(ai.id),
+            ai.impact_until,
+            RacerVisibility::OnlyWhenCurrentWordVisible,
+        )
+    }));
     lines
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RacerVisibility {
+    Always,
+    OnlyWhenCurrentWordVisible,
 }
 
 fn racer_line_for_player(
@@ -339,15 +411,38 @@ fn racer_line_for_player(
     player: &PlayerState,
     now: std::time::Instant,
     color: Color,
+    impact_until: Option<std::time::Instant>,
+    visibility: RacerVisibility,
 ) -> Line<'static> {
     let mut cells = vec![TrackCell::default(); window.width];
-    let marker = if player.has_active_shield(now) {
-        SHIELDED_RACER_MARKER
-    } else {
-        LOCAL_RACER_MARKER
+    let marker = racer_marker(player, now);
+    let visible_marker = match visibility {
+        RacerVisibility::Always => Some(VisibleRacerMarker::Visible {
+            start: window.racer_marker_start_for_player(player, marker.chars().count()),
+        }),
+        RacerVisibility::OnlyWhenCurrentWordVisible => {
+            window.racer_marker_for_visible_player(player, marker.chars().count())
+        }
     };
-    let marker_start = window.racer_marker_start_for_player(player, marker.chars().count());
-    write_marker(&mut cells, marker_start, marker, color);
+
+    if let Some(visible_marker) = visible_marker {
+        let (marker_start, marker) = match visible_marker {
+            VisibleRacerMarker::Visible { start } => (start, marker),
+            VisibleRacerMarker::Behind => (0, edge_racer_marker('<', player, now)),
+            VisibleRacerMarker::Ahead => (
+                window
+                    .width
+                    .saturating_sub(edge_racer_marker('>', player, now).chars().count()),
+                edge_racer_marker('>', player, now),
+            ),
+        };
+        write_marker(
+            &mut cells,
+            marker_start,
+            marker.as_str(),
+            marker_style(color, impact_until, now),
+        );
+    }
 
     Line::from(
         cells
@@ -357,15 +452,77 @@ fn racer_line_for_player(
     )
 }
 
-fn write_marker(cells: &mut [TrackCell], start: usize, marker: &str, color: Color) {
+fn edge_racer_marker(direction: char, player: &PlayerState, now: std::time::Instant) -> String {
+    let mut marker = if player.has_active_shield(now) {
+        format!("[{direction}]")
+    } else {
+        direction.to_string()
+    };
+
+    if has_active_mushroom(player) {
+        marker.push_str(BOOST_MARKER_SUFFIX);
+    }
+
+    marker
+}
+
+fn racer_marker(player: &PlayerState, now: std::time::Instant) -> String {
+    let mut marker = if player.has_active_shield(now) {
+        SHIELDED_RACER_MARKER.to_string()
+    } else {
+        LOCAL_RACER_MARKER.to_string()
+    };
+
+    if has_active_mushroom(player) {
+        marker.push_str(BOOST_MARKER_SUFFIX);
+    }
+
+    marker
+}
+
+fn has_active_mushroom(player: &PlayerState) -> bool {
+    player.active_effects.iter().any(|effect| {
+        matches!(
+            effect,
+            crate::game::effects::ActiveEffect::Mushroom {
+                remaining_words,
+                ..
+            } if *remaining_words > 0
+        )
+    })
+}
+
+fn write_marker(cells: &mut [TrackCell], start: usize, marker: &str, style: Style) {
     for (offset, ch) in marker.chars().enumerate() {
         if let Some(cell) = cells.get_mut(start + offset) {
-            *cell = TrackCell {
-                ch,
-                style: Style::default().fg(color).add_modifier(Modifier::BOLD),
-            };
+            *cell = TrackCell { ch, style };
         }
     }
+}
+
+fn marker_style(
+    color: Color,
+    impact_until: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Style {
+    let base = Style::default().fg(color).add_modifier(Modifier::BOLD);
+    if impact_blink_visible(impact_until, now) {
+        base.bg(Color::Yellow).fg(Color::Black)
+    } else {
+        base
+    }
+}
+
+fn impact_blink_visible(impact_until: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    let Some(until) = impact_until else {
+        return false;
+    };
+    if until <= now {
+        return false;
+    }
+
+    let remaining_ms = until.saturating_duration_since(now).as_millis();
+    (remaining_ms / 150) % 2 == 0
 }
 
 fn ai_color(id: usize) -> Color {
@@ -598,40 +755,6 @@ fn stats_view<'a>(player: &PlayerState) -> Paragraph<'a> {
     Paragraph::new(stats).block(Block::default().title("Stats").borders(Borders::ALL))
 }
 
-fn item_view<'a>(player: &PlayerState, attack_warning: Option<AttackWarning>) -> Paragraph<'a> {
-    let now = std::time::Instant::now();
-    let held = player.held_item.map(|item| item.name()).unwrap_or("None");
-    let shield = player
-        .active_effects
-        .iter()
-        .find_map(|effect| match effect {
-            crate::game::effects::ActiveEffect::Shield { until } if *until > now => Some(format!(
-                "Shield {:.1}s",
-                until.saturating_duration_since(now).as_secs_f64()
-            )),
-            _ => None,
-        })
-        .unwrap_or_else(|| "Shield inactive".to_string());
-    let warning = attack_warning
-        .map(|warning| {
-            format!(
-                "Warning {:.1}s",
-                warning
-                    .resolves_at
-                    .saturating_duration_since(now)
-                    .as_secs_f64()
-            )
-        })
-        .unwrap_or_else(|| "Warning none".to_string());
-
-    Paragraph::new(vec![
-        Line::from(format!("Held: {held}")),
-        Line::from(shield),
-        Line::from(warning),
-    ])
-    .block(Block::default().title("Item").borders(Borders::ALL))
-}
-
 fn player_list<'a>(track: &Track, player: &PlayerState, ai_racers: &[AiRacer]) -> Paragraph<'a> {
     let mut standings = Vec::with_capacity(ai_racers.len() + 1);
     standings.push(PlayerListRow {
@@ -687,49 +810,153 @@ fn event_feed<'a>(events: &'a EventLog) -> Paragraph<'a> {
     Paragraph::new(lines).block(Block::default().title("Events").borders(Borders::ALL))
 }
 
-fn results_or_events<'a>(player: &PlayerState, events: &'a EventLog) -> Paragraph<'a> {
-    if player.is_finished() {
-        results_view(player)
+fn results_or_events<'a>(
+    player: &PlayerState,
+    ai_racers: &[AiRacer],
+    race_status: RaceStatus,
+    events: &'a EventLog,
+) -> Paragraph<'a> {
+    if race_status.is_ended() {
+        results_view(player, ai_racers, race_status)
     } else {
         event_feed(events)
     }
 }
 
-fn finish_or_empty<'a>(player: &PlayerState) -> Paragraph<'a> {
-    if player.is_finished() {
-        results_view(player)
+fn finish_or_empty<'a>(
+    player: &PlayerState,
+    ai_racers: &[AiRacer],
+    race_status: RaceStatus,
+) -> Paragraph<'a> {
+    if race_status.is_ended() {
+        results_view(player, ai_racers, race_status)
     } else {
         Paragraph::new("").block(Block::default().borders(Borders::ALL))
     }
 }
 
-fn results_view<'a>(player: &PlayerState) -> Paragraph<'a> {
-    let finished_at = player.finished_at.unwrap_or_else(std::time::Instant::now);
-    let elapsed = finished_at.saturating_duration_since(player.started_at);
-    let wpm = player
-        .stats
-        .words_per_minute(player.started_at, finished_at);
-    let text = vec![
-        Line::from(Span::styled(
-            "Race complete",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!("Time: {:.1}s", elapsed.as_secs_f64())),
-        Line::from(format!("WPM: {:.0}", wpm)),
-        Line::from(format!("Accuracy: {:.0}%", player.stats.accuracy())),
-        Line::from("Press Ctrl-R to restart, Esc or Ctrl-C to exit."),
-    ];
+fn results_view<'a>(
+    player: &PlayerState,
+    ai_racers: &[AiRacer],
+    race_status: RaceStatus,
+) -> Paragraph<'a> {
+    let mut text = vec![Line::from(Span::styled(
+        "Race results",
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    text.extend(result_rows(player, ai_racers, race_status));
+    text.push(Line::from(
+        "Press Ctrl-R to restart, Esc or Ctrl-C to exit.",
+    ));
 
     Paragraph::new(text).block(Block::default().title("Results").borders(Borders::ALL))
 }
 
+fn result_rows<'a>(
+    player: &PlayerState,
+    ai_racers: &[AiRacer],
+    race_status: RaceStatus,
+) -> Vec<Line<'a>> {
+    let mut rows = race_result_rows(player, ai_racers, race_status);
+    rows.sort_by(|a, b| {
+        a.rank_key()
+            .cmp(&b.rank_key())
+            .then_with(|| b.completed_words.cmp(&a.completed_words))
+            .then_with(|| b.input_chars.cmp(&a.input_chars))
+    });
+
+    rows.into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            Line::from(format!(
+                "{}. {:<12} {:>5} {:>7} {:>4.0} WPM",
+                index + 1,
+                row.name,
+                row.time_label(),
+                row.status_label(),
+                row.wpm
+            ))
+        })
+        .collect()
+}
+
+fn race_result_rows(
+    player: &PlayerState,
+    ai_racers: &[AiRacer],
+    race_status: RaceStatus,
+) -> Vec<RaceResultRow> {
+    let mut rows = vec![RaceResultRow::new("you".to_string(), player, race_status)];
+    rows.extend(
+        ai_racers
+            .iter()
+            .map(|ai| RaceResultRow::new(ai.name.clone(), &ai.player, race_status)),
+    );
+    rows
+}
+
+struct RaceResultRow {
+    name: String,
+    finished_at: Option<std::time::Instant>,
+    ended_at: Option<std::time::Instant>,
+    started_at: std::time::Instant,
+    completed_words: usize,
+    input_chars: usize,
+    wpm: f64,
+}
+
+impl RaceResultRow {
+    fn new(name: String, player: &PlayerState, race_status: RaceStatus) -> Self {
+        let end_for_wpm = player
+            .finished_at
+            .or(race_status.ended_at)
+            .unwrap_or_else(std::time::Instant::now);
+        Self {
+            name,
+            finished_at: player.finished_at,
+            ended_at: race_status.ended_at,
+            started_at: player.started_at,
+            completed_words: player.stats.completed_words,
+            input_chars: player.input.chars().count(),
+            wpm: player
+                .stats
+                .words_per_minute(player.started_at, end_for_wpm),
+        }
+    }
+
+    fn rank_key(&self) -> (usize, std::time::Instant) {
+        match self.finished_at {
+            Some(finished_at) => (0, finished_at),
+            None => (1, self.ended_at.unwrap_or_else(std::time::Instant::now)),
+        }
+    }
+
+    fn time_label(&self) -> String {
+        self.finished_at
+            .map(|finished_at| {
+                format!(
+                    "{:.1}s",
+                    finished_at
+                        .saturating_duration_since(self.started_at)
+                        .as_secs_f64()
+                )
+            })
+            .unwrap_or_else(|| "--".to_string())
+    }
+
+    fn status_label(&self) -> &'static str {
+        if self.finished_at.is_some() {
+            "done"
+        } else {
+            "timeout"
+        }
+    }
+}
+
 fn help_view<'a>() -> Paragraph<'a> {
-    Paragraph::new(
-        "Space between words. Backspace fixes typos. Enter uses item. Ctrl-R restarts. Esc quits.",
-    )
-    .block(Block::default().borders(Borders::TOP))
+    Paragraph::new("Space between words. Backspace fixes typos. Ctrl-R restarts. Esc quits.")
+        .block(Block::default().borders(Borders::TOP))
 }
 
 #[cfg(test)]
@@ -742,14 +969,15 @@ mod tests {
         game::{
             ai::AiDifficulty,
             bonus::{BonusChoice, BonusPoint, BonusState},
+            effects::ActiveEffect,
             player::PlayerState,
             track::Track,
         },
         ui::render::{
             WordRenderState, bonus_column, build_track_window, is_bonus_point_claimable,
-            racer_lines, track_word_line, visible_bonus_point,
+            racer_lines, result_rows, track_word_line, visible_bonus_point,
         },
-        ui::session::AiRacer,
+        ui::session::{AiRacer, RaceStatus},
     };
 
     fn track(words: &[&str]) -> Track {
@@ -832,13 +1060,120 @@ mod tests {
         player.input = "o".to_string();
         let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, Instant::now());
         ai.player.word_index = 1;
-        let lines = racer_lines(&window, &player, &[ai], Instant::now());
+        let lines = racer_lines(&window, &player, &[ai], None, Instant::now());
 
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].spans[0].content.as_ref(), "█");
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::Cyan));
         assert_eq!(lines[1].spans[3].content.as_ref(), "█");
         assert_eq!(lines[1].spans[3].style.fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn ai_racer_marker_shows_left_indicator_when_behind_visible_window() {
+        let track = track(&["one", "two", "three", "four", "five", "six"]);
+        let window = build_track_window(&track, 5, 40);
+        let player = PlayerState::new(Instant::now());
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, Instant::now());
+        ai.player.word_index = 1;
+
+        let lines = racer_lines(&window, &player, &[ai], None, Instant::now());
+
+        assert_eq!(lines[1].spans[0].content.as_ref(), "<");
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn ai_racer_marker_shows_right_indicator_when_ahead_of_visible_window() {
+        let track = track(&["one", "two", "three", "four", "five", "six"]);
+        let window = build_track_window(&track, 0, 7);
+        let player = PlayerState::new(Instant::now());
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, Instant::now());
+        ai.player.word_index = 3;
+
+        let lines = racer_lines(&window, &player, &[ai], None, Instant::now());
+
+        assert_eq!(lines[1].spans[6].content.as_ref(), ">");
+        assert_eq!(lines[1].spans[6].style.fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn finished_ai_racer_keeps_kart_marker_at_finish_line() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 2, 40);
+        let player = PlayerState::new(now);
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai.player.word_index = 3;
+        ai.player.finished_at = Some(now);
+
+        let lines = racer_lines(&window, &player, &[ai], None, now);
+
+        assert!(lines[1].spans.iter().any(|span| {
+            span.content.as_ref() == "█" && span.style.fg == Some(Color::LightRed)
+        }));
+        assert!(!lines[1].spans.iter().any(|span| {
+            span.content.as_ref() == ">" && span.style.fg == Some(Color::LightRed)
+        }));
+    }
+
+    #[test]
+    fn offscreen_ai_indicator_can_show_status_effect_marker() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three", "four", "five", "six"]);
+        let window = build_track_window(&track, 5, 40);
+        let player = PlayerState::new(now);
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai.player.word_index = 1;
+        ai.player.active_effects.push(ActiveEffect::Shield {
+            until: now + std::time::Duration::from_secs(1),
+        });
+
+        let lines = racer_lines(&window, &player, &[ai], None, now);
+
+        assert_eq!(lines[1].spans[0].content.as_ref(), "[");
+        assert_eq!(lines[1].spans[1].content.as_ref(), "<");
+        assert_eq!(lines[1].spans[2].content.as_ref(), "]");
+    }
+
+    #[test]
+    fn racer_line_shows_mushroom_boost_suffix() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(now);
+        player.active_effects.push(ActiveEffect::Mushroom {
+            remaining_words: 2,
+            next_step_at: now,
+            step_interval: std::time::Duration::from_millis(400),
+        });
+
+        let lines = racer_lines(&window, &player, &[], None, now);
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[1].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[2].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[3].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[4].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[5].content.as_ref(), ">");
+    }
+
+    #[test]
+    fn racer_line_blinks_when_impacted() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let player = PlayerState::new(now);
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            Some(now + std::time::Duration::from_millis(300)),
+            now,
+        );
+
+        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Yellow));
     }
 
     #[test]
@@ -868,6 +1203,35 @@ mod tests {
         let player = PlayerState::new(Instant::now());
 
         assert_eq!(player.word_index, 0);
+    }
+
+    #[test]
+    fn result_rows_rank_all_racers_by_finish_time_then_timeout_progress() {
+        let started_at = Instant::now();
+        let mut player = PlayerState::new(started_at);
+        player.finished_at = Some(started_at + std::time::Duration::from_secs(12));
+        player.stats.completed_words = 2;
+
+        let mut ai_winner = AiRacer::new(1, AiDifficulty::Easy, 35.0, started_at);
+        ai_winner.player.finished_at = Some(started_at + std::time::Duration::from_secs(10));
+        ai_winner.player.stats.completed_words = 2;
+
+        let mut ai_timeout = AiRacer::new(2, AiDifficulty::Easy, 35.0, started_at);
+        ai_timeout.player.stats.completed_words = 1;
+
+        let rows = result_rows(
+            &player,
+            &[ai_timeout, ai_winner],
+            RaceStatus {
+                first_finished_at: Some(started_at + std::time::Duration::from_secs(10)),
+                ended_at: Some(started_at + std::time::Duration::from_secs(25)),
+            },
+        );
+
+        assert!(rows[0].spans[0].content.contains("ai-1"));
+        assert!(rows[1].spans[0].content.contains("you"));
+        assert!(rows[2].spans[0].content.contains("ai-2"));
+        assert!(rows[2].spans[0].content.contains("timeout"));
     }
 
     #[test]

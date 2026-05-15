@@ -100,20 +100,19 @@ In this example, `turbo`, `spark`, and `drift` are the three available choices a
 - The three choices should be displayed stacked vertically.
 - Choices should be visible ahead of the claim window so players can plan.
 - Choices visible ahead of the claim window should render inactive or greyed out for that player until they become claimable.
-- Typing one available choice grants a random item.
+- Typing one available choice and pressing Space grants a random item.
 - Bonus intent is inferred from typed input rather than selected explicitly.
 - Bonus choices are only available after the preceding main-track word is completed and before the next main-track word is begun.
 - If the player starts typing a bonus word, they may bail out by pressing Backspace until the bonus input is cleared.
-- Once a choice is typed by any player, it is eliminated from that bonus point.
+- Once a choice is submitted by any player, it is eliminated from that bonus point.
 - Eliminated choices are replaced after a cooldown.
 - The replacement word appears at the same bonus point and is visible to all players.
 - Typing a bonus word costs time because the player is not advancing along the main track while typing it.
 - Bonus words should not require punctuation or capitalization.
 - Players cannot claim bonus words while a typo is present.
 - Players cannot claim bonus words while Shield is active.
-- Players can only hold one item at a time.
-- A player who already has a held item can still type the main track, but should not be able to claim another bonus word until the held item is used or discarded.
-- For players with a held item, bonus words should render as disabled or greyed out until the item is consumed.
+- Current local behavior auto-activates items immediately when obtained.
+- Later balance may make held items configurable again.
 - For players with an active Shield, bonus words should render as disabled or greyed out until Shield expires. The bonus choices themselves remain active for other players.
 - If two players complete the same bonus word at nearly the same time, the server awards it to the first valid completion it receives.
 - If a player loses that race for the bonus word, they are forced onto the next main-track word and cannot retry a different bonus choice at that bonus point.
@@ -140,7 +139,7 @@ Initial recommendation:
 
 ## Items
 
-Items are race modifiers gained from bonus words. A player can hold one item at a time and activates their held item with a dedicated key such as `Enter`.
+Items are race modifiers gained from bonus words. Current local behavior activates items immediately when they are obtained. A future configuration may restore held items and manual activation.
 
 Items are never dropped as persistent objects on the track. They immediately modify one or more players by changing their track text, changing their current or upcoming words, modifying displayed characters, or temporarily loosening typing rules.
 
@@ -237,15 +236,14 @@ Effect:
 
 Targeting:
 
-- Normal use targets the nearest racer immediately behind the current player.
-- Modified use targets the nearest racer immediately in front of the current player.
+- Banana targets the nearest racer, whether that racer is ahead, behind, or overlapping the current player.
 - The target must be within 10 main-track words.
 - If no valid racer is within range, the item misses.
 - Banana is consumed whenever it is used, whether or not a valid target exists.
 
 Initial recommendation:
 
-- Use separate normal and modified item keys to choose backward or forward targeting without opening a target-selection UI.
+- With automatic item activation, Banana should not require a targeting UI or a forward/backward activation choice.
 
 ### Mushroom
 
@@ -275,6 +273,7 @@ Initial recommendation:
 - 5 second visible duration.
 - A successfully blocked attack consumes the active shield.
 - Shield pickup probability should increase when other racers are nearby, such as within 5 words ahead or behind.
+- Current local tuning uses a 1 in 6 Shield chance normally and a 3 in 10 Shield chance when another racer is nearby.
 
 ## Multiplayer Model
 
@@ -331,7 +330,7 @@ The UI needs to communicate the race without overwhelming the player.
 Recommended layout:
 
 ```text
-TypeKart                         Lap: 1/1       Item: Banana
+TypeKart                         Lap: 1/1
 
 Track:
                          turbo
@@ -363,17 +362,15 @@ you picked up Banana
 - Pin the local racer's marker to the next character while input is valid.
 - Pin the local racer's marker to the first typo while a typo is active.
 - When Shield is active, encapsulate the racer's marker in brackets to show the protected state, such as `[███]`.
+- When Mushroom is active, append `>>>` to the racer's marker to show the boost.
+- When an item impact lands, briefly blink the impacted racer's lane marker.
 - Keep the word layer readable; racer markers should not obscure the text players must type.
 - Since each racer has a lane, close positions should be readable without marker color blending.
 
-### Item View
+### Item Feedback
 
-- Show the held item.
-- Show whether it is ready to activate.
-- Show active negative effects clearly.
-- Show active positive effects clearly.
-- Grey out bonus words when they are visible but unavailable because the player already has a held item.
-- Show active item effects and remaining duration.
+- Represent active item effects on the racer lanes instead of a separate item panel.
+- Grey out bonus words when they are visible but unavailable because the player already has an active lockout effect.
 
 ### Event Feed
 
@@ -392,10 +389,10 @@ Initial control scheme:
 | Key | Action |
 | --- | --- |
 | Letter keys | Type current word or bonus word. |
-| Space | Submit current word. |
+| Space | Submit current word or completed bonus word. |
 | Backspace | Delete last typed character. |
-| Enter or configured item key | Activate held item with normal behavior. |
-| Shift+Enter or configured modified item key | Activate held item with modified behavior, when supported. |
+| Enter or configured item key | Reserved for manual item activation if held items are enabled later. |
+| Shift+Enter or configured modified item key | Reserved for modified item activation if held items are enabled later. |
 | Ctrl+R | Restart with a new track. |
 | Esc or Ctrl-C | Leave race or quit. |
 
@@ -429,7 +426,9 @@ The race ends when:
 
 After the race:
 
-- Show final placements.
+- Show all racers in one ranked results table.
+- Rank finished racers by finish timestamp.
+- Rank timed-out racers after finished racers by progress at timeout.
 - Show words per minute.
 - Show accuracy.
 - Show item pickups and item hits.

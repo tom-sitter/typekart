@@ -287,7 +287,7 @@ Rules:
 Rules:
 
 - Normal use targets nearest racer behind.
-- Modified use targets nearest racer ahead.
+- Automatic use targets the nearest racer in either direction.
 - Target must be within 10 words.
 - If no target exists, log `No racer in range`.
 - Banana is consumed whenever it is used, whether or not a target exists.
@@ -464,7 +464,7 @@ Item tests:
 - Blocking consumes active Shield.
 - Banana with no local target logs or returns no target.
 - Banana with no local target still consumes the held item.
-- Banana target selection chooses nearest valid racer in the requested direction.
+- Banana target selection chooses the nearest valid racer in either direction.
 
 Renderer/helper tests:
 
