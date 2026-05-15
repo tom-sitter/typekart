@@ -80,10 +80,12 @@ Bonus words are optional item boxes represented as words. They appear periodical
 
 At each bonus point, all racers see the same three available bonus-word choices. A player can choose which one to type. Claiming one choice removes that word from the shared bonus point until its cooldown replaces it with another word.
 
-Bonus words appear offset above the main track between regular words:
+Bonus words appear offset above the main track between regular words. They should be visible before the racer reaches the bonus point so players can plan whether to go for one.
 
 ```text
-          turbo      spark      drift
+          turbo
+          spark
+          drift
 the quick brown fox jumps over the lazy driver into bright road
 ```
 
@@ -95,6 +97,9 @@ In this example, `turbo`, `spark`, and `drift` are the three available choices a
 - Bonus points appear periodically along the main track.
 - Each bonus point presents three shared bonus-word choices.
 - All players see the same three choices at that bonus point.
+- The three choices should be displayed stacked vertically.
+- Choices should be visible ahead of the claim window so players can plan.
+- Choices visible ahead of the claim window should render inactive or greyed out for that player until they become claimable.
 - Typing one available choice grants a random item.
 - Bonus intent is inferred from typed input rather than selected explicitly.
 - Bonus choices are only available after the preceding main-track word is completed and before the next main-track word is begun.
@@ -105,9 +110,11 @@ In this example, `turbo`, `spark`, and `drift` are the three available choices a
 - Typing a bonus word costs time because the player is not advancing along the main track while typing it.
 - Bonus words should not require punctuation or capitalization.
 - Players cannot claim bonus words while a typo is present.
+- Players cannot claim bonus words while Shield is active.
 - Players can only hold one item at a time.
 - A player who already has a held item can still type the main track, but should not be able to claim another bonus word until the held item is used or discarded.
 - For players with a held item, bonus words should render as disabled or greyed out until the item is consumed.
+- For players with an active Shield, bonus words should render as disabled or greyed out until Shield expires. The bonus choices themselves remain active for other players.
 - If two players complete the same bonus word at nearly the same time, the server awards it to the first valid completion it receives.
 - If a player loses that race for the bonus word, they are forced onto the next main-track word and cannot retry a different bonus choice at that bonus point.
 
@@ -148,7 +155,7 @@ The server should choose items so the race remains competitive:
 Incoming attacks should provide a short visible warning before they take effect.
 
 - The warning should identify that an attack is incoming.
-- The warning should last long enough for a focused player to manually activate Shield.
+- The warning should last long enough for an already-active Shield to matter.
 - The warning should be short enough that attacks still feel dangerous.
 - Blockable attacks should resolve only after the warning window expires.
 - If Shield is active when the attack resolves, the attack is blocked.
@@ -170,14 +177,14 @@ Initial examples:
 - Star Power lasts 10 seconds.
 - Shield lasts 5 seconds.
 - Blue Shell affects the target's next 3 words.
-- Mushroom advances exactly 3 words immediately.
+- Mushroom advances 3 words one at a time at a tunable speedboost pace.
 
 ### Item Concepts
 
 | Item | Target | Effect |
 | --- | --- | --- |
 | Star Power | Self | Temporarily lets the player ignore typos without backspacing. |
-| Mushroom | Self | Instantly advances the player by three main-track words. |
+| Mushroom | Self | Rapidly advances the player by three main-track words, one word at a time. |
 | Triple Mushroom | Self | Gives multiple smaller boosts, activated one at a time. |
 | Banana | Nearby opponent | Swaps a nearby opponent's current word with a different word while they are typing it. |
 | Blue Shell | First place | Randomizes capitalization in the first-place player's next three words. |
@@ -233,7 +240,8 @@ Targeting:
 - Normal use targets the nearest racer immediately behind the current player.
 - Modified use targets the nearest racer immediately in front of the current player.
 - The target must be within 10 main-track words.
-- If no valid racer is within range, the item fails or is retained depending on final balance.
+- If no valid racer is within range, the item misses.
+- Banana is consumed whenever it is used, whether or not a valid target exists.
 
 Initial recommendation:
 
@@ -243,7 +251,10 @@ Initial recommendation:
 
 Mushroom is a simple fixed boost.
 
-- Instantly advance three main-track words if the player is not at the finish.
+- Rapidly advance three main-track words if the player is not at the finish.
+- Advance one word at a time so the player can visually track where they will resume typing.
+- Initial speed should be approximately equivalent to 150 WPM.
+- The exact speed should be tunable after playtesting.
 - If fewer than three words remain, advance to the finish.
 - Avoid skipping bonus words unless the implementation explicitly supports it.
 
@@ -254,14 +265,16 @@ Shield is defensive.
 Effect:
 
 - Blocks the next negative item.
-- Must be activated manually.
-- Does not auto-trigger when held.
-- Can be activated during an incoming attack warning.
+- Activates immediately when picked up from a bonus word.
+- Is not held in the item slot.
+- Cannot be saved for later.
+- Expires if unused.
 
 Initial recommendation:
 
-- Manual activation with a 5 second visible duration.
+- 5 second visible duration.
 - A successfully blocked attack consumes the active shield.
+- Shield pickup probability should increase when other racers are nearby, such as within 5 words ahead or behind.
 
 ## Multiplayer Model
 
@@ -344,6 +357,7 @@ you picked up Banana
 - Show completed words, current word, and upcoming words.
 - Show racer positions on a separate racer layer aligned with the same track window.
 - Represent each racer with a three-character marker in their unique color.
+- When Shield is active, encapsulate the racer's marker in brackets to show the protected state, such as `[███]`.
 - Keep the word layer readable; racer markers should not obscure the text players must type.
 - If a racer marker overlaps the local player's marker, the local player's color takes visual priority.
 - If remote racer markers overlap each other, blend their colors when truecolor rendering is available.
@@ -387,6 +401,7 @@ Initial control scheme:
 | Backspace | Delete last typed character. |
 | Enter or configured item key | Activate held item with normal behavior. |
 | Shift+Enter or configured modified item key | Activate held item with modified behavior, when supported. |
+| Ctrl+R | Restart with a new track. |
 | Esc or Ctrl-C | Leave race or quit. |
 
 ### Item Activation Keys
@@ -409,6 +424,7 @@ When a player completes the final word:
 - The player can continue spectating until the race ends.
 - Finished players cannot use new items.
 - Active effects from finished players should expire normally or be cleared.
+- Players can restart locally with a new track from the results view.
 
 The race ends when:
 

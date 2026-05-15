@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use super::stats::TypingStats;
+use super::{effects::ActiveEffect, items::HeldItem, stats::TypingStats};
 
 #[derive(Debug, Clone)]
 pub struct PlayerState {
@@ -18,6 +18,8 @@ pub struct PlayerState {
     pub started_at: Instant,
     pub finished_at: Option<Instant>,
     pub stats: TypingStats,
+    pub held_item: Option<HeldItem>,
+    pub active_effects: Vec<ActiveEffect>,
 }
 
 impl PlayerState {
@@ -29,10 +31,29 @@ impl PlayerState {
             started_at,
             finished_at: None,
             stats: TypingStats::default(),
+            held_item: None,
+            active_effects: Vec::new(),
         }
     }
 
     pub fn is_finished(&self) -> bool {
         self.finished_at.is_some()
+    }
+
+    pub fn has_active_shield(&self, now: Instant) -> bool {
+        self.active_effects
+            .iter()
+            .any(|effect| effect.is_shield_active_at(now))
+    }
+
+    pub fn expire_effects(&mut self, now: Instant) -> usize {
+        let before = self.active_effects.len();
+        self.active_effects.retain(|effect| match effect {
+            ActiveEffect::Shield { until } => *until > now,
+            ActiveEffect::Mushroom {
+                remaining_words, ..
+            } => *remaining_words > 0,
+        });
+        before - self.active_effects.len()
     }
 }

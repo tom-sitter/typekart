@@ -18,5 +18,5 @@ pub fn play(word_count: usize) -> Result<()> {
     let track = Track::generate(&word_list, word_count).context("failed to generate track")?;
     let player = PlayerState::new(Instant::now());
 
-    run_typing_session(track, player)
+    run_typing_session(track, player, word_list)
 }

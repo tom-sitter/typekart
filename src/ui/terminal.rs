@@ -17,16 +17,20 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
-    game::{player::PlayerState, track::Track, typing::KeyAction},
+    game::{
+        player::PlayerState,
+        track::{Track, WordList},
+        typing::KeyAction,
+    },
     ui::render::{TypingScreen, render},
-    ui::session::LocalSession,
+    ui::session::{LocalAction, LocalSession},
 };
 
 type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
 
-pub fn run_typing_session(track: Track, player: PlayerState) -> Result<()> {
+pub fn run_typing_session(track: Track, player: PlayerState, word_list: WordList) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let result = run_loop(&mut terminal, LocalSession::new(track, player));
+    let result = run_loop(&mut terminal, LocalSession::new(track, player, word_list));
     restore_terminal(&mut terminal)?;
     result
 }
@@ -58,10 +62,15 @@ fn run_loop(terminal: &mut AppTerminal, mut session: LocalSession) -> Result<()>
                 TypingScreen {
                     track: &session.track,
                     player: &session.player,
+                    bonuses: &session.bonuses,
+                    bonus_attempt: session.bonus_attempt,
+                    attack_warning: session.attack_warning,
                     events: &session.events,
                 },
             );
         })?;
+
+        session.tick(Instant::now());
 
         if !event::poll(Duration::from_millis(50))? {
             continue;
@@ -81,7 +90,7 @@ fn run_loop(terminal: &mut AppTerminal, mut session: LocalSession) -> Result<()>
             return Ok(());
         }
 
-        if let Some(action) = key_action(key_event) {
+        if let Some(action) = local_action(key_event) {
             session.apply_action(action, Instant::now());
         }
     }
@@ -93,15 +102,25 @@ fn should_quit(key_event: KeyEvent) -> bool {
             && key_event.modifiers.contains(KeyModifiers::CONTROL))
 }
 
-fn key_action(key_event: KeyEvent) -> Option<KeyAction> {
+fn local_action(key_event: KeyEvent) -> Option<LocalAction> {
     match key_event.code {
-        KeyCode::Char(' ') => Some(KeyAction::Space),
+        KeyCode::Enter if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
+            Some(LocalAction::ActivateModifiedItem)
+        }
+        KeyCode::Enter => Some(LocalAction::ActivateItem),
+        KeyCode::Char('r') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(LocalAction::Restart)
+        }
+        KeyCode::Char('k') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(LocalAction::ActivateModifiedItem)
+        }
+        KeyCode::Char(' ') => Some(LocalAction::Typing(KeyAction::Space)),
         KeyCode::Char(ch)
             if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
         {
-            Some(KeyAction::Char(ch))
+            Some(LocalAction::Typing(KeyAction::Char(ch)))
         }
-        KeyCode::Backspace => Some(KeyAction::Backspace),
+        KeyCode::Backspace => Some(LocalAction::Typing(KeyAction::Backspace)),
         _ => None,
     }
 }

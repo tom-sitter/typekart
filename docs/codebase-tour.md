@@ -58,6 +58,9 @@ pub mod player;
 pub mod stats;
 pub mod track;
 pub mod typing;
+pub mod bonus;
+pub mod effects;
+pub mod items;
 ```
 
 In Rust, a module needs to be declared before other parts of the crate can use it. `pub mod` means the module is visible to parent modules such as `app` and `ui`.
@@ -79,6 +82,60 @@ Important Rust concepts:
 - `bail!` returns early with an error.
 
 The word list is treated as curated data. Runtime code trims blank lines and samples from the list. Tests can validate that the curated file shape is sane, but normal gameplay should not silently filter words.
+
+### `src/game/bonus.rs`
+
+This module owns bonus points, bonus choices, cooldowns, and bonus item rolls.
+
+Main types:
+
+- `BonusState`: all bonus points for the current race.
+- `BonusPoint`: one item-box gap after a specific track word.
+- `BonusChoice`: one visible bonus word at a bonus point.
+- `BonusChoiceStatus`: whether a choice is available or cooling down.
+
+Important Rust concepts:
+
+- Arrays like `[BonusChoice; 3]` are fixed-size collections known at compile time.
+- `Duration` and `Instant` model cooldowns without relying on wall-clock dates.
+- `Option<(usize, &BonusPoint)>` returns both the index and a borrowed point when a matching bonus gap exists.
+- `#[cfg(test)]` helpers such as `with_points` exist only for tests and are not compiled into normal builds.
+
+The bonus module does not decide how typed input is interpreted. It models the bonus state. `ui::session` coordinates whether a player is currently attempting a bonus word.
+
+### `src/game/items.rs`
+
+This module defines item types and item-specific helper rules.
+
+Main types:
+
+- `HeldItem`: items that occupy the held-item slot, currently Mushroom or Banana.
+- `ItemPickup`: either a held item or an immediate Shield pickup.
+- `ItemUse`: normal or modified item activation.
+- `TargetDirection`: behind or ahead.
+- `RacerPosition`: a small helper for target-selection tests.
+
+Important Rust concepts:
+
+- Enums are a good fit for closed sets of game states.
+- `match` over an enum makes each item behavior explicit.
+- Small pure helper functions, such as `select_banana_target`, are easy to unit test before multiplayer exists.
+
+Banana target selection is already represented as reusable game logic, even though the current single-player UI has no real target.
+
+Shield is intentionally not a `HeldItem`. When rolled from a bonus word, it activates immediately as an `ActiveEffect`.
+
+### `src/game/effects.rs`
+
+This module defines timed active effects and pending attacks.
+
+Main types:
+
+- `ActiveEffect`: currently only Shield.
+- `PendingAttack`: currently only the planned Banana word swap.
+- `AttackWarning`: an attack plus the time when it resolves.
+
+Shield is represented as an active effect with an expiration `Instant`. The UI can ask `PlayerState` whether Shield is active and render the racer marker as `[███]`. When the effect expires, it is consumed automatically.
 
 ### `src/game/player.rs`
 
@@ -208,7 +265,9 @@ This module owns local session state for the terminal prototype.
 
 Main types:
 
-- `LocalSession`: holds the current `Track`, `PlayerState`, and `EventLog`.
+- `LocalSession`: holds the current `Track`, `PlayerState`, `BonusState`, optional bonus attempt, optional attack warning, and `EventLog`.
+- `LocalAction`: terminal-level actions such as typing, normal item use, and modified item use.
+- `BonusAttempt`: the bonus point and choice currently being typed.
 - `EventLog`: stores recent display-facing race events.
 
 Important Rust concepts:
@@ -220,12 +279,35 @@ Important Rust concepts:
 `LocalSession::apply_action` is now the bridge from input to game state:
 
 ```text
-KeyAction
-  apply_key mutates PlayerState
+LocalAction
+  typing may become a bonus attempt or main-track input
+  item actions activate held items
   returned TypingEvent values become EventLog messages
 ```
 
-This keeps event display text in the UI layer while preserving the typing engine as pure game logic.
+`LocalSession::tick` handles time-based behavior:
+
+```text
+tick
+  refresh expired bonus cooldowns
+  advance active Mushroom boosts
+  expire active Shield
+  resolve pending attack warnings
+```
+
+This keeps event display text and local coordination in the UI layer while preserving reusable game-rule helpers under `game`.
+
+`LocalSession::restart` rebuilds the race in place:
+
+```text
+restart
+  generate a fresh Track from the stored WordList
+  create a new PlayerState
+  regenerate bonus points for the new track
+  clear transient item, warning, input, and event state
+```
+
+The session stores the loaded word list and original word count so the terminal loop can restart without returning to `app::play`.
 
 ### `src/ui/terminal.rs`
 
@@ -236,10 +318,12 @@ Responsibilities:
 - Enable raw mode.
 - Enter the alternate screen.
 - Poll for keyboard events.
-- Convert terminal key events into `KeyAction`.
+- Convert terminal key events into `LocalAction`.
 - Apply actions through `LocalSession`.
 - Ask the renderer to draw the current state.
 - Restore the terminal on exit.
+
+`Ctrl-R` maps to `LocalAction::Restart`. It is a control chord rather than a plain `r` so normal typing still works for words containing that letter.
 
 Important Rust concepts:
 
@@ -262,13 +346,14 @@ Responsibilities:
 - Render the separate racer layer.
 - Render the input buffer.
 - Render stats.
+- Render bonus choices and item state.
 - Render the player list.
 - Render the event feed.
 - Render help and final results.
 
 Important Rust concepts:
 
-- `TypingScreen<'a>` contains borrowed references to `Track`, `PlayerState`, and `EventLog`.
+- `TypingScreen<'a>` contains borrowed references to `Track`, `PlayerState`, `BonusState`, and `EventLog`.
 - The `'a` lifetime means the screen cannot outlive the data it references.
 - `Frame<'_>` means the frame has a lifetime, but the function does not need to name it.
 - Ratatui widgets are values. We build them and pass them to `frame.render_widget`.
@@ -276,7 +361,9 @@ Important Rust concepts:
 
 The input renderer uses `typo_index` to color the first typo and every following character red. Characters before the typo are green. An empty input shows `_` as a visual cursor.
 
-The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw both the word layer and the local player's three-cell racer marker.
+The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw both the word layer and the local player's racer marker. When Shield is active, the marker is rendered in bracketed form as `[███]`.
+
+The bonus renderer reads the next visible bonus point from `BonusState`. Choices are stacked vertically so players can scan them before reaching the claim window. They stay grey while merely upcoming, then turn magenta once the player reaches the claim window. They also render grey when unavailable because the player has a held item, has a typo, has an active Shield, or the choice is cooling down.
 
 ## Data Flow
 
@@ -284,11 +371,13 @@ The current local game loop looks like this:
 
 ```text
 keyboard event
-  ui::terminal converts it to KeyAction
+  ui::terminal converts it to LocalAction
   ui::session applies it to LocalSession
-  game::typing::apply_key mutates PlayerState
+  game::typing::apply_key mutates PlayerState for main-track input
+  game::bonus handles bonus state and cooldowns
+  game::items handles item helper rules
   ui::session logs meaningful TypingEvents
-  ui::render draws Track + PlayerState + EventLog
+  ui::render draws Track + PlayerState + BonusState + EventLog
 ```
 
 The important boundary:
@@ -398,7 +487,8 @@ Recommended order:
 - There is no multiplayer yet.
 - The racer layer only shows the local player.
 - The player list and event feed are local placeholders for future multiplayer.
-- The typing engine has no bonus-word or item logic yet.
+- Bonus and item behavior is local-only; there are no real remote targets yet.
+- The typing engine still only owns main-track typing. Bonus attempts are coordinated by `LocalSession`.
 - Track generation samples with replacement, so repeated words can appear.
 - Most state fields are public to keep early iteration straightforward.
 

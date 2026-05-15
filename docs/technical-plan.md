@@ -483,7 +483,7 @@ High-value tests:
 - Bonus window availability.
 - Bonus claim conflicts.
 - Held-item bonus lockout.
-- Mushroom three-word jump.
+- Mushroom three-word speedboost progression.
 - Shield activation and expiry.
 - Attack warning followed by block.
 - Banana target selection.

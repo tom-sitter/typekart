@@ -13,17 +13,25 @@ use ratatui::{
 };
 
 use crate::{
-    game::{player::PlayerState, track::Track},
-    ui::session::EventLog,
+    game::{
+        bonus::{BonusChoiceStatus, BonusState},
+        effects::AttackWarning,
+        player::PlayerState,
+        track::Track,
+    },
+    ui::session::{BonusAttempt, EventLog},
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 90;
 const LOCAL_RACER_MARKER: &str = "███";
-const LOCAL_RACER_MARKER_WIDTH: usize = 3;
+const SHIELDED_RACER_MARKER: &str = "[███]";
 
 pub struct TypingScreen<'a> {
     pub track: &'a Track,
     pub player: &'a PlayerState,
+    pub bonuses: &'a BonusState,
+    pub bonus_attempt: Option<BonusAttempt>,
+    pub attack_warning: Option<AttackWarning>,
     pub events: &'a EventLog,
 }
 
@@ -56,13 +64,13 @@ impl<'a> TrackWindow<'a> {
             .find(|word| word.state == WordRenderState::Current)
     }
 
-    pub fn racer_marker_start(&self) -> usize {
+    pub fn racer_marker_start(&self, marker_width: usize) -> usize {
         let Some(current) = self.current_word() else {
             return 0;
         };
         let marker_center = current.start_col + current.word.chars().count() / 2;
-        let marker_start = marker_center.saturating_sub(LOCAL_RACER_MARKER_WIDTH / 2);
-        marker_start.min(self.width.saturating_sub(LOCAL_RACER_MARKER_WIDTH))
+        let marker_start = marker_center.saturating_sub(marker_width / 2);
+        marker_start.min(self.width.saturating_sub(marker_width))
     }
 }
 
@@ -96,7 +104,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
     let left = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
+            Constraint::Length(7),
             Constraint::Length(5),
             Constraint::Min(0),
         ])
@@ -106,35 +114,53 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         .constraints([
             Constraint::Length(4),
             Constraint::Length(5),
+            Constraint::Length(5),
             Constraint::Min(0),
         ])
         .split(columns[1]);
 
-    render_track(frame, left[0], screen.track, screen.player);
+    render_track(
+        frame,
+        left[0],
+        screen.track,
+        screen.player,
+        screen.bonuses,
+        screen.bonus_attempt,
+    );
     frame.render_widget(input_view(screen.track, screen.player), left[1]);
     frame.render_widget(finish_or_empty(screen.player), left[2]);
     frame.render_widget(stats_view(screen.player), right[0]);
-    frame.render_widget(player_list(screen.track, screen.player), right[1]);
-    frame.render_widget(event_feed(screen.events), right[2]);
+    frame.render_widget(item_view(screen.player, screen.attack_warning), right[1]);
+    frame.render_widget(player_list(screen.track, screen.player), right[2]);
+    frame.render_widget(event_feed(screen.events), right[3]);
 }
 
 fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
+            Constraint::Length(7),
             Constraint::Length(5),
             Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Min(0),
         ])
         .split(area);
 
-    render_track(frame, rows[0], screen.track, screen.player);
+    render_track(
+        frame,
+        rows[0],
+        screen.track,
+        screen.player,
+        screen.bonuses,
+        screen.bonus_attempt,
+    );
     frame.render_widget(input_view(screen.track, screen.player), rows[1]);
     frame.render_widget(stats_view(screen.player), rows[2]);
-    frame.render_widget(player_list(screen.track, screen.player), rows[3]);
-    frame.render_widget(results_or_events(screen.player, screen.events), rows[4]);
+    frame.render_widget(item_view(screen.player, screen.attack_warning), rows[3]);
+    frame.render_widget(player_list(screen.track, screen.player), rows[4]);
+    frame.render_widget(results_or_events(screen.player, screen.events), rows[5]);
 }
 
 fn header<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
@@ -160,13 +186,25 @@ fn header<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
     .block(Block::default().borders(Borders::BOTTOM))
 }
 
-fn render_track(frame: &mut Frame<'_>, area: Rect, track: &Track, player: &PlayerState) {
+fn render_track(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    track: &Track,
+    player: &PlayerState,
+    bonuses: &BonusState,
+    bonus_attempt: Option<BonusAttempt>,
+) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let window = build_track_window(track, player.word_index, inner_width);
-    frame.render_widget(track_view(&window), area);
+    frame.render_widget(track_view(&window, player, bonuses, bonus_attempt), area);
 }
 
-fn track_view<'a>(window: &'a TrackWindow<'a>) -> Paragraph<'a> {
+fn track_view<'a>(
+    window: &'a TrackWindow<'a>,
+    player: &PlayerState,
+    bonuses: &'a BonusState,
+    bonus_attempt: Option<BonusAttempt>,
+) -> Paragraph<'a> {
     let mut word_spans = Vec::new();
     for visible in &window.words {
         if visible.start_col > line_width(&word_spans) {
@@ -185,14 +223,123 @@ fn track_view<'a>(window: &'a TrackWindow<'a>) -> Paragraph<'a> {
         word_spans.push(Span::styled(visible.word.to_string(), style));
     }
 
-    let marker_start = window.racer_marker_start();
+    let now = std::time::Instant::now();
+    let marker = if player.has_active_shield(now) {
+        SHIELDED_RACER_MARKER
+    } else {
+        LOCAL_RACER_MARKER
+    };
+    let marker_start = window.racer_marker_start(marker.chars().count());
     let racer_line = Line::from(vec![
         Span::raw(" ".repeat(marker_start)),
-        Span::styled(LOCAL_RACER_MARKER, Style::default().fg(Color::Cyan)),
+        Span::styled(marker, Style::default().fg(Color::Cyan)),
     ]);
 
-    Paragraph::new(vec![Line::from(word_spans), racer_line])
-        .block(Block::default().title("Track").borders(Borders::ALL))
+    let mut lines = bonus_lines(window, player, bonuses, bonus_attempt, now);
+    lines.push(Line::from(word_spans));
+    lines.push(racer_line);
+
+    Paragraph::new(lines).block(Block::default().title("Track").borders(Borders::ALL))
+}
+
+fn bonus_lines<'a>(
+    window: &TrackWindow<'_>,
+    player: &PlayerState,
+    bonuses: &'a BonusState,
+    bonus_attempt: Option<BonusAttempt>,
+    now: std::time::Instant,
+) -> Vec<Line<'a>> {
+    let Some((point_index, point)) = visible_bonus_point(window, bonuses) else {
+        return vec![Line::from(""), Line::from(""), Line::from("")];
+    };
+
+    let claimable = is_bonus_point_claimable(player, bonuses, point_index);
+    let unavailable = !claimable
+        || player.held_item.is_some()
+        || player.typo_index.is_some()
+        || player.has_active_shield(now);
+    point
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(choice_index, choice)| {
+            let text = match choice.status {
+                BonusChoiceStatus::Cooldown { until } if until > now => "---".to_string(),
+                _ => choice.word.clone(),
+            };
+            let mut spans = vec![Span::raw(" ".repeat(bonus_column(
+                window,
+                point.after_word_index,
+                text.chars().count(),
+            )))];
+            let is_current_attempt = bonus_attempt.is_some_and(|attempt| {
+                attempt.point_index == point_index && attempt.choice_index == choice_index
+            });
+            let style = match choice.status {
+                BonusChoiceStatus::Cooldown { until } if until > now => {
+                    Style::default().fg(Color::DarkGray)
+                }
+                _ if unavailable => Style::default().fg(Color::DarkGray),
+                _ if is_current_attempt => Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+                _ => Style::default().fg(Color::Magenta),
+            };
+            spans.push(Span::styled(text, style));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn is_bonus_point_claimable(
+    player: &PlayerState,
+    bonuses: &BonusState,
+    point_index: usize,
+) -> bool {
+    bonuses
+        .point_for_gap(player.word_index)
+        .is_some_and(|(claimable_point_index, _)| claimable_point_index == point_index)
+}
+
+fn visible_bonus_point<'a>(
+    window: &TrackWindow<'_>,
+    bonuses: &'a BonusState,
+) -> Option<(usize, &'a crate::game::bonus::BonusPoint)> {
+    let first_visible = window.words.first()?.index;
+    let last_visible = window.words.last()?.index;
+
+    bonuses
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, point)| point.after_word_index >= first_visible)
+        .filter(|(_, point)| point.after_word_index.saturating_add(1) <= last_visible)
+        .min_by_key(|(_, point)| point.after_word_index)
+}
+
+fn bonus_column(window: &TrackWindow<'_>, after_word_index: usize, word_width: usize) -> usize {
+    let Some(before_word) = window
+        .words
+        .iter()
+        .find(|word| word.index == after_word_index)
+    else {
+        return 0;
+    };
+    let Some(after_word) = window
+        .words
+        .iter()
+        .find(|word| word.index == after_word_index + 1)
+    else {
+        return 0;
+    };
+
+    // Bonus points belong to the gap after `after_word_index`. Centering the
+    // rendered word on that gap keeps it visually pinned between the two track
+    // words even when the bonus word is wider than the gap itself.
+    let gap_center = (before_word.end_col + after_word.start_col) / 2;
+    gap_center
+        .saturating_sub(word_width / 2)
+        .min(window.width.saturating_sub(word_width))
 }
 
 fn line_width(spans: &[Span<'_>]) -> usize {
@@ -314,6 +461,40 @@ fn stats_view<'a>(player: &PlayerState) -> Paragraph<'a> {
     Paragraph::new(stats).block(Block::default().title("Stats").borders(Borders::ALL))
 }
 
+fn item_view<'a>(player: &PlayerState, attack_warning: Option<AttackWarning>) -> Paragraph<'a> {
+    let now = std::time::Instant::now();
+    let held = player.held_item.map(|item| item.name()).unwrap_or("None");
+    let shield = player
+        .active_effects
+        .iter()
+        .find_map(|effect| match effect {
+            crate::game::effects::ActiveEffect::Shield { until } if *until > now => Some(format!(
+                "Shield {:.1}s",
+                until.saturating_duration_since(now).as_secs_f64()
+            )),
+            _ => None,
+        })
+        .unwrap_or_else(|| "Shield inactive".to_string());
+    let warning = attack_warning
+        .map(|warning| {
+            format!(
+                "Warning {:.1}s",
+                warning
+                    .resolves_at
+                    .saturating_duration_since(now)
+                    .as_secs_f64()
+            )
+        })
+        .unwrap_or_else(|| "Warning none".to_string());
+
+    Paragraph::new(vec![
+        Line::from(format!("Held: {held}")),
+        Line::from(shield),
+        Line::from(warning),
+    ])
+    .block(Block::default().title("Item").borders(Borders::ALL))
+}
+
 fn player_list<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
     let placement = if player.is_finished() { "1." } else { "1." };
     let line = format!(
@@ -362,7 +543,7 @@ fn results_view<'a>(player: &PlayerState) -> Paragraph<'a> {
         Line::from(format!("Time: {:.1}s", elapsed.as_secs_f64())),
         Line::from(format!("WPM: {:.0}", wpm)),
         Line::from(format!("Accuracy: {:.0}%", player.stats.accuracy())),
-        Line::from("Press Esc or Ctrl-C to exit."),
+        Line::from("Press Ctrl-R to restart, Esc or Ctrl-C to exit."),
     ];
 
     Paragraph::new(text).block(Block::default().title("Results").borders(Borders::ALL))
@@ -370,7 +551,7 @@ fn results_view<'a>(player: &PlayerState) -> Paragraph<'a> {
 
 fn help_view<'a>() -> Paragraph<'a> {
     Paragraph::new(
-        "Press Space between words. The final word finishes immediately. Backspace fixes typos. Esc quits.",
+        "Space between words. Backspace fixes typos. Enter uses item. Ctrl-R restarts. Esc quits.",
     )
     .block(Block::default().borders(Borders::TOP))
 }
@@ -380,8 +561,15 @@ mod tests {
     use std::time::Instant;
 
     use crate::{
-        game::{player::PlayerState, track::Track},
-        ui::render::{WordRenderState, build_track_window},
+        game::{
+            bonus::{BonusChoice, BonusPoint, BonusState},
+            player::PlayerState,
+            track::Track,
+        },
+        ui::render::{
+            WordRenderState, bonus_column, build_track_window, is_bonus_point_claimable,
+            visible_bonus_point,
+        },
     };
 
     fn track(words: &[&str]) -> Track {
@@ -439,7 +627,7 @@ mod tests {
         let track = track(&["one", "two", "three"]);
         let window = build_track_window(&track, 1, 40);
 
-        assert_eq!(window.racer_marker_start(), 4);
+        assert_eq!(window.racer_marker_start(3), 4);
     }
 
     #[test]
@@ -447,7 +635,7 @@ mod tests {
         let track = track(&["a", "two"]);
         let window = build_track_window(&track, 0, 40);
 
-        assert_eq!(window.racer_marker_start(), 0);
+        assert_eq!(window.racer_marker_start(3), 0);
     }
 
     #[test]
@@ -455,7 +643,7 @@ mod tests {
         let track = track(&["abcde"]);
         let window = build_track_window(&track, 0, 2);
 
-        assert_eq!(window.racer_marker_start(), 0);
+        assert_eq!(window.racer_marker_start(5), 0);
     }
 
     #[test]
@@ -463,5 +651,76 @@ mod tests {
         let player = PlayerState::new(Instant::now());
 
         assert_eq!(player.word_index, 0);
+    }
+
+    #[test]
+    fn visible_bonus_point_can_be_ahead_of_player() {
+        let track = track(&["one", "two", "three", "four"]);
+        let window = build_track_window(&track, 0, 40);
+        let bonuses = BonusState::with_points(
+            vec![BonusPoint::new(
+                1,
+                [
+                    BonusChoice::available("drift"),
+                    BonusChoice::available("spark"),
+                    BonusChoice::available("turbo"),
+                ],
+            )],
+            vec![],
+        );
+
+        let (point_index, point) = visible_bonus_point(&window, &bonuses).unwrap();
+
+        assert_eq!(point_index, 0);
+        assert_eq!(point.after_word_index, 1);
+    }
+
+    #[test]
+    fn bonus_column_aligns_after_preceding_word() {
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+
+        assert_eq!(bonus_column(&window, 1, "spark".len()), 5);
+    }
+
+    #[test]
+    fn visible_bonus_point_requires_both_gap_words() {
+        let track = track(&["one", "two"]);
+        let window = build_track_window(&track, 0, 4);
+        let bonuses = BonusState::with_points(
+            vec![BonusPoint::new(
+                0,
+                [
+                    BonusChoice::available("drift"),
+                    BonusChoice::available("spark"),
+                    BonusChoice::available("turbo"),
+                ],
+            )],
+            vec![],
+        );
+
+        assert!(visible_bonus_point(&window, &bonuses).is_none());
+    }
+
+    #[test]
+    fn visible_bonus_point_is_not_claimable_until_player_reaches_gap() {
+        let mut player = PlayerState::new(Instant::now());
+        let bonuses = BonusState::with_points(
+            vec![BonusPoint::new(
+                1,
+                [
+                    BonusChoice::available("drift"),
+                    BonusChoice::available("spark"),
+                    BonusChoice::available("turbo"),
+                ],
+            )],
+            vec![],
+        );
+
+        player.word_index = 0;
+        assert!(!is_bonus_point_claimable(&player, &bonuses, 0));
+
+        player.word_index = 2;
+        assert!(is_bonus_point_claimable(&player, &bonuses, 0));
     }
 }
