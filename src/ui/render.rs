@@ -25,6 +25,7 @@ const WIDE_LAYOUT_MIN_WIDTH: u16 = 90;
 const LOCAL_RACER_MARKER: &str = "███";
 const SHIELDED_RACER_MARKER: &str = "[███]";
 const BOOST_MARKER_PREFIX: &str = ">>>";
+const FINISHED_EDGE_MARKER: &str = ">!";
 
 pub struct TypingScreen<'a> {
     pub track: &'a Track,
@@ -58,6 +59,7 @@ pub struct VisibleWord<'a> {
 pub struct TrackWindow<'a> {
     pub words: Vec<VisibleWord<'a>>,
     pub width: usize,
+    pub track_len: usize,
 }
 
 impl<'a> TrackWindow<'a> {
@@ -89,10 +91,19 @@ impl<'a> TrackWindow<'a> {
             return Some(VisibleRacerMarker::Behind);
         }
 
-        if player.is_finished() {
+        if player.is_finished()
+            && self
+                .words
+                .iter()
+                .any(|word| word.index + 1 == self.track_len)
+        {
             return Some(VisibleRacerMarker::Visible {
                 start: self.racer_marker_start_for_player(player, marker_width),
             });
+        }
+
+        if player.is_finished() {
+            return Some(VisibleRacerMarker::FinishedAhead);
         }
 
         if player.word_index > last_visible {
@@ -154,6 +165,7 @@ pub enum VisibleRacerMarker {
     Visible { start: usize },
     Behind,
     Ahead,
+    FinishedAhead,
 }
 
 pub fn render(frame: &mut Frame<'_>, screen: TypingScreen<'_>) {
@@ -598,6 +610,10 @@ fn racer_line_for_player(
                     .saturating_sub(edge_racer_marker('>', player, now).chars().count()),
                 edge_racer_marker('>', player, now),
             ),
+            VisibleRacerMarker::FinishedAhead => (
+                window.width.saturating_sub(FINISHED_EDGE_MARKER.len()),
+                FINISHED_EDGE_MARKER.to_string(),
+            ),
         };
         write_marker(
             &mut cells,
@@ -763,6 +779,7 @@ pub fn build_track_window(track: &Track, current_index: usize, width: usize) -> 
         return TrackWindow {
             words: Vec::new(),
             width,
+            track_len: track.words.len(),
         };
     }
 
@@ -804,7 +821,11 @@ pub fn build_track_window(track: &Track, current_index: usize, width: usize) -> 
         col += word_width;
     }
 
-    TrackWindow { words, width }
+    TrackWindow {
+        words,
+        width,
+        track_len: track.words.len(),
+    }
 }
 
 fn word_state(index: usize, current_index: usize) -> WordRenderState {
@@ -1424,6 +1445,26 @@ mod tests {
         }));
         assert!(!lines[1].spans.iter().any(|span| {
             span.content.as_ref() == ">" && span.style.fg == Some(Color::LightRed)
+        }));
+    }
+
+    #[test]
+    fn finished_ai_racer_shows_finished_edge_marker_when_finish_line_is_offscreen() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three", "four", "five", "six"]);
+        let window = build_track_window(&track, 0, 12);
+        let player = PlayerState::new(now);
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
+        ai.player.word_index = 6;
+        ai.player.finished_at = Some(now);
+
+        let lines = racer_lines(&window, &player, &[ai], None, RacePhase::Racing, now);
+
+        assert_eq!(lines[1].spans[10].content.as_ref(), ">");
+        assert_eq!(lines[1].spans[11].content.as_ref(), "!");
+        assert_eq!(lines[1].spans[10].style.fg, Some(Color::LightRed));
+        assert!(!lines[1].spans.iter().any(|span| {
+            span.content.as_ref() == "█" && span.style.fg == Some(Color::LightRed)
         }));
     }
 
