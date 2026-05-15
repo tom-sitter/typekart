@@ -42,12 +42,11 @@ Implemented:
 - Server-broadcast `RaceSnapshot` messages for countdown and racing phases.
 - Server-owned `RaceState` with generated track words.
 - Server-authoritative key input for joined players and the host.
-- Transitional line-based network input after the race starts.
+- Raw per-keystroke terminal input for `join` after the race starts.
 - Race snapshots containing track words, player word index, current input, typo index, finished state, and connection state.
 
 Not implemented yet:
 
-- Raw per-keystroke terminal input for `join`.
 - Ratatui race rendering for network snapshots.
 - Fixed-rate race snapshot broadcast loop.
 - Server-owned bonus state.
@@ -122,11 +121,11 @@ Current transitional network controls:
 ```text
 Host lobby: ready, unready, lobby, start
 Join lobby: ready, unready, quit
-After racing starts: type one submitted line at a time
-Backspace during network racing: type the literal command backspace
+After racing starts: character keys, Space, and Backspace are sent immediately
+Leave during network racing: Esc or Ctrl-C
 ```
 
-This line-based input is a temporary bridge. The next client slice should switch network play to raw terminal key events so it behaves like local `play`.
+The join client still renders snapshots as plain text. The next client slice should switch network play to a Ratatui renderer so it feels like local `play`.
 
 ## Proposed File Changes
 
@@ -291,7 +290,7 @@ This keeps the host code path closer to every other client path, but we have not
 4. When all connected players are ready, the host can start countdown.
 5. During `Racing`, `KeyInput` messages mutate the authoritative `RaceState`.
 6. The server immediately broadcasts a `RaceSnapshot` after accepted key input.
-7. The temporary join client prints text snapshots rather than drawing the full race UI.
+7. The join client captures raw key events during racing and prints text snapshots.
 
 Current manual test shape:
 
@@ -306,11 +305,10 @@ Then:
 join> ready
 host> ready
 host> start
-join> firstword
-join> secondword
+join racing input: type firstword, press Space, then keep typing
 ```
 
-Each submitted race line is converted into `KeyInput` messages for every character plus a trailing `Space`.
+Each racing key press is converted into a `KeyInput` message immediately.
 
 ## Join Flow
 
@@ -408,12 +406,11 @@ Implemented:
 
 - `join` connects and sends lobby commands.
 - Client receives lobby snapshots and race snapshots.
-- Client sends line-derived `KeyInput` after racing starts.
+- Client sends raw key-derived `KeyInput` after racing starts.
 - Client prints text snapshots.
 
 Remaining:
 
-- Raw terminal key input.
 - Client-side Ratatui rendering from snapshots.
 - Channels between input, network reader, and renderer.
 

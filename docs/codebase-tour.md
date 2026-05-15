@@ -442,15 +442,15 @@ This keeps terminal-specific code out of the game engine.
 The current network prototype has a separate, simpler data flow:
 
 ```text
-join terminal line
-  net::client converts characters to ClientMessage::KeyInput
+join terminal key event
+  net::client converts Char/Space/Backspace to ClientMessage::KeyInput
   net::server receives KeyInput
   game::race::RaceState applies KeyAction to the selected RacePlayer
   net::server broadcasts RaceSnapshot
   net::client prints track words and player progress
 ```
 
-This is intentionally transitional. Local `play` already uses raw terminal key events and Ratatui rendering; network `join` still reads submitted text lines and prints snapshots. The next network UI step is to reuse the raw terminal event/rendering approach for snapshots.
+This is intentionally transitional. Local `play` uses raw terminal key events and Ratatui rendering; network `join` now uses raw key events during racing but still prints snapshots as text. The next network UI step is to reuse the Ratatui rendering approach for snapshots.
 
 ## Network Modules
 
@@ -536,10 +536,10 @@ Current responsibilities:
 - Print lobby snapshots.
 - Send `ready`, `unready`, and `quit`.
 - Track the latest network race phase.
-- During `Racing`, convert submitted text lines into `KeyInput` messages.
+- During `Racing`, convert raw character, Space, and Backspace key events into `KeyInput` messages.
 - Print race snapshots with track words and player progress.
 
-Current limitation: this client is line-based. It does not yet use raw terminal input or the Ratatui renderer, so it is useful for proving networking but not yet the final racing experience.
+Current limitation: this client does not yet use the Ratatui renderer, so it is useful for proving networking but not yet the final racing experience.
 
 ## Borrowing And Ownership In This Code
 
@@ -642,15 +642,16 @@ join> ready
 join> quit
 ```
 
-After the race starts, network typing is temporarily line-based:
+After the race starts, network typing is raw key-based:
 
 ```text
-join> currentword
-join> nextword
-join> backspace
+type currentword
+press Space
+type nextword
+press Backspace to delete one character
 ```
 
-Each submitted race line is converted into key-level protocol messages on the client, then validated by the server-owned typing engine.
+Each race key is converted into a key-level protocol message on the client, then validated by the server-owned typing engine.
 
 Format code:
 
@@ -678,7 +679,7 @@ Recommended order:
 
 - The UI is functional, not final.
 - Network multiplayer is skeletal: lobby, countdown, and server-authoritative typing work, but the network client does not yet use the full terminal renderer.
-- The network client is line-based during racing.
+- The network client still prints text snapshots instead of using the full race renderer.
 - The host is a player but does not yet connect through the same client path as joiners.
 - Bonus and item behavior is local-only in `play`; network bonus and item resolution are not implemented yet.
 - The typing engine still only owns main-track typing. Bonus attempts are coordinated by `LocalSession`.

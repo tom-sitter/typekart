@@ -282,7 +282,7 @@ Current network prototype:
 - The server owns `RaceState`.
 - `KeyInput` messages mutate server-owned player state.
 - The server sends a `RaceSnapshot` immediately after accepted input.
-- The join client temporarily reads submitted text lines and converts them into key events.
+- The join client uses raw terminal input during racing and sends character, Space, and Backspace events immediately.
 - The join client prints snapshots instead of using the Ratatui race renderer.
 
 This proves the protocol and authoritative input path. It is not the final client experience.
@@ -565,7 +565,7 @@ Manual tests:
 
 See `docs/milestone-4-plan.md` for the detailed implementation plan.
 
-Current status: Milestone 4 has host/join, lobby readiness, countdown snapshots, server-owned race state, and server-authoritative line-derived key input. Remaining major work is raw network terminal input, rendering snapshots through the real UI, fixed-rate snapshots, finish order, race end, bonuses, items, and network diagnostics.
+Current status: Milestone 4 has host/join, lobby readiness, countdown snapshots, server-owned race state, and server-authoritative raw key input for joiners during racing. Remaining major work is rendering snapshots through the real UI, fixed-rate snapshots, finish order, race end, bonuses, items, and network diagnostics.
 
 ### Milestone 5: Multiplayer Polish
 

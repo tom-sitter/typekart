@@ -8,9 +8,14 @@ use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
 
 use super::protocol::{
     ClientMessage, ClientSequence, NetworkRacePhase, ProtocolKey, ServerMessage,
@@ -64,7 +69,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
     }
 
     println!("Lobby commands: ready, unready, quit");
-    println!("After the race starts, submit typed text one line at a time.");
+    println!("After the race starts, typing is sent one key at a time.");
 
     let phase = Arc::new(Mutex::new(NetworkRacePhase::WaitingForHost));
     let reader_phase = Arc::clone(&phase);
@@ -112,68 +117,38 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
         println!("Disconnected from server");
     });
 
+    let _raw_mode = RawModeGuard::enable()?;
     let mut sequence = 1;
-    for line in io::stdin().lock().lines() {
-        let command = line.context("failed to read lobby command")?;
+    let mut lobby_command = String::new();
+    print!("> ");
+    io::stdout().flush().context("failed to flush prompt")?;
 
-        if *phase.lock().expect("client phase poisoned") == NetworkRacePhase::Racing {
-            if matches!(command.trim(), "quit" | "leave") {
-                send_client_message(&mut stream, &ClientMessage::Leave)?;
-                break;
-            }
-
-            if command.trim() == "backspace" {
-                send_client_message(
-                    &mut stream,
-                    &ClientMessage::KeyInput {
-                        sequence: ClientSequence(sequence),
-                        key: ProtocolKey::Backspace,
-                    },
-                )?;
-                sequence += 1;
-                continue;
-            }
-
-            for ch in command.chars() {
-                let key = if ch == ' ' {
-                    ProtocolKey::Space
-                } else {
-                    ProtocolKey::Char(ch)
-                };
-                send_client_message(
-                    &mut stream,
-                    &ClientMessage::KeyInput {
-                        sequence: ClientSequence(sequence),
-                        key,
-                    },
-                )?;
-                sequence += 1;
-            }
-            send_client_message(
-                &mut stream,
-                &ClientMessage::KeyInput {
-                    sequence: ClientSequence(sequence),
-                    key: ProtocolKey::Space,
-                },
-            )?;
-            sequence += 1;
+    loop {
+        if !event::poll(Duration::from_millis(50)).context("failed to poll terminal input")? {
             continue;
         }
 
-        let message = match command.trim() {
-            "ready" => ClientMessage::SetReady { ready: true },
-            "unready" => ClientMessage::SetReady { ready: false },
-            "quit" | "leave" => ClientMessage::Leave,
-            "" => continue,
-            other => {
-                println!("Unknown command: {other}");
-                continue;
-            }
+        let Event::Key(key_event) = event::read().context("failed to read terminal input")? else {
+            continue;
         };
 
-        send_client_message(&mut stream, &message)?;
+        if key_event.kind != KeyEventKind::Press {
+            continue;
+        }
 
-        if matches!(message, ClientMessage::Leave) {
+        if should_leave(key_event) {
+            send_client_message(&mut stream, &ClientMessage::Leave)?;
+            break;
+        }
+
+        if *phase.lock().expect("client phase poisoned") == NetworkRacePhase::Racing {
+            if send_race_key(&mut stream, key_event, &mut sequence)? {
+                break;
+            }
+            continue;
+        }
+
+        if handle_lobby_key(&mut stream, key_event, &mut lobby_command)? {
             break;
         }
     }
@@ -181,6 +156,121 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
     println!("Left server");
 
     Ok(())
+}
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Result<Self> {
+        enable_raw_mode().context("failed to enable raw terminal mode")?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
+fn should_leave(key_event: KeyEvent) -> bool {
+    key_event.code == KeyCode::Esc
+        || (key_event.code == KeyCode::Char('c')
+            && key_event.modifiers.contains(KeyModifiers::CONTROL))
+}
+
+fn handle_lobby_key(
+    stream: &mut std::net::TcpStream,
+    key_event: KeyEvent,
+    lobby_command: &mut String,
+) -> Result<bool> {
+    if is_enter_key(key_event) {
+        println!();
+        let should_leave = send_lobby_command(stream, lobby_command.trim())?;
+        lobby_command.clear();
+        if !should_leave {
+            print!("> ");
+            io::stdout().flush().context("failed to flush prompt")?;
+        }
+        return Ok(should_leave);
+    }
+
+    match key_event.code {
+        KeyCode::Backspace => {
+            if lobby_command.pop().is_some() {
+                print!("\u{8} \u{8}");
+                io::stdout().flush().context("failed to flush prompt")?;
+            }
+            Ok(false)
+        }
+        KeyCode::Char(ch)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            lobby_command.push(ch);
+            print!("{ch}");
+            io::stdout().flush().context("failed to flush prompt")?;
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn is_enter_key(key_event: KeyEvent) -> bool {
+    matches!(
+        key_event.code,
+        KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r')
+    ) || (matches!(key_event.code, KeyCode::Char('j') | KeyCode::Char('m'))
+        && key_event.modifiers.contains(KeyModifiers::CONTROL))
+}
+
+fn send_lobby_command(stream: &mut std::net::TcpStream, command: &str) -> Result<bool> {
+    let message = match command {
+        "ready" => ClientMessage::SetReady { ready: true },
+        "unready" => ClientMessage::SetReady { ready: false },
+        "quit" | "leave" => ClientMessage::Leave,
+        "" => return Ok(false),
+        other => {
+            println!("Unknown command: {other}");
+            return Ok(false);
+        }
+    };
+
+    send_client_message(stream, &message)?;
+
+    Ok(matches!(message, ClientMessage::Leave))
+}
+
+fn send_race_key(
+    stream: &mut std::net::TcpStream,
+    key_event: KeyEvent,
+    sequence: &mut u64,
+) -> Result<bool> {
+    let key = match key_event.code {
+        KeyCode::Char(' ') => Some(ProtocolKey::Space),
+        KeyCode::Char(ch)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            Some(ProtocolKey::Char(ch))
+        }
+        KeyCode::Backspace => Some(ProtocolKey::Backspace),
+        KeyCode::Enter => None,
+        _ => None,
+    };
+
+    let Some(key) = key else {
+        return Ok(false);
+    };
+
+    send_client_message(
+        stream,
+        &ClientMessage::KeyInput {
+            sequence: ClientSequence(*sequence),
+            key,
+        },
+    )?;
+    *sequence += 1;
+
+    Ok(false)
 }
 
 fn send_client_message(stream: &mut std::net::TcpStream, message: &ClientMessage) -> Result<()> {
