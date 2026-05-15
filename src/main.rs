@@ -5,6 +5,7 @@
 
 mod app;
 mod game;
+mod net;
 mod ui;
 
 use std::path::PathBuf;

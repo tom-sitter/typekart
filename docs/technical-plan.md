@@ -548,6 +548,8 @@ Manual tests:
 - Race snapshots.
 - Finish order.
 
+See `docs/milestone-4-plan.md` for the detailed implementation plan.
+
 ### Milestone 5: Multiplayer Polish
 
 - Better disconnect handling.

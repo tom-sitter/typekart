@@ -8,6 +8,7 @@ pub mod bonus;
 pub mod effects;
 pub mod items;
 pub mod player;
+pub mod race;
 pub mod stats;
 pub mod track;
 pub mod typing;
