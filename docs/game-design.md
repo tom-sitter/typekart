@@ -362,7 +362,7 @@ you picked up Banana
 - Pin the local racer's marker to the next character while input is valid.
 - Pin the local racer's marker to the first typo while a typo is active.
 - When Shield is active, encapsulate the racer's marker in brackets to show the protected state, such as `[███]`.
-- When Mushroom is active, append `>>>` to the racer's marker to show the boost.
+- When Mushroom is active, prepend `>>>` to the racer's marker to show the boost.
 - When an item impact lands, briefly blink the impacted racer's lane marker.
 - Keep the word layer readable; racer markers should not obscure the text players must type.
 - Since each racer has a lane, close positions should be readable without marker color blending.

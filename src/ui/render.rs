@@ -25,7 +25,7 @@ const WIDE_LAYOUT_MIN_WIDTH: u16 = 90;
 const TRACK_PANEL_HEIGHT: u16 = 10;
 const LOCAL_RACER_MARKER: &str = "███";
 const SHIELDED_RACER_MARKER: &str = "[███]";
-const BOOST_MARKER_SUFFIX: &str = ">>>";
+const BOOST_MARKER_PREFIX: &str = ">>>";
 
 pub struct TypingScreen<'a> {
     pub track: &'a Track,
@@ -453,31 +453,31 @@ fn racer_line_for_player(
 }
 
 fn edge_racer_marker(direction: char, player: &PlayerState, now: std::time::Instant) -> String {
-    let mut marker = if player.has_active_shield(now) {
+    let marker = if player.has_active_shield(now) {
         format!("[{direction}]")
     } else {
         direction.to_string()
     };
 
     if has_active_mushroom(player) {
-        marker.push_str(BOOST_MARKER_SUFFIX);
+        format!("{BOOST_MARKER_PREFIX}{marker}")
+    } else {
+        marker
     }
-
-    marker
 }
 
 fn racer_marker(player: &PlayerState, now: std::time::Instant) -> String {
-    let mut marker = if player.has_active_shield(now) {
+    let marker = if player.has_active_shield(now) {
         SHIELDED_RACER_MARKER.to_string()
     } else {
         LOCAL_RACER_MARKER.to_string()
     };
 
     if has_active_mushroom(player) {
-        marker.push_str(BOOST_MARKER_SUFFIX);
+        format!("{BOOST_MARKER_PREFIX}{marker}")
+    } else {
+        marker
     }
-
-    marker
 }
 
 fn has_active_mushroom(player: &PlayerState) -> bool {
@@ -1137,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn racer_line_shows_mushroom_boost_suffix() {
+    fn racer_line_shows_mushroom_boost_prefix() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let window = build_track_window(&track, 0, 40);
@@ -1150,12 +1150,12 @@ mod tests {
 
         let lines = racer_lines(&window, &player, &[], None, now);
 
-        assert_eq!(lines[0].spans[0].content.as_ref(), "█");
-        assert_eq!(lines[0].spans[1].content.as_ref(), "█");
-        assert_eq!(lines[0].spans[2].content.as_ref(), "█");
-        assert_eq!(lines[0].spans[3].content.as_ref(), ">");
-        assert_eq!(lines[0].spans[4].content.as_ref(), ">");
-        assert_eq!(lines[0].spans[5].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[0].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[1].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[2].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[3].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[4].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[5].content.as_ref(), "█");
     }
 
     #[test]

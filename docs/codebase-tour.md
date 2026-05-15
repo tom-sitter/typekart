@@ -376,7 +376,7 @@ Important Rust concepts:
 - Ratatui widgets are values. We build them and pass them to `frame.render_widget`.
 - `TrackWindow<'a>` and `VisibleWord<'a>` borrow word strings from the existing `Track` instead of cloning them.
 
-The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw the word layer and each racer's lane. When Shield is active, the marker is rendered in bracketed form as `[███]`. When Mushroom is active, the marker gains a `>>>` suffix. Item impacts briefly blink the impacted racer's marker.
+The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw the word layer and each racer's lane. When Shield is active, the marker is rendered in bracketed form as `[███]`. When Mushroom is active, the marker gains a `>>>` prefix. Item impacts briefly blink the impacted racer's marker.
 
 The word layer is rendered through fixed-width track cells. Correctly typed characters are green, the next character has a cursor-like highlight, and `typo_index` makes typed characters from the first typo onward red. Since the renderer maps `PlayerState.input` over the visible track stream, typo overflow can continue across following words and spaces while `word_index` remains blocked at the real race position.
 
