@@ -41,12 +41,170 @@ pub struct ItemDefinition {
     pub name: String,
     pub pickup: ItemPickup,
     pub activation: ItemActivation,
+    pub context_weights: ItemContextWeights,
+    pub effect: ItemEffectConfig,
+    pub display: ItemDisplayConfig,
     pub standard_weight: u32,
     pub nearby_racer_weight: u32,
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemEffectConfig {
+    pub mushroom: Option<MushroomEffectConfig>,
+    pub banana: Option<BananaEffectConfig>,
+    pub shield: Option<ShieldEffectConfig>,
+}
+
+impl ItemEffectConfig {
+    fn for_pickup(pickup: ItemPickup) -> Self {
+        match pickup {
+            ItemPickup::Held(HeldItem::Mushroom) => Self {
+                mushroom: Some(MushroomEffectConfig::default()),
+                banana: None,
+                shield: None,
+            },
+            ItemPickup::Held(HeldItem::Banana) => Self {
+                mushroom: None,
+                banana: Some(BananaEffectConfig::default()),
+                shield: None,
+            },
+            ItemPickup::Shield => Self {
+                mushroom: None,
+                banana: None,
+                shield: Some(ShieldEffectConfig::default()),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct MushroomEffectConfig {
+    pub boost_words: usize,
+    pub wpm: u32,
+}
+
+impl Default for MushroomEffectConfig {
+    fn default() -> Self {
+        Self {
+            boost_words: 3,
+            wpm: 180,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct BananaEffectConfig {
+    pub range_words: usize,
+    pub stun_ms: u64,
+    pub impact_blink_ms: u64,
+    pub cue_ms: u64,
+}
+
+impl Default for BananaEffectConfig {
+    fn default() -> Self {
+        Self {
+            range_words: 10,
+            stun_ms: 2_000,
+            impact_blink_ms: 1_200,
+            cue_ms: 1_500,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct ShieldEffectConfig {
+    pub duration_ms: u64,
+}
+
+impl Default for ShieldEffectConfig {
+    fn default() -> Self {
+        Self { duration_ms: 5_000 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemDisplayConfig {
+    pub banana: Option<BananaDisplayConfig>,
+}
+
+impl ItemDisplayConfig {
+    fn for_pickup(pickup: ItemPickup) -> Self {
+        match pickup {
+            ItemPickup::Held(HeldItem::Banana) => Self {
+                banana: Some(BananaDisplayConfig::default()),
+            },
+            ItemPickup::Held(HeldItem::Mushroom) | ItemPickup::Shield => Self { banana: None },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BananaDisplayConfig {
+    pub ascii_ahead: String,
+    pub ascii_behind: String,
+    pub ascii_overlap: String,
+    pub unicode_ahead: String,
+    pub unicode_behind: String,
+    pub unicode_overlap: String,
+}
+
+impl Default for BananaDisplayConfig {
+    fn default() -> Self {
+        Self {
+            ascii_ahead: " ))>>".to_string(),
+            ascii_behind: "((<< ".to_string(),
+            ascii_overlap: " ))<>".to_string(),
+            unicode_ahead: " 🍌 >>".to_string(),
+            unicode_behind: "<< 🍌 ".to_string(),
+            unicode_overlap: " 🍌 <>".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemContextWeights {
+    pub standard: PositionWeights,
+    pub nearby_racer: PositionWeights,
+}
+
+impl ItemContextWeights {
+    #[cfg(test)]
+    fn from_flat(standard_weight: u32, nearby_racer_weight: u32) -> Self {
+        Self {
+            standard: PositionWeights::flat(standard_weight),
+            nearby_racer: PositionWeights::flat(nearby_racer_weight),
+        }
+    }
+
+    fn has_positive_weight(self) -> bool {
+        self.standard.has_positive_weight() || self.nearby_racer.has_positive_weight()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct PositionWeights {
+    pub first: u32,
+    pub middle: u32,
+    pub trailing: u32,
+}
+
+impl PositionWeights {
+    fn flat(weight: u32) -> Self {
+        Self {
+            first: weight,
+            middle: weight,
+            trailing: weight,
+        }
+    }
+
+    fn has_positive_weight(self) -> bool {
+        self.first > 0 || self.middle > 0 || self.trailing > 0
+    }
+}
+
 impl ItemDefinition {
+    #[cfg(test)]
     pub fn built_in(
         id: &'static str,
         name: &'static str,
@@ -60,24 +218,64 @@ impl ItemDefinition {
             name: name.to_string(),
             pickup,
             activation,
+            context_weights: ItemContextWeights::from_flat(standard_weight, nearby_racer_weight),
+            effect: ItemEffectConfig::for_pickup(pickup),
+            display: ItemDisplayConfig::for_pickup(pickup),
             standard_weight,
             nearby_racer_weight,
             enabled: true,
         }
     }
 
-    fn weight(&self, has_nearby_racer: bool) -> u32 {
-        if has_nearby_racer {
-            self.nearby_racer_weight
+    fn built_in_with_context(
+        id: &'static str,
+        name: &'static str,
+        pickup: ItemPickup,
+        activation: ItemActivation,
+        standard_weight: u32,
+        nearby_racer_weight: u32,
+        context_weights: ItemContextWeights,
+    ) -> Self {
+        Self {
+            id: ContentId::builtin(id),
+            name: name.to_string(),
+            pickup,
+            activation,
+            context_weights,
+            effect: ItemEffectConfig::for_pickup(pickup),
+            display: ItemDisplayConfig::for_pickup(pickup),
+            standard_weight,
+            nearby_racer_weight,
+            enabled: true,
+        }
+    }
+
+    fn weight(&self, context: ItemRollContext) -> u32 {
+        let weights = if context.has_nearby_racer {
+            self.context_weights.nearby_racer
         } else {
-            self.standard_weight
+            self.context_weights.standard
+        };
+
+        match context.position {
+            RacePositionBand::First => weights.first,
+            RacePositionBand::Middle => weights.middle,
+            RacePositionBand::Trailing => weights.trailing,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RacePositionBand {
+    First,
+    Middle,
+    Trailing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemRollContext {
     pub has_nearby_racer: bool,
+    pub position: RacePositionBand,
 }
 
 #[derive(Debug, Clone)]
@@ -103,9 +301,9 @@ impl ItemRegistry {
 
         if !items
             .iter()
-            .any(|item| item.enabled && item.standard_weight > 0)
+            .any(|item| item.enabled && item.context_weights.has_positive_weight())
         {
-            bail!("item registry must contain at least one standard item with a positive weight");
+            bail!("item registry must contain at least one enabled item with a positive context weight");
         }
 
         Ok(Self { items })
@@ -113,29 +311,65 @@ impl ItemRegistry {
 
     pub fn builtin() -> Self {
         Self::new(vec![
-            ItemDefinition::built_in(
+            ItemDefinition::built_in_with_context(
                 "mushroom",
                 "Mushroom",
                 ItemPickup::Held(HeldItem::Mushroom),
                 ItemActivation::Held,
                 3,
                 4,
+                ItemContextWeights {
+                    standard: PositionWeights {
+                        first: 3,
+                        middle: 3,
+                        trailing: 6,
+                    },
+                    nearby_racer: PositionWeights {
+                        first: 4,
+                        middle: 4,
+                        trailing: 8,
+                    },
+                },
             ),
-            ItemDefinition::built_in(
+            ItemDefinition::built_in_with_context(
                 "banana",
                 "Banana",
                 ItemPickup::Held(HeldItem::Banana),
                 ItemActivation::Held,
                 2,
                 3,
+                ItemContextWeights {
+                    standard: PositionWeights {
+                        first: 1,
+                        middle: 2,
+                        trailing: 3,
+                    },
+                    nearby_racer: PositionWeights {
+                        first: 2,
+                        middle: 3,
+                        trailing: 5,
+                    },
+                },
             ),
-            ItemDefinition::built_in(
+            ItemDefinition::built_in_with_context(
                 "shield",
                 "Shield",
                 ItemPickup::Shield,
                 ItemActivation::Immediate,
                 1,
                 3,
+                ItemContextWeights {
+                    standard: PositionWeights {
+                        first: 1,
+                        middle: 1,
+                        trailing: 1,
+                    },
+                    nearby_racer: PositionWeights {
+                        first: 3,
+                        middle: 3,
+                        trailing: 2,
+                    },
+                },
             ),
         ])
         .expect("built-in item registry is valid")
@@ -143,10 +377,11 @@ impl ItemRegistry {
 
     /// Load a host-provided item pack from JSON.
     ///
-    /// This first external format intentionally tunes the built-in items only:
-    /// weights, names, and enabled flags. Adding entirely new item effects needs
-    /// the shared item engine first, because the current game still resolves
-    /// Mushroom, Banana, and Shield through concrete Rust handlers.
+    /// This external format intentionally tunes built-in items only: names,
+    /// enabled flags, roll weights, selected effect parameters, and display
+    /// labels. Adding entirely new item effects needs the shared item engine
+    /// first, because the current game still resolves Mushroom, Banana, and
+    /// Shield through concrete Rust handlers.
     pub fn load_json_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path)?;
@@ -182,14 +417,190 @@ impl ItemRegistry {
 
             if let Some(weight) = override_item.standard_weight {
                 target.standard_weight = weight;
+                target.context_weights.standard = PositionWeights::flat(weight);
             }
 
             if let Some(weight) = override_item.nearby_racer_weight {
                 target.nearby_racer_weight = weight;
+                target.context_weights.nearby_racer = PositionWeights::flat(weight);
+            }
+
+            if let Some(context_weights) = override_item.context_weights {
+                if let Some(standard) = context_weights.standard {
+                    target.context_weights.standard = standard;
+                    target.standard_weight = standard.middle;
+                }
+                if let Some(nearby_racer) = context_weights.nearby_racer {
+                    target.context_weights.nearby_racer = nearby_racer;
+                    target.nearby_racer_weight = nearby_racer.middle;
+                }
+            }
+
+            if let Some(effect) = override_item.effect {
+                if target.effect.mushroom.is_some()
+                    && (effect.boost_words.is_some() || effect.wpm.is_some())
+                {
+                    let mut mushroom = target.effect.mushroom.unwrap_or_default();
+                    if let Some(boost_words) = effect.boost_words {
+                        mushroom.boost_words = boost_words;
+                    }
+                    if let Some(wpm) = effect.wpm {
+                        mushroom.wpm = wpm;
+                    }
+                    if mushroom.boost_words == 0 {
+                        bail!(
+                            "item '{}' mushroom boost_words must be greater than zero",
+                            override_item.id
+                        );
+                    }
+                    if mushroom.wpm == 0 {
+                        bail!(
+                            "item '{}' mushroom wpm must be greater than zero",
+                            override_item.id
+                        );
+                    }
+                    target.effect.mushroom = Some(mushroom);
+                } else if effect.boost_words.is_some() || effect.wpm.is_some() {
+                    bail!(
+                        "item '{}' does not support mushroom effect config",
+                        override_item.id
+                    );
+                }
+
+                if target.effect.banana.is_some()
+                    && (effect.range_words.is_some()
+                        || effect.stun_ms.is_some()
+                        || effect.impact_blink_ms.is_some()
+                        || effect.cue_ms.is_some())
+                {
+                    let mut banana = target.effect.banana.unwrap_or_default();
+                    if let Some(range_words) = effect.range_words {
+                        banana.range_words = range_words;
+                    }
+                    if let Some(stun_ms) = effect.stun_ms {
+                        banana.stun_ms = stun_ms;
+                    }
+                    if let Some(impact_blink_ms) = effect.impact_blink_ms {
+                        banana.impact_blink_ms = impact_blink_ms;
+                    }
+                    if let Some(cue_ms) = effect.cue_ms {
+                        banana.cue_ms = cue_ms;
+                    }
+                    if banana.range_words == 0 {
+                        bail!(
+                            "item '{}' banana range_words must be greater than zero",
+                            override_item.id
+                        );
+                    }
+                    target.effect.banana = Some(banana);
+                } else if effect.range_words.is_some()
+                    || effect.stun_ms.is_some()
+                    || effect.impact_blink_ms.is_some()
+                    || effect.cue_ms.is_some()
+                {
+                    bail!(
+                        "item '{}' does not support banana effect config",
+                        override_item.id
+                    );
+                }
+
+                if target.effect.shield.is_some() && effect.duration_ms.is_some() {
+                    let mut shield = target.effect.shield.unwrap_or_default();
+                    if let Some(duration_ms) = effect.duration_ms {
+                        shield.duration_ms = duration_ms;
+                    }
+                    if shield.duration_ms == 0 {
+                        bail!(
+                            "item '{}' shield duration_ms must be greater than zero",
+                            override_item.id
+                        );
+                    }
+                    target.effect.shield = Some(shield);
+                } else if effect.duration_ms.is_some() {
+                    bail!(
+                        "item '{}' does not support shield effect config",
+                        override_item.id
+                    );
+                }
+            }
+
+            if let Some(display) = override_item.display {
+                if target.display.banana.is_some()
+                    && (display.ascii_ahead.is_some()
+                        || display.ascii_behind.is_some()
+                        || display.ascii_overlap.is_some()
+                        || display.unicode_ahead.is_some()
+                        || display.unicode_behind.is_some()
+                        || display.unicode_overlap.is_some())
+                {
+                    let mut banana = target.display.banana.clone().unwrap_or_default();
+                    if let Some(label) = display.ascii_ahead {
+                        banana.ascii_ahead = label;
+                    }
+                    if let Some(label) = display.ascii_behind {
+                        banana.ascii_behind = label;
+                    }
+                    if let Some(label) = display.ascii_overlap {
+                        banana.ascii_overlap = label;
+                    }
+                    if let Some(label) = display.unicode_ahead {
+                        banana.unicode_ahead = label;
+                    }
+                    if let Some(label) = display.unicode_behind {
+                        banana.unicode_behind = label;
+                    }
+                    if let Some(label) = display.unicode_overlap {
+                        banana.unicode_overlap = label;
+                    }
+                    target.display.banana = Some(banana);
+                } else if display.ascii_ahead.is_some()
+                    || display.ascii_behind.is_some()
+                    || display.ascii_overlap.is_some()
+                    || display.unicode_ahead.is_some()
+                    || display.unicode_behind.is_some()
+                    || display.unicode_overlap.is_some()
+                {
+                    bail!(
+                        "item '{}' does not support banana display config",
+                        override_item.id
+                    );
+                }
             }
         }
 
         Self::new(registry.items)
+    }
+
+    pub fn mushroom_effect(&self) -> MushroomEffectConfig {
+        self.items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Mushroom))
+            .and_then(|item| item.effect.mushroom)
+            .unwrap_or_default()
+    }
+
+    pub fn banana_effect(&self) -> BananaEffectConfig {
+        self.items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Banana))
+            .and_then(|item| item.effect.banana)
+            .unwrap_or_default()
+    }
+
+    pub fn banana_display(&self) -> BananaDisplayConfig {
+        self.items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Banana))
+            .and_then(|item| item.display.banana.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn shield_effect(&self) -> ShieldEffectConfig {
+        self.items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Shield)
+            .and_then(|item| item.effect.shield)
+            .unwrap_or_default()
     }
 
     pub fn roll_pickup(&self, rng: &mut impl Rng, context: ItemRollContext) -> Option<ItemPickup> {
@@ -198,7 +609,7 @@ impl ItemRegistry {
             .iter()
             .filter(|item| item.enabled)
             .filter_map(|item| {
-                let weight = item.weight(context.has_nearby_racer);
+                let weight = item.weight(context);
                 (weight > 0).then_some((item, weight))
             })
             .collect::<Vec<_>>();
@@ -223,7 +634,13 @@ impl ItemRegistry {
 #[cfg(test)]
 pub fn roll_item_with_proximity(rng: &mut impl Rng, has_nearby_racer: bool) -> ItemPickup {
     ItemRegistry::builtin()
-        .roll_pickup(rng, ItemRollContext { has_nearby_racer })
+        .roll_pickup(
+            rng,
+            ItemRollContext {
+                has_nearby_racer,
+                position: RacePositionBand::Middle,
+            },
+        )
         .expect("built-in item registry has rollable items")
 }
 
@@ -239,6 +656,36 @@ struct ItemPackItem {
     enabled: Option<bool>,
     standard_weight: Option<u32>,
     nearby_racer_weight: Option<u32>,
+    context_weights: Option<ItemPackContextWeights>,
+    effect: Option<ItemPackEffectConfig>,
+    display: Option<ItemPackDisplayConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemPackContextWeights {
+    standard: Option<PositionWeights>,
+    nearby_racer: Option<PositionWeights>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemPackEffectConfig {
+    boost_words: Option<usize>,
+    wpm: Option<u32>,
+    range_words: Option<usize>,
+    stun_ms: Option<u64>,
+    impact_blink_ms: Option<u64>,
+    cue_ms: Option<u64>,
+    duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemPackDisplayConfig {
+    ascii_ahead: Option<String>,
+    ascii_behind: Option<String>,
+    ascii_overlap: Option<String>,
+    unicode_ahead: Option<String>,
+    unicode_behind: Option<String>,
+    unicode_overlap: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,7 +720,8 @@ mod tests {
 
     use super::{
         roll_item_with_proximity, select_nearest_banana_target, HeldItem, ItemActivation,
-        ItemDefinition, ItemPackConfig, ItemPackItem, ItemPickup, ItemRegistry, RacerPosition,
+        ItemDefinition, ItemPackConfig, ItemPackItem, ItemPickup, ItemRegistry, ItemRollContext,
+        RacePositionBand, RacerPosition,
     };
 
     #[test]
@@ -408,6 +856,9 @@ mod tests {
                 enabled: Some(false),
                 standard_weight: None,
                 nearby_racer_weight: None,
+                context_weights: None,
+                effect: None,
+                display: None,
             }],
         };
 
@@ -451,13 +902,74 @@ mod tests {
             assert_eq!(
                 registry.roll_pickup(
                     &mut rng,
-                    super::ItemRollContext {
-                        has_nearby_racer: false
-                    }
+                    ItemRollContext {
+                        has_nearby_racer: false,
+                        position: RacePositionBand::Middle,
+                    },
                 ),
                 Some(ItemPickup::Shield)
             );
         }
+    }
+
+    #[test]
+    fn first_place_rolls_reduce_banana_weight() {
+        let registry = ItemRegistry::builtin();
+        let banana = registry
+            .items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Banana))
+            .unwrap();
+
+        assert!(
+            banana.weight(ItemRollContext {
+                has_nearby_racer: false,
+                position: RacePositionBand::First,
+            }) < banana.weight(ItemRollContext {
+                has_nearby_racer: false,
+                position: RacePositionBand::Middle,
+            })
+        );
+    }
+
+    #[test]
+    fn trailing_rolls_increase_mushroom_weight() {
+        let registry = ItemRegistry::builtin();
+        let mushroom = registry
+            .items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Mushroom))
+            .unwrap();
+
+        assert!(
+            mushroom.weight(ItemRollContext {
+                has_nearby_racer: false,
+                position: RacePositionBand::Trailing,
+            }) > mushroom.weight(ItemRollContext {
+                has_nearby_racer: false,
+                position: RacePositionBand::Middle,
+            })
+        );
+    }
+
+    #[test]
+    fn nearby_context_still_increases_shield_weight() {
+        let registry = ItemRegistry::builtin();
+        let shield = registry
+            .items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Shield)
+            .unwrap();
+
+        assert!(
+            shield.weight(ItemRollContext {
+                has_nearby_racer: true,
+                position: RacePositionBand::Middle,
+            }) > shield.weight(ItemRollContext {
+                has_nearby_racer: false,
+                position: RacePositionBand::Middle,
+            })
+        );
     }
 
     #[test]
@@ -469,6 +981,9 @@ mod tests {
                 enabled: None,
                 standard_weight: Some(1),
                 nearby_racer_weight: Some(1),
+                context_weights: None,
+                effect: None,
+                display: None,
             }],
         };
 
@@ -502,6 +1017,151 @@ mod tests {
 
         assert_eq!(mushroom.standard_weight, 10);
         assert_eq!(mushroom.nearby_racer_weight, 12);
+        assert_eq!(
+            mushroom.weight(ItemRollContext {
+                has_nearby_racer: false,
+                position: RacePositionBand::Trailing,
+            }),
+            10
+        );
+        assert_eq!(
+            mushroom.weight(ItemRollContext {
+                has_nearby_racer: true,
+                position: RacePositionBand::Trailing,
+            }),
+            12
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn item_pack_file_loads_context_weight_overrides() {
+        let path = std::env::temp_dir().join(format!(
+            "typekart-context-item-pack-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{
+                "items": [
+                    {
+                        "id": "banana",
+                        "context_weights": {
+                            "standard": { "first": 9, "middle": 8, "trailing": 7 },
+                            "nearby_racer": { "first": 6, "middle": 5, "trailing": 4 }
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let registry = ItemRegistry::load_json_file(&path).unwrap();
+        let banana = registry
+            .items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Banana))
+            .unwrap();
+
+        assert_eq!(
+            banana.weight(ItemRollContext {
+                has_nearby_racer: false,
+                position: RacePositionBand::First,
+            }),
+            9
+        );
+        assert_eq!(
+            banana.weight(ItemRollContext {
+                has_nearby_racer: true,
+                position: RacePositionBand::Trailing,
+            }),
+            4
+        );
+        assert_eq!(banana.standard_weight, 8);
+        assert_eq!(banana.nearby_racer_weight, 5);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn item_pack_file_loads_effect_tuning() {
+        let path = std::env::temp_dir().join(format!(
+            "typekart-effect-item-pack-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{
+                "items": [
+                    {
+                        "id": "mushroom",
+                        "effect": { "boost_words": 4, "wpm": 240 }
+                    },
+                    {
+                        "id": "banana",
+                        "effect": {
+                            "range_words": 6,
+                            "stun_ms": 1500,
+                            "impact_blink_ms": 900,
+                            "cue_ms": 700
+                        }
+                    },
+                    {
+                        "id": "shield",
+                        "effect": { "duration_ms": 3000 }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let registry = ItemRegistry::load_json_file(&path).unwrap();
+
+        assert_eq!(registry.mushroom_effect().boost_words, 4);
+        assert_eq!(registry.mushroom_effect().wpm, 240);
+        assert_eq!(registry.banana_effect().range_words, 6);
+        assert_eq!(registry.banana_effect().stun_ms, 1500);
+        assert_eq!(registry.banana_effect().impact_blink_ms, 900);
+        assert_eq!(registry.banana_effect().cue_ms, 700);
+        assert_eq!(registry.shield_effect().duration_ms, 3000);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn item_pack_file_loads_banana_display_tuning() {
+        let path = std::env::temp_dir().join(format!(
+            "typekart-display-item-pack-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{
+                "items": [
+                    {
+                        "id": "banana",
+                        "display": {
+                            "ascii_ahead": "BA>",
+                            "ascii_behind": "<BA",
+                            "unicode_ahead": "🍌>",
+                            "unicode_behind": "<🍌"
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let registry = ItemRegistry::load_json_file(&path).unwrap();
+        let display = registry.banana_display();
+
+        assert_eq!(display.ascii_ahead, "BA>");
+        assert_eq!(display.ascii_behind, "<BA");
+        assert_eq!(display.ascii_overlap, " ))<>");
+        assert_eq!(display.unicode_ahead, "🍌>");
+        assert_eq!(display.unicode_behind, "<🍌");
+        assert_eq!(display.unicode_overlap, " 🍌 <>");
 
         let _ = std::fs::remove_file(path);
     }

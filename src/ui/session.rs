@@ -16,7 +16,8 @@ use crate::game::{
     bonus::{claim_bonus_choice, BonusState},
     effects::{ActiveEffect, AttackWarning, PendingAttack},
     items::{
-        select_nearest_banana_target, HeldItem, ItemPickup, ItemRegistry, ItemUse, RacerPosition,
+        select_nearest_banana_target, HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse,
+        RacePositionBand, RacerPosition,
     },
     mods::ActiveModConfig,
     player::PlayerState,
@@ -24,14 +25,9 @@ use crate::game::{
     typing::{apply_key, first_typo_index, KeyAction, TypingEvent},
 };
 
-const MUSHROOM_BOOST_WORDS: usize = 3;
-const MUSHROOM_WPM: f64 = 180.0;
-const AI_BANANA_STUN: Duration = Duration::from_secs(2);
 const PLAYER_ATTACK_WARNING: Duration = Duration::from_millis(900);
 const MAX_AI_RACERS: usize = 6;
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(15);
-const ITEM_IMPACT_BLINK: Duration = Duration::from_millis(1200);
-const ITEM_CUE_DURATION: Duration = Duration::from_millis(1500);
 const RACE_COUNTDOWN: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
@@ -137,21 +133,42 @@ impl AiRacer {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemCue {
     pub kind: ItemCueKind,
     pub until: Instant,
+    pub ascii_label: String,
+    pub unicode_label: String,
 }
 
 impl ItemCue {
-    fn new(kind: ItemCueKind, now: Instant) -> Self {
-        Self {
-            kind,
-            until: now + ITEM_CUE_DURATION,
+    #[cfg(test)]
+    pub(crate) fn new(kind: ItemCueKind, now: Instant) -> Self {
+        match kind {
+            ItemCueKind::Banana { direction } => {
+                Self::banana(direction, now, &ItemRegistry::builtin())
+            }
         }
     }
 
-    pub fn is_visible(self, now: Instant) -> bool {
+    fn banana(direction: AttackDirection, now: Instant, item_registry: &ItemRegistry) -> Self {
+        let effect = item_registry.banana_effect();
+        let display = item_registry.banana_display();
+        let (ascii_label, unicode_label) = match direction {
+            AttackDirection::Ahead => (display.ascii_ahead, display.unicode_ahead),
+            AttackDirection::Behind => (display.ascii_behind, display.unicode_behind),
+            AttackDirection::Overlap => (display.ascii_overlap, display.unicode_overlap),
+        };
+
+        Self {
+            kind: ItemCueKind::Banana { direction },
+            until: now + Duration::from_millis(effect.cue_ms),
+            ascii_label,
+            unicode_label,
+        }
+    }
+
+    pub fn is_visible(&self, now: Instant) -> bool {
         self.until > now
     }
 }
@@ -400,7 +417,8 @@ impl LocalSession {
 
         let expired_choices = self.bonuses.expire_cooldowns(&self.track, now);
         if expired_choices > 0 {
-            self.events.push("Bonus refreshed");
+            self.run_log
+                .push(now, format!("bonus refreshed choices={expired_choices}"));
         }
 
         let expired_effects = self.player.expire_effects(now);
@@ -422,11 +440,15 @@ impl LocalSession {
     }
 
     fn expire_item_cues(&mut self, now: Instant) {
-        if self.player_item_cue.is_some_and(|cue| !cue.is_visible(now)) {
+        if self
+            .player_item_cue
+            .as_ref()
+            .is_some_and(|cue| !cue.is_visible(now))
+        {
             self.player_item_cue = None;
         }
         for ai in &mut self.ai_racers {
-            if ai.item_cue.is_some_and(|cue| !cue.is_visible(now)) {
+            if ai.item_cue.as_ref().is_some_and(|cue| !cue.is_visible(now)) {
                 ai.item_cue = None;
             }
         }
@@ -442,7 +464,8 @@ impl LocalSession {
         self.player.input.clear();
         self.player.typo_index = None;
         self.bonus_attempt = None;
-        self.player_impact_until = Some(now + ITEM_IMPACT_BLINK);
+        self.player_impact_until =
+            Some(now + Duration::from_millis(self.item_registry.banana_effect().impact_blink_ms));
         self.events.push("Banana spun you out");
     }
 
@@ -523,7 +546,7 @@ impl LocalSession {
         if ai.player.held_item.is_some()
             || ai.player.has_active_shield(now)
             || player_has_active_mushroom(&ai.player)
-            || ai.item_cue.is_some_and(|cue| cue.is_visible(now))
+            || ai.item_cue.as_ref().is_some_and(|cue| cue.is_visible(now))
             || ai.player.is_finished()
             || ai.player.typo_index.is_some()
             || !ai.player.input.is_empty()
@@ -547,13 +570,13 @@ impl LocalSession {
 
         let mut rng = thread_rng();
         let choice_index = available_choices[rng.gen_range(0..available_choices.len())];
-        let has_nearby_racer = self.ai_has_nearby_racer(ai_index, 5);
+        let item_context = self.ai_item_roll_context(ai_index, 5);
         let Some(item) = claim_bonus_choice(
             &mut self.bonuses,
             point_index,
             choice_index,
             now,
-            has_nearby_racer,
+            item_context,
             &self.item_registry,
             &mut rng,
         ) else {
@@ -581,6 +604,23 @@ impl LocalSession {
                 })
     }
 
+    fn ai_item_roll_context(&self, ai_index: usize, max_distance_words: usize) -> ItemRollContext {
+        ItemRollContext {
+            has_nearby_racer: self.ai_has_nearby_racer(ai_index, max_distance_words),
+            position: self.ai_position_band(ai_index),
+        }
+    }
+
+    fn ai_position_band(&self, ai_index: usize) -> RacePositionBand {
+        let Some(ai) = self.ai_racers.get(ai_index) else {
+            return RacePositionBand::Middle;
+        };
+        racer_position_band(
+            ai.player.word_index,
+            self.active_racer_word_indices_excluding_ai(ai_index),
+        )
+    }
+
     fn receive_ai_pickup(&mut self, ai_index: usize, item: ItemPickup, now: Instant) {
         match item {
             ItemPickup::Held(held_item) => {
@@ -589,7 +629,7 @@ impl LocalSession {
                 };
                 let ai_name = ai.name.clone();
                 self.events
-                    .push(format!("{ai_name} picked up {}", held_item.name()));
+                    .push(format!("{ai_name} got {}", held_item.name()));
                 self.run_log.push(
                     now,
                     format!(
@@ -607,9 +647,10 @@ impl LocalSession {
                 let ai_name = ai.name.clone();
                 let word_index = ai.player.word_index;
                 ai.player.active_effects.push(ActiveEffect::Shield {
-                    until: now + Duration::from_secs(5),
+                    until: now
+                        + Duration::from_millis(self.item_registry.shield_effect().duration_ms),
                 });
-                self.events.push(format!("{} shielded", ai.name));
+                self.events.push(format!("{ai_name} got Shield"));
                 self.run_log.push(
                     now,
                     format!("{ai_name} picked up Shield at word={word_index}"),
@@ -656,8 +697,11 @@ impl LocalSession {
                 self.racer_positions_summary(&racers, now)
             ),
         );
-        let Some(target) = select_nearest_banana_target(ai.player.word_index, &racers, 10) else {
-            self.events.push(format!("{} missed Banana", ai.name));
+        let banana = self.item_registry.banana_effect();
+        let Some(target) =
+            select_nearest_banana_target(ai.player.word_index, &racers, banana.range_words)
+        else {
+            self.events.push(format!("{ai_name} missed Banana"));
             self.run_log.push(now, format!("{ai_name} banana missed"));
             return;
         };
@@ -675,16 +719,17 @@ impl LocalSession {
 
         if target.id == 0 {
             if let Some(ai) = self.ai_racers.get_mut(ai_index) {
-                ai.item_cue = Some(ItemCue::new(ItemCueKind::Banana { direction }, now));
+                ai.item_cue = Some(ItemCue::banana(direction, now, &self.item_registry));
             }
             self.attack_warning = Some(AttackWarning {
                 attack: PendingAttack::BananaWordSwap,
                 resolves_at: now + PLAYER_ATTACK_WARNING,
             });
-            self.events.push(format!("{ai_name} threw Banana at you"));
+            self.events
+                .push(format!("{ai_name} targeted you with Banana"));
         } else {
             if let Some(ai) = self.ai_racers.get_mut(ai_index) {
-                ai.item_cue = Some(ItemCue::new(ItemCueKind::Banana { direction }, now));
+                ai.item_cue = Some(ItemCue::banana(direction, now, &self.item_registry));
             }
             if self.apply_banana_to_ai(target.id, now) == Some(BananaResolution::SpunOut) {
                 self.events.push(format!("{ai_name} hit ai-{}", target.id));
@@ -767,16 +812,15 @@ impl LocalSession {
             );
             Some(BananaResolution::Blocked)
         } else {
-            ai.stunned_until = Some(now + AI_BANANA_STUN);
-            ai.impact_until = Some(now + ITEM_IMPACT_BLINK);
+            let banana = self.item_registry.banana_effect();
+            ai.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
+            ai.impact_until = Some(now + Duration::from_millis(banana.impact_blink_ms));
             ai.char_budget = 0.0;
-            self.events.push(format!("{} spun out", ai_name));
             self.run_log.push(
                 now,
                 format!(
                     "{ai_name} spun out at word={word_index}; stun_ms={} impact_blink_ms={}",
-                    AI_BANANA_STUN.as_millis(),
-                    ITEM_IMPACT_BLINK.as_millis()
+                    banana.stun_ms, banana.impact_blink_ms
                 ),
             );
             Some(BananaResolution::SpunOut)
@@ -790,11 +834,10 @@ impl LocalSession {
         ai.player.input.clear();
         ai.player.typo_index = None;
         ai.player.active_effects.push(ActiveEffect::Mushroom {
-            remaining_words: MUSHROOM_BOOST_WORDS,
+            remaining_words: self.item_registry.mushroom_effect().boost_words,
             next_step_at: now,
-            step_interval: mushroom_step_interval(),
+            step_interval: mushroom_step_interval(self.item_registry.mushroom_effect().wpm),
         });
-        self.events.push(format!("{} used Mushroom", ai.name));
         self.advance_ai_mushroom(ai_index, now);
     }
 
@@ -911,13 +954,10 @@ impl LocalSession {
                 if self.player.input.pop().is_some() {
                     self.player.stats.backspaces += 1;
                     self.recalculate_bonus_typo();
-                    if previous_typo.is_some() && self.player.typo_index.is_none() {
-                        self.events.push("Typo cleared");
-                    }
+                    let _ = previous_typo;
                 }
                 if self.player.input.is_empty() {
                     self.bonus_attempt = None;
-                    self.events.push("Bonus attempt cancelled");
                 }
             }
             KeyAction::Space => {
@@ -960,9 +1000,7 @@ impl LocalSession {
 
         self.player.input.push(ch);
         self.player.typo_index = first_typo_index(&self.player.input, &target);
-        if previous_typo.is_none() && self.player.typo_index.is_some() {
-            self.events.push("Typo started");
-        }
+        let _ = previous_typo;
     }
 
     fn completed_bonus_word_without_typo(&self) -> bool {
@@ -984,12 +1022,13 @@ impl LocalSession {
 
     fn claim_bonus(&mut self, attempt: BonusAttempt, now: Instant) {
         let mut rng = thread_rng();
+        let item_context = self.player_item_roll_context(5);
         let Some(item) = claim_bonus_choice(
             &mut self.bonuses,
             attempt.point_index,
             attempt.choice_index,
             now,
-            false,
+            item_context,
             &self.item_registry,
             &mut rng,
         ) else {
@@ -1002,6 +1041,52 @@ impl LocalSession {
         self.player.input.clear();
         self.player.typo_index = None;
         self.bonus_attempt = None;
+    }
+
+    fn player_item_roll_context(&self, max_distance_words: usize) -> ItemRollContext {
+        ItemRollContext {
+            has_nearby_racer: self.player_has_nearby_racer(max_distance_words),
+            position: self.player_position_band(),
+        }
+    }
+
+    fn player_has_nearby_racer(&self, max_distance_words: usize) -> bool {
+        !self.player.is_finished()
+            && self.ai_racers.iter().any(|ai| {
+                !ai.player.is_finished()
+                    && self.player.word_index.abs_diff(ai.player.word_index) <= max_distance_words
+            })
+    }
+
+    fn player_position_band(&self) -> RacePositionBand {
+        racer_position_band(
+            self.player.word_index,
+            self.active_ai_word_indices().into_iter(),
+        )
+    }
+
+    fn active_ai_word_indices(&self) -> Vec<usize> {
+        self.ai_racers
+            .iter()
+            .filter(|ai| !ai.player.is_finished())
+            .map(|ai| ai.player.word_index)
+            .collect()
+    }
+
+    fn active_racer_word_indices_excluding_ai(
+        &self,
+        ai_index: usize,
+    ) -> impl Iterator<Item = usize> + '_ {
+        let player_word = (!self.player.is_finished()).then_some(self.player.word_index);
+        player_word.into_iter().chain(
+            self.ai_racers
+                .iter()
+                .enumerate()
+                .filter(move |(other_index, ai)| {
+                    *other_index != ai_index && !ai.player.is_finished()
+                })
+                .map(|(_, ai)| ai.player.word_index),
+        )
     }
 
     fn recalculate_bonus_typo(&mut self) {
@@ -1027,7 +1112,10 @@ impl LocalSession {
         self.player.held_item.is_none()
             && !self.player.has_active_shield(now)
             && !player_has_active_mushroom(&self.player)
-            && !self.player_item_cue.is_some_and(|cue| cue.is_visible(now))
+            && !self
+                .player_item_cue
+                .as_ref()
+                .is_some_and(|cue| cue.is_visible(now))
             && self.player.typo_index.is_none()
             && self.player.input.is_empty()
             && self
@@ -1057,15 +1145,14 @@ impl LocalSession {
 
     fn activate_shield(&mut self, now: Instant) {
         self.player.active_effects.push(ActiveEffect::Shield {
-            until: now + std::time::Duration::from_secs(5),
+            until: now + Duration::from_millis(self.item_registry.shield_effect().duration_ms),
         });
-        self.events.push("Shield activated");
     }
 
     fn receive_pickup(&mut self, item: ItemPickup, now: Instant) {
         match item {
             ItemPickup::Held(held_item) => {
-                self.events.push(format!("Picked up {}", held_item.name()));
+                self.events.push(format!("Got {}", held_item.name()));
                 self.run_log.push(
                     now,
                     format!(
@@ -1078,7 +1165,7 @@ impl LocalSession {
             }
             ItemPickup::Shield => {
                 self.activate_shield(now);
-                self.events.push("Picked up Shield");
+                self.events.push("Got Shield");
                 self.run_log.push(
                     now,
                     format!("player picked up Shield at word={}", self.player.word_index),
@@ -1109,9 +1196,11 @@ impl LocalSession {
                         self.racer_positions_summary(&racers, now)
                     ),
                 );
-                if let Some(target) =
-                    select_nearest_banana_target(self.player.word_index, &racers, 10)
-                {
+                if let Some(target) = select_nearest_banana_target(
+                    self.player.word_index,
+                    &racers,
+                    self.item_registry.banana_effect().range_words,
+                ) {
                     let direction = attack_direction(self.player.word_index, target.word_index);
                     let distance = self.player.word_index.abs_diff(target.word_index);
                     self.run_log.push(
@@ -1124,12 +1213,12 @@ impl LocalSession {
                         ),
                     );
                     self.player_item_cue =
-                        Some(ItemCue::new(ItemCueKind::Banana { direction }, now));
+                        Some(ItemCue::banana(direction, now, &self.item_registry));
                     if self.apply_banana_to_ai(target.id, now) == Some(BananaResolution::SpunOut) {
                         self.events.push(format!("Hit ai-{}", target.id));
                     }
                 } else {
-                    self.events.push("No racer in range");
+                    self.events.push("Missed Banana");
                     self.run_log
                         .push(now, "player banana missed: no racer in range");
                 }
@@ -1142,11 +1231,10 @@ impl LocalSession {
         self.player.typo_index = None;
         self.bonus_attempt = None;
         self.player.active_effects.push(ActiveEffect::Mushroom {
-            remaining_words: MUSHROOM_BOOST_WORDS,
+            remaining_words: self.item_registry.mushroom_effect().boost_words,
             next_step_at: now,
-            step_interval: mushroom_step_interval(),
+            step_interval: mushroom_step_interval(self.item_registry.mushroom_effect().wpm),
         });
-        self.events.push("Used Mushroom");
         self.advance_mushroom(now);
     }
 
@@ -1209,8 +1297,8 @@ impl LocalSession {
     }
 }
 
-fn mushroom_step_interval() -> std::time::Duration {
-    std::time::Duration::from_secs_f64(60.0 / MUSHROOM_WPM)
+fn mushroom_step_interval(wpm: u32) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(60.0 / f64::from(wpm))
 }
 
 fn ai_chars_per_second(words_per_minute: f64) -> f64 {
@@ -1232,6 +1320,29 @@ fn banana_cue_placement(direction: AttackDirection) -> &'static str {
         // Same-word attacks are drawn after the marker, but the distinct
         // direction keeps logs and future rendering from calling them "ahead".
         AttackDirection::Overlap => "after-overlap",
+    }
+}
+
+fn racer_position_band(
+    word_index: usize,
+    other_word_indices: impl IntoIterator<Item = usize>,
+) -> RacePositionBand {
+    let mut ahead = 0;
+    let mut behind = 0;
+    for other_word_index in other_word_indices {
+        if other_word_index > word_index {
+            ahead += 1;
+        } else if other_word_index < word_index {
+            behind += 1;
+        }
+    }
+
+    if ahead == 0 && behind > 0 {
+        RacePositionBand::First
+    } else if behind == 0 && ahead > 0 {
+        RacePositionBand::Trailing
+    } else {
+        RacePositionBand::Middle
     }
 }
 
@@ -1270,10 +1381,12 @@ fn next_ai_key(player: &PlayerState, track: &Track) -> Option<KeyAction> {
 fn event_message(event: TypingEvent, previous_word: Option<&str>) -> Option<String> {
     match event {
         TypingEvent::InputChanged => None,
-        TypingEvent::WordCompleted => previous_word.map(|word| format!("Completed {word}")),
+        TypingEvent::WordCompleted => {
+            let _ = previous_word;
+            None
+        }
         TypingEvent::RaceFinished => Some("Race finished".to_string()),
-        TypingEvent::TypoStarted { .. } => Some("Typo started".to_string()),
-        TypingEvent::TypoCleared => Some("Typo cleared".to_string()),
+        TypingEvent::TypoStarted { .. } | TypingEvent::TypoCleared => None,
     }
 }
 
@@ -1436,9 +1549,9 @@ mod tests {
 
         let entries = session.events.entries().collect::<Vec<_>>();
         assert!(entries.contains(&"Race started"));
-        assert!(entries.contains(&"Typo started"));
-        assert!(entries.contains(&"Typo cleared"));
-        assert!(entries.contains(&"Completed fox"));
+        assert!(!entries.contains(&"Typo started"));
+        assert!(!entries.contains(&"Typo cleared"));
+        assert!(!entries.iter().any(|entry| entry.starts_with("Completed ")));
     }
 
     #[test]
@@ -2137,6 +2250,6 @@ mod tests {
         assert!(session
             .events
             .entries()
-            .any(|entry| entry == "No racer in range"));
+            .any(|entry| entry == "Missed Banana"));
     }
 }

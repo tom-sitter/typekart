@@ -160,7 +160,7 @@ pub fn claim_bonus_choice(
     point_index: usize,
     choice_index: usize,
     now: Instant,
-    has_nearby_racer: bool,
+    item_context: ItemRollContext,
     item_registry: &ItemRegistry,
     rng: &mut impl Rng,
 ) -> Option<ItemPickup> {
@@ -177,7 +177,7 @@ pub fn claim_bonus_choice(
     choice.status = BonusChoiceStatus::Cooldown {
         until: now + BONUS_COOLDOWN,
     };
-    item_registry.roll_pickup(rng, ItemRollContext { has_nearby_racer })
+    item_registry.roll_pickup(rng, item_context)
 }
 
 fn bonus_word_pool(word_list: &WordList) -> Vec<String> {
@@ -248,7 +248,7 @@ mod tests {
         BONUS_CHOICE_COUNT, BONUS_COOLDOWN,
     };
     use crate::game::{
-        items::ItemRegistry,
+        items::{ItemRegistry, ItemRollContext, RacePositionBand},
         track::{Track, WordList},
     };
 
@@ -300,7 +300,10 @@ mod tests {
             0,
             1,
             now,
-            false,
+            ItemRollContext {
+                has_nearby_racer: false,
+                position: RacePositionBand::Middle,
+            },
             &ItemRegistry::builtin(),
             &mut rng,
         );

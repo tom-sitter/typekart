@@ -23,7 +23,10 @@ use rand::thread_rng;
 use crate::game::{
     bonus::{claim_bonus_choice, BonusChoiceStatus, BonusState},
     effects::ActiveEffect,
-    items::{select_nearest_banana_target, HeldItem, ItemPickup, ItemRegistry, RacerPosition},
+    items::{
+        select_nearest_banana_target, BananaDisplayConfig, HeldItem, ItemPickup, ItemRegistry,
+        ItemRollContext, RacePositionBand, RacerPosition,
+    },
     mods::ActiveModConfig,
     race::{PlayerColorId, RacePlayerId, RaceState},
     track::{Track, WordList},
@@ -34,8 +37,9 @@ use super::log::{push_network_log, SharedNetworkLog};
 use super::protocol::{
     decode_client_message, encode_server_message, AssignedColor, AttackDirectionSnapshot,
     BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
-    ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot,
-    ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
+    ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase,
+    PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus,
+    RaceSnapshot, ServerMessage,
 };
 
 const COLOR_ROTATION: [AssignedColor; 6] = [
@@ -48,13 +52,6 @@ const COLOR_ROTATION: [AssignedColor; 6] = [
 ];
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(50);
-const MUSHROOM_BOOST_WORDS: usize = 3;
-const MUSHROOM_WPM: f64 = 180.0;
-const BANANA_RANGE_WORDS: usize = 10;
-const BANANA_STUN: Duration = Duration::from_secs(2);
-const ITEM_IMPACT_BLINK: Duration = Duration::from_millis(1200);
-const ITEM_CUE_DURATION: Duration = Duration::from_millis(1500);
-const SHIELD_DURATION: Duration = Duration::from_secs(5);
 static SERVER_CONSOLE_LOGGING: AtomicBool = AtomicBool::new(true);
 
 macro_rules! server_println {
@@ -118,16 +115,19 @@ struct NetworkBonusAttempt {
     choice_index: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct NetworkPlayerEffects {
     stunned_until: Option<Instant>,
     impact_until: Option<Instant>,
     item_cue: Option<NetworkItemCue>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct NetworkItemCue {
     kind: NetworkItemCueKind,
+    ascii_label: String,
+    unicode_label: String,
+    placement: ItemCuePlacementSnapshot,
     until: Instant,
 }
 
@@ -175,6 +175,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         players.push(LobbyPlayer {
             id: PlayerId(1),
             name: host_name,
+            kind: PlayerKind::Human,
             color: COLOR_ROTATION[0],
             ready: false,
             connected: true,
@@ -277,6 +278,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
             state.players.push(LobbyPlayer {
                 id: player_id,
                 name: player_name.clone(),
+                kind: PlayerKind::Human,
                 color: assigned_color,
                 ready: false,
                 connected: true,
@@ -856,11 +858,17 @@ fn apply_network_bonus_typing_action(
                     .player(RacePlayerId(player_id.0))
                     .is_some_and(|player| player.state.typo_index.is_none());
             if typo_cleared {
-                push_event_for_player(state, player_id, "Typo cleared");
+                push_network_log(
+                    &state.debug_log,
+                    format!("{} bonus typo cleared", player_label(state, player_id)),
+                );
             }
             if input_is_empty {
                 state.bonus_attempts.remove(&player_id);
-                push_event_for_player(state, player_id, "Bonus attempt cancelled");
+                push_network_log(
+                    &state.debug_log,
+                    format!("{} bonus attempt cancelled", player_label(state, player_id)),
+                );
             }
         }
         KeyAction::Space => {
@@ -938,7 +946,10 @@ fn apply_network_bonus_char(state: &mut HostState, player_id: PlayerId, ch: char
     player.state.input.push(ch);
     player.state.typo_index = first_typo_index(&player.state.input, &target);
     if previous_typo.is_none() && player.state.typo_index.is_some() {
-        push_event_for_player(state, player_id, "Typo started");
+        push_network_log(
+            &state.debug_log,
+            format!("{} bonus typo started", player_label(state, player_id)),
+        );
     }
 }
 
@@ -986,7 +997,7 @@ fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant)
         .points
         .get(attempt.point_index)
         .map(|point| point.after_word_index);
-    let has_nearby_racer = player_has_nearby_racer(state, player_id, 5);
+    let item_context = network_item_roll_context(state, player_id, 5);
     let item_registry = state.item_registry.clone();
     let mut rng = thread_rng();
     let pickup = claim_bonus_choice(
@@ -994,7 +1005,7 @@ fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant)
         attempt.point_index,
         attempt.choice_index,
         now,
-        has_nearby_racer,
+        item_context,
         &item_registry,
         &mut rng,
     );
@@ -1017,7 +1028,7 @@ fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant)
     match pickup {
         Some(item) => {
             let item_name = item_pickup_name(item);
-            push_event(state, format!("{name} picked up {item_name}"));
+            push_event(state, format!("{name} got {item_name}"));
             push_network_log(
                 &state.debug_log,
                 format!("{name} picked up {item_name} from network bonus"),
@@ -1061,6 +1072,53 @@ fn player_has_nearby_racer(
     })
 }
 
+fn network_item_roll_context(
+    state: &HostState,
+    player_id: PlayerId,
+    max_distance_words: usize,
+) -> ItemRollContext {
+    ItemRollContext {
+        has_nearby_racer: player_has_nearby_racer(state, player_id, max_distance_words),
+        position: network_position_band(state, player_id),
+    }
+}
+
+fn network_position_band(state: &HostState, player_id: PlayerId) -> RacePositionBand {
+    let active_racers = state
+        .race
+        .players
+        .iter()
+        .filter(|player| player.connected && !player.state.is_finished())
+        .collect::<Vec<_>>();
+    if active_racers.len() <= 1 {
+        return RacePositionBand::Middle;
+    }
+
+    let Some(player) = active_racers
+        .iter()
+        .find(|player| player.id == RacePlayerId(player_id.0))
+    else {
+        return RacePositionBand::Middle;
+    };
+
+    let ahead = active_racers
+        .iter()
+        .filter(|other| other.state.word_index > player.state.word_index)
+        .count();
+    let behind = active_racers
+        .iter()
+        .filter(|other| other.state.word_index < player.state.word_index)
+        .count();
+
+    if ahead == 0 && behind > 0 {
+        RacePositionBand::First
+    } else if behind == 0 && ahead > 0 {
+        RacePositionBand::Trailing
+    } else {
+        RacePositionBand::Middle
+    }
+}
+
 fn player_input_is_paused(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
     if state
         .player_effects
@@ -1101,10 +1159,8 @@ fn activate_network_shield(state: &mut HostState, player_id: PlayerId, now: Inst
     };
 
     player.state.active_effects.push(ActiveEffect::Shield {
-        until: now + SHIELD_DURATION,
+        until: now + Duration::from_millis(state.item_registry.shield_effect().duration_ms),
     });
-    let name = player.name.clone();
-    push_event(state, format!("{name} shielded"));
 }
 
 fn activate_network_mushroom(state: &mut HostState, player_id: PlayerId, now: Instant) {
@@ -1120,13 +1176,12 @@ fn activate_network_mushroom(state: &mut HostState, player_id: PlayerId, now: In
 
     player.state.input.clear();
     player.state.typo_index = None;
+    let mushroom = state.item_registry.mushroom_effect();
     player.state.active_effects.push(ActiveEffect::Mushroom {
-        remaining_words: MUSHROOM_BOOST_WORDS,
+        remaining_words: mushroom.boost_words,
         next_step_at: now,
-        step_interval: mushroom_step_interval(),
+        step_interval: mushroom_step_interval(mushroom.wpm),
     });
-    let name = player.name.clone();
-    push_event(state, format!("{name} used Mushroom"));
     advance_network_mushrooms(state, now);
 }
 
@@ -1158,8 +1213,9 @@ fn activate_network_banana(state: &mut HostState, player_id: PlayerId, now: Inst
         ),
     );
 
+    let banana = state.item_registry.banana_effect();
     let Some(target) =
-        select_nearest_banana_target(attacker_word_index, &candidates, BANANA_RANGE_WORDS)
+        select_nearest_banana_target(attacker_word_index, &candidates, banana.range_words)
     else {
         push_event(state, format!("{attacker_name} missed Banana"));
         push_network_log(&state.debug_log, format!("{attacker_name} banana missed"));
@@ -1168,6 +1224,8 @@ fn activate_network_banana(state: &mut HostState, player_id: PlayerId, now: Inst
 
     let target_id = PlayerId(target.id as u64);
     let direction = attack_direction(attacker_word_index, target.word_index);
+    let banana_display = state.item_registry.banana_display();
+    let (ascii_label, unicode_label) = network_banana_cue_labels(direction, banana_display);
     let distance = attacker_word_index.abs_diff(target.word_index);
     push_network_log(
         &state.debug_log,
@@ -1179,7 +1237,10 @@ fn activate_network_banana(state: &mut HostState, player_id: PlayerId, now: Inst
     );
     state.player_effects.entry(player_id).or_default().item_cue = Some(NetworkItemCue {
         kind: NetworkItemCueKind::Banana { direction },
-        until: now + ITEM_CUE_DURATION,
+        ascii_label,
+        unicode_label,
+        placement: network_banana_cue_placement(direction),
+        until: now + Duration::from_millis(banana.cue_ms),
     });
 
     match apply_network_banana_to_player(state, target_id, now) {
@@ -1232,15 +1293,14 @@ fn apply_network_banana_to_player(
     target.state.input.clear();
     target.state.typo_index = None;
     let effects = state.player_effects.entry(target_id).or_default();
-    effects.stunned_until = Some(now + BANANA_STUN);
-    effects.impact_until = Some(now + ITEM_IMPACT_BLINK);
-    push_event(state, format!("{target_name} spun out"));
+    let banana = state.item_registry.banana_effect();
+    effects.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
+    effects.impact_until = Some(now + Duration::from_millis(banana.impact_blink_ms));
     push_network_log(
         &state.debug_log,
         format!(
             "{target_name} spun out at word={word_index}; stun_ms={} impact_blink_ms={}",
-            BANANA_STUN.as_millis(),
-            ITEM_IMPACT_BLINK.as_millis()
+            banana.stun_ms, banana.impact_blink_ms
         ),
     );
     Some(BananaResolution::SpunOut)
@@ -1378,8 +1438,28 @@ fn attack_direction(
     }
 }
 
-fn mushroom_step_interval() -> Duration {
-    Duration::from_secs_f64(60.0 / MUSHROOM_WPM)
+fn mushroom_step_interval(wpm: u32) -> Duration {
+    Duration::from_secs_f64(60.0 / f64::from(wpm))
+}
+
+fn network_banana_cue_labels(
+    direction: AttackDirectionSnapshot,
+    display: BananaDisplayConfig,
+) -> (String, String) {
+    match direction {
+        AttackDirectionSnapshot::Ahead => (display.ascii_ahead, display.unicode_ahead),
+        AttackDirectionSnapshot::Behind => (display.ascii_behind, display.unicode_behind),
+        AttackDirectionSnapshot::Overlap => (display.ascii_overlap, display.unicode_overlap),
+    }
+}
+
+fn network_banana_cue_placement(direction: AttackDirectionSnapshot) -> ItemCuePlacementSnapshot {
+    match direction {
+        AttackDirectionSnapshot::Ahead | AttackDirectionSnapshot::Overlap => {
+            ItemCuePlacementSnapshot::After
+        }
+        AttackDirectionSnapshot::Behind => ItemCuePlacementSnapshot::Before,
+    }
 }
 
 fn network_racer_positions_summary(
@@ -1421,9 +1501,8 @@ fn item_pickup_name(item: ItemPickup) -> &'static str {
     }
 }
 
-fn push_event_for_player(state: &mut HostState, player_id: PlayerId, message: &str) {
-    let name = player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0));
-    push_event(state, format!("{name}: {message}"));
+fn player_label(state: &HostState, player_id: PlayerId) -> String {
+    player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0))
 }
 
 fn run_countdown(state: Arc<Mutex<HostState>>) {
@@ -1600,11 +1679,7 @@ fn push_event(state: &mut HostState, event: String) {
 
 fn expire_bonus_cooldowns(state: &mut HostState, now: Instant) -> usize {
     let track = &state.race.track;
-    let expired = state.bonuses.expire_cooldowns(track, now);
-    if expired > 0 {
-        push_event(state, "Bonus refreshed".to_string());
-    }
-    expired
+    state.bonuses.expire_cooldowns(track, now)
 }
 
 fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
@@ -1907,11 +1982,12 @@ fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
                 let effects = state
                     .player_effects
                     .get(&player_id)
-                    .copied()
+                    .cloned()
                     .unwrap_or_default();
                 PlayerSnapshot {
                     id: player_id,
                     name: player.name.clone(),
+                    kind: PlayerKind::Human,
                     color: player.color.into(),
                     word_index: player.state.word_index,
                     input: player.state.input.clone(),
@@ -1922,7 +1998,7 @@ fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
                     boosted: player_has_active_mushroom_effect(player, now),
                     stunned: effects.stunned_until.is_some_and(|until| until > now),
                     impact_remaining_ms: remaining_ms(effects.impact_until, now),
-                    item_cue: build_item_cue_snapshot(effects.item_cue, now),
+                    item_cue: build_item_cue_snapshot(effects.item_cue.clone(), now),
                 }
             })
             .collect(),
@@ -1943,6 +2019,9 @@ fn build_item_cue_snapshot(cue: Option<NetworkItemCue>, now: Instant) -> Option<
         kind: match cue.kind {
             NetworkItemCueKind::Banana { direction } => ItemCueSnapshotKind::Banana { direction },
         },
+        ascii_label: cue.ascii_label,
+        unicode_label: cue.unicode_label,
+        placement: cue.placement,
         remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
     })
 }
@@ -2053,8 +2132,8 @@ mod tests {
         words::WordSetDefinition,
     };
     use crate::net::protocol::{
-        decode_server_message, encode_client_message, ClientMessage, LobbyPlayer, RaceResultStatus,
-        ServerMessage,
+        decode_server_message, encode_client_message, ClientMessage, LobbyPlayer, PlayerKind,
+        RaceResultStatus, ServerMessage,
     };
 
     #[test]
@@ -2069,6 +2148,7 @@ mod tests {
             LobbyPlayer {
                 id: PlayerId(2),
                 name,
+                kind: PlayerKind::Human,
                 color: AssignedColor::Red,
                 ready: false,
                 connected: true,
@@ -2216,6 +2296,7 @@ mod tests {
             LobbyPlayer {
                 id: PlayerId(1),
                 name: "host".to_string(),
+                kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
                 ready: false,
                 connected: true,
@@ -2223,6 +2304,7 @@ mod tests {
             LobbyPlayer {
                 id: PlayerId(2),
                 name: "alex".to_string(),
+                kind: PlayerKind::Human,
                 color: AssignedColor::Red,
                 ready: false,
                 connected: false,
@@ -2271,6 +2353,7 @@ mod tests {
         state.players.push(LobbyPlayer {
             id: PlayerId(3),
             name: "casey".to_string(),
+            kind: PlayerKind::Human,
             color: AssignedColor::Green,
             ready: true,
             connected: true,
@@ -2296,6 +2379,7 @@ mod tests {
         state.players.push(LobbyPlayer {
             id: PlayerId(3),
             name: "casey".to_string(),
+            kind: PlayerKind::Human,
             color: AssignedColor::Green,
             ready: true,
             connected: true,
@@ -2330,6 +2414,7 @@ mod tests {
             players: vec![LobbyPlayer {
                 id: PlayerId(1),
                 name: "host".to_string(),
+                kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
                 ready: false,
                 connected: true,
@@ -2495,7 +2580,7 @@ mod tests {
         assert!(state
             .events
             .iter()
-            .any(|event| event.starts_with("alex picked up ")));
+            .any(|event| event.starts_with("alex got ")));
     }
 
     #[test]
@@ -2582,7 +2667,7 @@ mod tests {
         assert!(state
             .player_effects
             .get(&PlayerId(1))
-            .and_then(|effects| effects.item_cue)
+            .and_then(|effects| effects.item_cue.clone())
             .is_some());
     }
 
@@ -2807,6 +2892,7 @@ mod tests {
             LobbyPlayer {
                 id: PlayerId(1),
                 name: "host".to_string(),
+                kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
                 ready: false,
                 connected: true,
@@ -2814,6 +2900,7 @@ mod tests {
             LobbyPlayer {
                 id: PlayerId(2),
                 name: "alex".to_string(),
+                kind: PlayerKind::Human,
                 color: AssignedColor::Red,
                 ready: joiner_ready,
                 connected: true,

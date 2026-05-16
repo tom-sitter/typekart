@@ -52,10 +52,18 @@ pub enum AssignedColor {
     Magenta,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayerKind {
+    Human,
+    Bot,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LobbyPlayer {
     pub id: PlayerId,
     pub name: String,
+    pub kind: PlayerKind,
     pub color: AssignedColor,
     pub ready: bool,
     pub connected: bool,
@@ -75,6 +83,7 @@ pub enum NetworkRacePhase {
 pub struct PlayerSnapshot {
     pub id: PlayerId,
     pub name: String,
+    pub kind: PlayerKind,
     pub color: AssignedColor,
     pub word_index: usize,
     pub input: String,
@@ -167,7 +176,17 @@ pub enum BonusChoiceSnapshotStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemCueSnapshot {
     pub kind: ItemCueSnapshotKind,
+    pub ascii_label: String,
+    pub unicode_label: String,
+    pub placement: ItemCuePlacementSnapshot,
     pub remaining_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemCuePlacementSnapshot {
+    Before,
+    After,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,7 +251,8 @@ mod tests {
         decode_client_message, decode_server_message, encode_client_message, encode_server_message,
         AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
         ClientMessage, ClientSequence, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
-        PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
+        PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot,
+        ServerMessage,
     };
 
     #[test]
@@ -277,6 +297,7 @@ mod tests {
             players: vec![LobbyPlayer {
                 id: PlayerId(1),
                 name: "tom".to_string(),
+                kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
                 ready: false,
                 connected: true,
@@ -306,6 +327,7 @@ mod tests {
             players: vec![PlayerSnapshot {
                 id: PlayerId(1),
                 name: "tom".to_string(),
+                kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
                 word_index: 0,
                 input: "o".to_string(),

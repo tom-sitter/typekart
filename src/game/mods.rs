@@ -153,15 +153,46 @@ fn hash_words(words: &[String]) -> ModHash {
 
 fn hash_item_registry(item_registry: &ItemRegistry) -> ModHash {
     let fields = item_registry.items.iter().flat_map(|item| {
-        [
+        let mut fields = vec![
             item.id.as_str().to_string(),
             item.name.clone(),
             format!("{:?}", item.pickup),
             format!("{:?}", item.activation),
             item.standard_weight.to_string(),
             item.nearby_racer_weight.to_string(),
+            item.context_weights.standard.first.to_string(),
+            item.context_weights.standard.middle.to_string(),
+            item.context_weights.standard.trailing.to_string(),
+            item.context_weights.nearby_racer.first.to_string(),
+            item.context_weights.nearby_racer.middle.to_string(),
+            item.context_weights.nearby_racer.trailing.to_string(),
             item.enabled.to_string(),
-        ]
+        ];
+        if let Some(mushroom) = item.effect.mushroom {
+            fields.extend([mushroom.boost_words.to_string(), mushroom.wpm.to_string()]);
+        }
+        if let Some(banana) = item.effect.banana {
+            fields.extend([
+                banana.range_words.to_string(),
+                banana.stun_ms.to_string(),
+                banana.impact_blink_ms.to_string(),
+                banana.cue_ms.to_string(),
+            ]);
+        }
+        if let Some(shield) = item.effect.shield {
+            fields.push(shield.duration_ms.to_string());
+        }
+        if let Some(banana_display) = &item.display.banana {
+            fields.extend([
+                banana_display.ascii_ahead.clone(),
+                banana_display.ascii_behind.clone(),
+                banana_display.ascii_overlap.clone(),
+                banana_display.unicode_ahead.clone(),
+                banana_display.unicode_behind.clone(),
+                banana_display.unicode_overlap.clone(),
+            ]);
+        }
+        fields
     });
 
     stable_hash(fields)

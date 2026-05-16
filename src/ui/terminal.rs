@@ -101,7 +101,7 @@ fn run_loop(
                     bonuses: &session.bonuses,
                     bonus_attempt: session.bonus_attempt,
                     player_impact_until: session.player_impact_until,
-                    player_item_cue: session.player_item_cue,
+                    player_item_cue: session.player_item_cue.clone(),
                     race_status: session.race_status,
                     race_phase: session.race_phase,
                     icon_mode,

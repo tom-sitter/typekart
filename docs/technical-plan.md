@@ -471,7 +471,8 @@ Then add:
 Current modding injection:
 
 - Item definitions now flow through `ItemRegistry`.
-- Built-in item roll weights can be tuned by JSON item packs.
+- Built-in item roll weights can be tuned by JSON item packs, including full first/middle/trailing context tables.
+- Built-in item parameters can be tuned for Mushroom boost words/WPM, Banana range/stun/blink/cue timing, Shield duration, and Banana attack cue labels.
 - Bonus claiming uses the selected item registry in local and network play.
 - New item effects still require the planned shared item engine.
 
@@ -651,7 +652,7 @@ Implemented:
 - Host/local custom word-set files.
 - Host/local word-set directories with random selection.
 - Item registry for built-in items.
-- JSON item packs that tune or disable built-in items.
+- JSON item packs that tune, disable, configure context-aware weights, tune effect parameters, and override Banana cue labels for built-in items.
 - Active mod metadata and stable hashes.
 - Mod metadata in lobby/race snapshots and debug logs.
 - Network UI displays active word set, item pack, and a short combined mod hash.
@@ -671,7 +672,7 @@ See `docs/modding-architecture-plan.md` for the shared modding architecture, `do
 - Better disconnect handling for countdown and racing edge cases.
 - Rematch flow that rebuilds race state from connected lobby players after results.
 - Better event feed, including lobby events in lobby snapshots.
-- Item weighting.
+- Position-aware item weighting defined by item registry context tables and overridable by item packs.
 - Star Power.
 - Blue Shell.
 - Phase-aware terminal controls.

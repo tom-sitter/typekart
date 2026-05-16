@@ -56,6 +56,8 @@ Known rough edges:
 
 ### Slice 1: LAN Validation Checklist And Debug Ergonomics
 
+Status: checklist documented; real multi-machine LAN validation still pending.
+
 Create a repeatable validation checklist and make logs easier to compare between host and joiners.
 
 Deliverables:
@@ -115,7 +117,7 @@ Validation:
 
 ### Slice 4: Event Feed Polish
 
-Status: partially implemented for lobby event wiring and normalized lifecycle events.
+Status: implemented for lobby event wiring, normalized lifecycle events, and reduced race-event noise.
 
 Make the event feed useful for racers without overloading it.
 
@@ -134,6 +136,8 @@ Validation:
 
 ### Slice 5: Item Weighting And Balance
 
+Status: implemented for proximity plus first/middle/trailing position context, with the weight tables stored on item definitions and overridable by JSON item packs.
+
 Improve item rolls without adding a major new effect engine.
 
 Deliverables:
@@ -142,6 +146,15 @@ Deliverables:
 - Consider placement/progress-aware weights.
 - Keep item registry/mod-pack tuning compatible with the new weighting model.
 - Add tests for first-place, middle, trailing, and nearby-racer contexts.
+
+Implementation notes:
+
+- Item definitions now own full context weight tables for `standard` and `nearby_racer` situations.
+- Each table has separate `first`, `middle`, and `trailing` weights.
+- Item packs can still use `standard_weight` and `nearby_racer_weight` as flat shorthand, but can also provide `context_weights` for full control.
+- Item packs can tune current built-in effect parameters: Mushroom boost words/WPM, Banana range/stun/blink/cue timing, and Shield duration.
+- Banana attack cue labels are config-driven and carried through network snapshots so clients render the host-selected pack.
+- Built-in tables currently give first-place racers less Banana weight, trailing racers more Mushroom/Banana weight, and nearby racers more Shield weight.
 
 Validation:
 

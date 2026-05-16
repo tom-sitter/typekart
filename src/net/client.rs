@@ -30,10 +30,9 @@ use ratatui::{
 
 use super::log::{push_network_log, write_network_log, NetworkLog, SharedNetworkLog};
 use super::protocol::{
-    decode_server_message, encode_client_message, AssignedColor, AttackDirectionSnapshot,
-    ClientMessage, ClientSequence, ItemCueSnapshotKind, LobbyPlayer, ModConfigSnapshot,
-    NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus,
-    RaceSnapshot, ServerMessage,
+    decode_server_message, encode_client_message, AssignedColor, ClientMessage, ClientSequence,
+    ItemCuePlacementSnapshot, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
+    PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
 };
 use crate::ui::render::IconMode;
 
@@ -1374,20 +1373,17 @@ enum NetworkCuePlacement {
 fn network_item_cue(
     player: &PlayerSnapshot,
     icon_mode: IconMode,
-) -> Option<(&'static str, NetworkCuePlacement)> {
+) -> Option<(&str, NetworkCuePlacement)> {
     let cue = player.item_cue.as_ref()?;
-    match (&cue.kind, icon_mode) {
-        (ItemCueSnapshotKind::Banana { direction }, IconMode::Ascii) => match direction {
-            &AttackDirectionSnapshot::Ahead => Some((" ))>>", NetworkCuePlacement::After)),
-            &AttackDirectionSnapshot::Behind => Some(("((<< ", NetworkCuePlacement::Before)),
-            &AttackDirectionSnapshot::Overlap => Some((" ))<>", NetworkCuePlacement::After)),
-        },
-        (ItemCueSnapshotKind::Banana { direction }, IconMode::Unicode) => match direction {
-            &AttackDirectionSnapshot::Ahead => Some((" 🍌 >>", NetworkCuePlacement::After)),
-            &AttackDirectionSnapshot::Behind => Some(("<< 🍌 ", NetworkCuePlacement::Before)),
-            &AttackDirectionSnapshot::Overlap => Some((" 🍌 <>", NetworkCuePlacement::After)),
-        },
-    }
+    let label = match icon_mode {
+        IconMode::Ascii => cue.ascii_label.as_str(),
+        IconMode::Unicode => cue.unicode_label.as_str(),
+    };
+    let placement = match cue.placement {
+        ItemCuePlacementSnapshot::Before => NetworkCuePlacement::Before,
+        ItemCuePlacementSnapshot::After => NetworkCuePlacement::After,
+    };
+    Some((label, placement))
 }
 
 fn network_boost_prefix(icon_mode: IconMode) -> &'static str {
@@ -1660,7 +1656,7 @@ mod tests {
     };
     use crate::net::protocol::{
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
-        ModConfigSnapshot, NetworkRacePhase, RaceSnapshot,
+        ModConfigSnapshot, NetworkRacePhase, PlayerKind, RaceSnapshot,
     };
 
     #[test]
@@ -1843,6 +1839,7 @@ mod tests {
         PlayerSnapshot {
             id,
             name: format!("player-{}", id.0),
+            kind: PlayerKind::Human,
             color: AssignedColor::Cyan,
             word_index,
             input: input.to_string(),

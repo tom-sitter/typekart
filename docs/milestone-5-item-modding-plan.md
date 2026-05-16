@@ -227,11 +227,44 @@ Example:
     {
       "id": "mushroom",
       "standard_weight": 6,
-      "nearby_racer_weight": 8
+      "nearby_racer_weight": 8,
+      "effect": {
+        "boost_words": 4,
+        "wpm": 220
+      }
+    },
+    {
+      "id": "banana",
+      "effect": {
+        "range_words": 8,
+        "stun_ms": 1500,
+        "impact_blink_ms": 900,
+        "cue_ms": 1200
+      },
+      "display": {
+        "ascii_ahead": " ))>>",
+        "ascii_behind": "((<< ",
+        "unicode_ahead": " 🍌 >>",
+        "unicode_behind": "<< 🍌 "
+      }
+    },
+    {
+      "id": "shield",
+      "effect": {
+        "duration_ms": 3000
+      },
+      "context_weights": {
+        "standard": { "first": 1, "middle": 1, "trailing": 1 },
+        "nearby_racer": { "first": 4, "middle": 3, "trailing": 2 }
+      }
     }
   ]
 }
 ```
+
+`standard_weight` and `nearby_racer_weight` are backwards-compatible shorthand for flat context tables. Full `context_weights` gives pack authors direct control over each first/middle/trailing race-position band in both normal and nearby-racer contexts.
+
+The current `effect` fields tune existing built-in handlers only: Mushroom boost words/WPM, Banana range/stun/blink/cue timing, and Shield duration. Banana `display` fields can override the visible attack cue labels while leaving omitted labels at their built-in defaults.
 
 ## Multiplayer Compatibility
 
@@ -306,7 +339,7 @@ The first implementation slice is in place:
 - `src/game/items.rs` now uses `ItemDefinition` and `ItemRegistry::builtin()` for Mushroom, Banana, and Shield weights.
 - Existing public item enums remain in place so local play, network play, and render code keep their current behavior.
 - `play` and `host` support `--item-pack-file ./path/to/items.json`.
-- Custom item packs can currently change built-in item names, enabled flags, and standard/nearby roll weights.
+- Custom item packs can currently change built-in item names, enabled flags, shorthand standard/nearby roll weights, full first/middle/trailing context weight tables, built-in effect parameters, and Banana attack cue labels.
 - Lobby and race snapshots include the active item pack name and effective item registry hash.
 - The network UI displays the active item pack before and during the race.
 - Debug logs include the active item registry hash and combined mod hash.

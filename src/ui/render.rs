@@ -230,7 +230,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonus_attempt,
         screen.ai_racers,
         screen.player_impact_until,
-        screen.player_item_cue,
+        screen.player_item_cue.clone(),
         screen.race_phase,
         screen.icon_mode,
     );
@@ -268,7 +268,7 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonus_attempt,
         screen.ai_racers,
         screen.player_impact_until,
-        screen.player_item_cue,
+        screen.player_item_cue.clone(),
         screen.race_phase,
         screen.icon_mode,
     );
@@ -472,7 +472,7 @@ fn racer_lines(
         icon_mode,
     )];
     lines.extend(ai_racers.iter().map(|ai| {
-        let item_cue = visible_item_cue(ai.item_cue, now, icon_mode);
+        let item_cue = visible_item_cue(ai.item_cue.clone(), now, icon_mode);
         racer_line_for_player(
             window,
             &ai.player,
@@ -504,23 +504,18 @@ fn visible_item_cue(
     icon_mode: IconMode,
 ) -> Option<VisibleItemCue> {
     let cue = item_cue.filter(|cue| cue.is_visible(now))?;
-    let (label, placement) = match (cue.kind, icon_mode) {
-        (ItemCueKind::Banana { direction }, IconMode::Unicode) => match direction {
-            AttackDirection::Ahead => (" 🍌 >>", ItemCuePlacement::After),
-            AttackDirection::Behind => ("<< 🍌 ", ItemCuePlacement::Before),
-            AttackDirection::Overlap => (" 🍌 <>", ItemCuePlacement::After),
-        },
-        (ItemCueKind::Banana { direction }, IconMode::Ascii) => match direction {
-            AttackDirection::Ahead => (" ))>>", ItemCuePlacement::After),
-            AttackDirection::Behind => ("((<< ", ItemCuePlacement::Before),
-            AttackDirection::Overlap => (" ))<>", ItemCuePlacement::After),
+    let placement = match cue.kind {
+        ItemCueKind::Banana { direction } => match direction {
+            AttackDirection::Ahead | AttackDirection::Overlap => ItemCuePlacement::After,
+            AttackDirection::Behind => ItemCuePlacement::Before,
         },
     };
+    let label = match icon_mode {
+        IconMode::Ascii => cue.ascii_label,
+        IconMode::Unicode => cue.unicode_label,
+    };
 
-    Some(VisibleItemCue {
-        label: label.to_string(),
-        placement,
-    })
+    Some(VisibleItemCue { label, placement })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1766,12 +1761,12 @@ mod tests {
         let track = track(&["one", "two", "three"]);
         let window = build_track_window(&track, 0, 40);
         let player = PlayerState::new(now);
-        let cue = ItemCue {
-            kind: ItemCueKind::Banana {
+        let cue = ItemCue::new(
+            ItemCueKind::Banana {
                 direction: AttackDirection::Ahead,
             },
-            until: now + std::time::Duration::from_secs(1),
-        };
+            now,
+        );
 
         let lines = racer_lines(
             &window,
@@ -1797,12 +1792,12 @@ mod tests {
         let window = build_track_window(&track, 2, 40);
         let mut player = PlayerState::new(now);
         player.word_index = 2;
-        let cue = ItemCue {
-            kind: ItemCueKind::Banana {
+        let cue = ItemCue::new(
+            ItemCueKind::Banana {
                 direction: AttackDirection::Behind,
             },
-            until: now + std::time::Duration::from_secs(1),
-        };
+            now,
+        );
 
         let lines = racer_lines(
             &window,
@@ -1829,12 +1824,12 @@ mod tests {
         let track = track(&["one", "two", "three"]);
         let window = build_track_window(&track, 0, 40);
         let player = PlayerState::new(now);
-        let cue = ItemCue {
-            kind: ItemCueKind::Banana {
+        let cue = ItemCue::new(
+            ItemCueKind::Banana {
                 direction: AttackDirection::Overlap,
             },
-            until: now + std::time::Duration::from_secs(1),
-        };
+            now,
+        );
 
         let lines = racer_lines(
             &window,
