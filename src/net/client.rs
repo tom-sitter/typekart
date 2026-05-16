@@ -1080,22 +1080,69 @@ fn network_track_word_line<'a>(
     window: &NetworkTrackWindow<'a>,
     local: Option<&PlayerSnapshot>,
 ) -> Line<'a> {
-    let mut spans = Vec::new();
-
+    let mut cells = vec![NetworkTrackCell::default(); window.width];
     for word in &window.words {
-        if word.start_col > spans_width(&spans) {
-            spans.push(Span::raw(" ".repeat(word.start_col - spans_width(&spans))));
-        }
-
         for (char_index, ch) in word.word.chars().enumerate() {
-            spans.push(Span::styled(
-                ch.to_string(),
-                network_word_char_style(window, word, char_index, local),
-            ));
+            let column = word.start_col + char_index;
+            if let Some(cell) = cells.get_mut(column) {
+                *cell = NetworkTrackCell {
+                    ch,
+                    style: network_word_char_style(window, word, char_index, local),
+                };
+            }
         }
     }
 
-    Line::from(spans)
+    if let Some(local) = local {
+        overlay_network_local_input(&mut cells, window, local);
+    }
+
+    Line::from(
+        cells
+            .into_iter()
+            .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn overlay_network_local_input(
+    cells: &mut [NetworkTrackCell],
+    window: &NetworkTrackWindow<'_>,
+    local: &PlayerSnapshot,
+) {
+    if local.finished {
+        return;
+    }
+
+    for (stream_index, typed_ch) in local.input.chars().enumerate() {
+        let Some(column) = window.column_for_stream_index(local.word_index, stream_index) else {
+            break;
+        };
+        let Some(cell) = cells.get_mut(column) else {
+            break;
+        };
+
+        cell.ch = display_network_input_char(typed_ch);
+        cell.style = network_typed_char_style(stream_index, local.typo_index);
+    }
+}
+
+fn display_network_input_char(ch: char) -> char {
+    if ch == ' ' {
+        '␠'
+    } else {
+        ch
+    }
+}
+
+fn network_typed_char_style(stream_index: usize, typo_index: Option<usize>) -> Style {
+    if typo_index.is_some_and(|typo| stream_index >= typo) {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    }
 }
 
 fn network_bonus_lines<'a>(
@@ -1246,10 +1293,6 @@ fn stream_index_for_word_char(
     }
 
     None
-}
-
-fn spans_width(spans: &[Span<'_>]) -> usize {
-    spans.iter().map(|span| span.content.chars().count()).sum()
 }
 
 fn network_racer_lines<'a>(
@@ -1649,7 +1692,7 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 mod tests {
     use super::{
         display_word_number, lifecycle_command_help, lifecycle_command_message,
-        network_bonus_column, network_minimap_column, network_racer_label,
+        network_bonus_column, network_minimap_column, network_racer_label, network_track_word_line,
         phase_accepts_typed_commands, space_starts_countdown, stream_index_for_word_char,
         visible_network_bonus_point, AssignedColor, NetworkMarkerPosition, NetworkTrackWindow,
         NetworkViewState, PlayerId, PlayerSnapshot,
@@ -1658,6 +1701,7 @@ mod tests {
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
         ModConfigSnapshot, NetworkRacePhase, PlayerKind, RaceSnapshot,
     };
+    use ratatui::style::{Color, Modifier};
 
     #[test]
     fn network_track_window_keeps_current_word_visible() {
@@ -1722,6 +1766,19 @@ mod tests {
         let target = window.words.iter().find(|word| word.index == 1).unwrap();
 
         assert_eq!(stream_index_for_word_char(&window, 0, target, 0), Some(4));
+    }
+
+    #[test]
+    fn network_word_line_renders_space_position_typos_red() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 0, 20);
+        let player = player(PlayerId(1), 0, "onex", Some(3), false);
+
+        let line = network_track_word_line(&window, Some(&player));
+
+        assert_eq!(line.spans[3].content.as_ref(), "x");
+        assert_eq!(line.spans[3].style.fg, Some(Color::Red));
+        assert!(line.spans[3].style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
