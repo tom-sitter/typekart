@@ -16,7 +16,8 @@ use anyhow::{Context, Result};
 use crate::game::{
     ai::AiDifficulty,
     player::PlayerState,
-    track::{Track, WordList},
+    track::Track,
+    words::{WordSetRegistry, WordSetSelection},
 };
 use crate::net::{
     client::{JoinConfig, run_join},
@@ -27,12 +28,16 @@ use crate::ui::{render::IconMode, terminal::run_typing_session};
 
 pub fn play(
     word_count: usize,
+    word_set: WordSetSelection,
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
     icon_mode: IconMode,
     debug_log: Option<PathBuf>,
 ) -> Result<()> {
-    let word_list = WordList::load("words_alpha.txt").context("failed to load word list")?;
+    let word_set = WordSetRegistry::builtin()
+        .load(&word_set)
+        .context("failed to load selected word set")?;
+    let word_list = word_set.words;
     let track = Track::generate(&word_list, word_count).context("failed to generate track")?;
     let player = PlayerState::new(Instant::now());
 
@@ -51,11 +56,15 @@ pub fn host(
     bind: SocketAddr,
     name: String,
     word_count: usize,
+    word_set: WordSetSelection,
     max_players: usize,
     icon_mode: IconMode,
     debug_log: Option<PathBuf>,
 ) -> Result<()> {
-    let word_list = WordList::load("words_alpha.txt").context("failed to load word list")?;
+    let word_set = WordSetRegistry::builtin()
+        .load(&word_set)
+        .context("failed to load selected word set")?;
+    let word_list = word_set.words;
     let track = Track::generate(&word_list, word_count).context("failed to generate track")?;
     let (ready_sender, ready_receiver) = mpsc::channel();
     let network_log = debug_log

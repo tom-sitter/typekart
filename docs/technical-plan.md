@@ -571,11 +571,15 @@ Current status: Milestone 4 has host/join, host-as-local-client, lobby readiness
 
 - Better disconnect handling.
 - Better event feed.
+- Refactor items around a registry and shared item engine so items are easier to add, remove, tune, and mod.
+- Add word set modding with host-selected built-in or file-backed word sets.
 - Item weighting.
 - Star Power.
 - Blue Shell.
 - Stats screen.
 - More robust terminal controls.
+
+See `docs/modding-architecture-plan.md` for the shared modding architecture, `docs/milestone-5-item-modding-plan.md` and `docs/milestone-5-word-set-modding-plan.md` for the first two modding targets, and the rules/theme plan for later expansion.
 
 ### Milestone 6: Internet Play Decision
 

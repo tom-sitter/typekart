@@ -13,7 +13,10 @@ use std::{net::SocketAddr, path::PathBuf};
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::game::ai::AiDifficulty;
+use crate::game::{
+    ai::AiDifficulty,
+    words::{DEFAULT_WORD_SET_ID, WordSetSelection},
+};
 use crate::ui::render::IconMode;
 
 #[derive(Debug, Parser)]
@@ -31,6 +34,12 @@ enum Command {
         /// Number of words in the generated track.
         #[arg(short, long, default_value_t = 40)]
         words: usize,
+        /// Built-in word set id to use.
+        #[arg(long, default_value = DEFAULT_WORD_SET_ID)]
+        word_set: String,
+        /// Load a custom word set from a newline-delimited text file.
+        #[arg(long)]
+        word_set_file: Option<PathBuf>,
         /// Number of local AI racers to include, capped at 6.
         #[arg(long, default_value_t = 0)]
         ai_racers: usize,
@@ -52,6 +61,12 @@ enum Command {
         /// Number of words in the generated track.
         #[arg(short, long, default_value_t = 40)]
         words: usize,
+        /// Built-in word set id to use.
+        #[arg(long, default_value = DEFAULT_WORD_SET_ID)]
+        word_set: String,
+        /// Load a custom word set from a newline-delimited text file.
+        #[arg(long)]
+        word_set_file: Option<PathBuf>,
         /// Address and port to listen on.
         #[arg(long, default_value = "127.0.0.1:4000")]
         bind: SocketAddr,
@@ -103,12 +118,15 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Play {
             words,
+            word_set,
+            word_set_file,
             ai_racers,
             ai_difficulty,
             unicode_icons,
             debug_log,
         } => app::play(
             words,
+            word_set_selection(word_set, word_set_file)?,
             ai_racers,
             ai_difficulty.into(),
             if unicode_icons {
@@ -121,6 +139,8 @@ fn main() -> Result<()> {
         Command::Host {
             name,
             words,
+            word_set,
+            word_set_file,
             bind,
             max_players,
             debug_log,
@@ -129,6 +149,7 @@ fn main() -> Result<()> {
             bind,
             name,
             words,
+            word_set_selection(word_set, word_set_file)?,
             max_players,
             if unicode_icons {
                 IconMode::Unicode
@@ -152,5 +173,19 @@ fn main() -> Result<()> {
             },
             debug_log,
         ),
+    }
+}
+
+fn word_set_selection(
+    word_set: String,
+    word_set_file: Option<PathBuf>,
+) -> Result<WordSetSelection> {
+    if let Some(path) = word_set_file {
+        if word_set != DEFAULT_WORD_SET_ID {
+            anyhow::bail!("use either --word-set or --word-set-file, not both");
+        }
+        Ok(WordSetSelection::File(path))
+    } else {
+        Ok(WordSetSelection::BuiltIn(word_set))
     }
 }
