@@ -35,7 +35,7 @@ use super::protocol::{
     decode_client_message, encode_server_message, AssignedColor, AttackDirectionSnapshot,
     BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
     ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot,
-    ProtocolKey, RaceSnapshot, ServerMessage,
+    ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
 };
 
 const COLOR_ROTATION: [AssignedColor; 6] = [
@@ -1435,12 +1435,18 @@ fn log_race_snapshot(state: &HostState) {
 }
 
 fn broadcast_race_results(state: &mut HostState) -> Result<()> {
+    let rows = build_race_result_rows(state, Instant::now());
+    let row_count = rows.len();
     let results = ServerMessage::RaceResults {
         placements: state.placements.clone(),
+        rows,
     };
     push_network_log(
         &state.debug_log,
-        format!("broadcast race results placements={:?}", state.placements),
+        format!(
+            "broadcast race results placements={:?} rows={}",
+            state.placements, row_count
+        ),
     );
 
     let mut failed_clients = Vec::new();
@@ -1458,6 +1464,83 @@ fn broadcast_race_results(state: &mut HostState) -> Result<()> {
         .clients
         .retain(|client| !failed_clients.contains(&client.player_id));
     Ok(())
+}
+
+fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow> {
+    let mut ordered_ids = state.placements.clone();
+    let mut remaining = state
+        .race
+        .players
+        .iter()
+        .map(|player| {
+            (
+                PlayerId(player.id.0),
+                player.connected,
+                player.state.word_index,
+                player.state.input.chars().count(),
+            )
+        })
+        .filter(|(id, _, _, _)| !ordered_ids.contains(id))
+        .collect::<Vec<_>>();
+
+    remaining.sort_by_key(|(_, connected, word_index, input_len)| {
+        (
+            // Active racers should appear before disconnected racers if the
+            // server ever needs to synthesize rows before placement completion.
+            !*connected,
+            std::cmp::Reverse(*word_index),
+            std::cmp::Reverse(*input_len),
+        )
+    });
+    ordered_ids.extend(remaining.into_iter().map(|(id, _, _, _)| id));
+
+    let track_words = state.race.track.len();
+    ordered_ids
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, id)| {
+            let player = state
+                .race
+                .players
+                .iter()
+                .find(|player| player.id == RacePlayerId(id.0))?;
+            let finished = player.state.is_finished();
+            let status = if finished {
+                RaceResultStatus::Finished
+            } else if player.connected {
+                RaceResultStatus::TimedOut
+            } else {
+                RaceResultStatus::Disconnected
+            };
+            let stats_until = player.state.finished_at.unwrap_or(now);
+            let wpm = player
+                .state
+                .stats
+                .words_per_minute(player.state.started_at, stats_until)
+                .round()
+                .clamp(0.0, u32::MAX as f64) as u32;
+            let accuracy_percent = player.state.stats.accuracy().round().clamp(0.0, 100.0) as u32;
+            let progress_words = if finished {
+                track_words
+            } else {
+                player.state.word_index.min(track_words)
+            };
+
+            Some(RaceResultRow {
+                placement: index + 1,
+                player_id: id,
+                name: player.name.clone(),
+                color: player.color.into(),
+                status,
+                progress_words,
+                track_words,
+                wpm,
+                accuracy_percent,
+                typo_chars: player.state.stats.typo_chars,
+                backspaces: player.state.stats.backspaces,
+            })
+        })
+        .collect()
 }
 
 fn broadcast_race_results_once(state: &mut HostState) -> Result<()> {
@@ -1717,9 +1800,9 @@ mod tests {
     use super::{
         activate_network_pickup, all_connected_players_ready, apply_network_banana_to_player,
         apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
-        build_race_snapshot, connected_player_count, first_available_color, handle_client_messages,
-        push_event, read_join_hello, update_host_ready, update_race_status, welcome_joiner,
-        AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
+        build_race_result_rows, build_race_snapshot, connected_player_count, first_available_color,
+        handle_client_messages, push_event, read_join_hello, update_host_ready, update_race_status,
+        welcome_joiner, AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
         POST_FIRST_FINISH_TIMEOUT,
     };
     use crate::game::{
@@ -1728,12 +1811,14 @@ mod tests {
         items::{HeldItem, ItemPickup, ItemRegistry},
         mods::{ActiveModConfig, ContentMetadata},
         race::{PlayerColorId, RacePlayerId, RaceState},
+        stats::TypingStats,
         track::{Track, WordList},
         typing::KeyAction,
         words::WordSetDefinition,
     };
     use crate::net::protocol::{
-        decode_server_message, encode_client_message, ClientMessage, LobbyPlayer, ServerMessage,
+        decode_server_message, encode_client_message, ClientMessage, LobbyPlayer, RaceResultStatus,
+        ServerMessage,
     };
 
     #[test]
@@ -2279,6 +2364,43 @@ mod tests {
 
         broadcast_race_results_once(&mut state).unwrap();
         assert!(state.race_results_sent);
+    }
+
+    #[test]
+    fn race_result_rows_include_stats_and_status_for_every_racer() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Finished);
+        finish_player(&mut state, RacePlayerId(2), now);
+        state.placements = vec![PlayerId(2)];
+
+        let host = state
+            .race
+            .players
+            .iter_mut()
+            .find(|player| player.id == RacePlayerId(1))
+            .unwrap();
+        host.connected = false;
+        host.state.word_index = 1;
+        host.state.stats = TypingStats {
+            typed_chars: 10,
+            correct_chars: 8,
+            typo_chars: 2,
+            backspaces: 3,
+            completed_words: 1,
+        };
+
+        let rows = build_race_result_rows(&state, now + Duration::from_secs(30));
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].player_id, PlayerId(2));
+        assert_eq!(rows[0].status, RaceResultStatus::Finished);
+        assert_eq!(rows[0].progress_words, 2);
+        assert_eq!(rows[1].player_id, PlayerId(1));
+        assert_eq!(rows[1].status, RaceResultStatus::Disconnected);
+        assert_eq!(rows[1].progress_words, 1);
+        assert_eq!(rows[1].accuracy_percent, 80);
+        assert_eq!(rows[1].typo_chars, 2);
+        assert_eq!(rows[1].backspaces, 3);
     }
 
     fn send_hello(client: &mut std::net::TcpStream) {

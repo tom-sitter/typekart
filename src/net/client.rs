@@ -32,7 +32,8 @@ use super::log::{push_network_log, write_network_log, NetworkLog, SharedNetworkL
 use super::protocol::{
     decode_server_message, encode_client_message, AssignedColor, AttackDirectionSnapshot,
     ClientMessage, ClientSequence, ItemCueSnapshotKind, LobbyPlayer, ModConfigSnapshot,
-    NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage,
+    NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus,
+    RaceSnapshot, ServerMessage,
 };
 use crate::ui::render::IconMode;
 
@@ -180,13 +181,17 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                         .expect("client view poisoned")
                         .push_message(format!("Server error: {message}"));
                 }
-                Ok(ServerMessage::RaceResults { placements }) => {
+                Ok(ServerMessage::RaceResults { placements, rows }) => {
                     push_network_log(
                         &reader_log,
-                        format!("client received results placements={placements:?}"),
+                        format!(
+                            "client received results placements={placements:?} rows={}",
+                            rows.len()
+                        ),
                     );
                     let mut state = reader_view_state.lock().expect("client view poisoned");
                     state.placements = placements;
+                    state.result_rows = rows;
                     state.push_message("Race results received".to_string());
                 }
                 Ok(other) => {
@@ -275,6 +280,7 @@ struct NetworkViewState {
     mod_config: Option<ModConfigSnapshot>,
     race_snapshot: Option<RaceSnapshot>,
     placements: Vec<PlayerId>,
+    result_rows: Vec<RaceResultRow>,
     messages: VecDeque<String>,
     disconnected: bool,
 }
@@ -289,6 +295,7 @@ impl NetworkViewState {
             mod_config: None,
             race_snapshot: None,
             placements: Vec::new(),
+            result_rows: Vec::new(),
             messages: VecDeque::new(),
             disconnected: false,
         }
@@ -612,7 +619,7 @@ fn render_race(
         .split(columns[1]);
 
     frame.render_widget(track_view(state, snapshot, columns[0].width), columns[0]);
-    frame.render_widget(player_list_view(state, snapshot), right[0]);
+    frame.render_widget(race_status_view(state, snapshot), right[0]);
     frame.render_widget(mod_config_view(Some(&snapshot.mod_config)), right[1]);
     frame.render_widget(messages_and_events_view(state, snapshot), right[2]);
 }
@@ -681,6 +688,68 @@ fn player_list_view<'a>(state: &NetworkViewState, snapshot: &'a RaceSnapshot) ->
         .collect::<Vec<_>>();
 
     Paragraph::new(lines).block(Block::default().title("Players").borders(Borders::ALL))
+}
+
+fn race_status_view<'a>(state: &NetworkViewState, snapshot: &'a RaceSnapshot) -> Paragraph<'a> {
+    if !state.result_rows.is_empty() || snapshot.phase == NetworkRacePhase::Finished {
+        results_view(state, snapshot)
+    } else {
+        player_list_view(state, snapshot)
+    }
+}
+
+fn results_view<'a>(state: &NetworkViewState, snapshot: &'a RaceSnapshot) -> Paragraph<'a> {
+    if state.result_rows.is_empty() {
+        return player_list_view(state, snapshot);
+    }
+
+    let lines = state
+        .result_rows
+        .iter()
+        .map(|row| {
+            Line::from(vec![
+                Span::raw(format!("{:>2}. ", row.placement)),
+                Span::styled(
+                    result_status_label(row.status),
+                    result_status_style(row.status),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    row.name.clone(),
+                    Style::default()
+                        .fg(assigned_color(row.color))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(
+                    " {}/{} {}wpm {}% e{} b{}",
+                    row.progress_words,
+                    row.track_words,
+                    row.wpm,
+                    row.accuracy_percent,
+                    row.typo_chars,
+                    row.backspaces
+                )),
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    Paragraph::new(lines).block(Block::default().title("Results").borders(Borders::ALL))
+}
+
+fn result_status_label(status: RaceResultStatus) -> &'static str {
+    match status {
+        RaceResultStatus::Finished => "done",
+        RaceResultStatus::TimedOut => "time",
+        RaceResultStatus::Disconnected => "disc",
+    }
+}
+
+fn result_status_style(status: RaceResultStatus) -> Style {
+    match status {
+        RaceResultStatus::Finished => Style::default().fg(Color::Green),
+        RaceResultStatus::TimedOut => Style::default().fg(Color::Yellow),
+        RaceResultStatus::Disconnected => Style::default().fg(Color::Red),
+    }
 }
 
 fn display_word_number(player: &PlayerSnapshot, track_len: usize) -> usize {

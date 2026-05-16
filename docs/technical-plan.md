@@ -254,6 +254,8 @@ The server can broadcast snapshots at a fixed tick rate and send important event
 
 `RaceSnapshot` now includes active mod metadata so clients can log or later display the host's selected word set and item registry without needing local copies of those files.
 
+`RaceResults` now carries the final placement order plus structured result rows for every racer, including status, progress, WPM, accuracy, typo count, and backspaces.
+
 Initial recommendation:
 
 - Server tick rate: 20 ticks per second.
@@ -665,15 +667,17 @@ See `docs/modding-architecture-plan.md` for the shared modding architecture, `do
 
 ### Milestone 6: Multiplayer Polish
 
+- Structured multiplayer results screen.
 - Better disconnect handling.
 - Better event feed.
 - Item weighting.
 - Star Power.
 - Blue Shell.
-- Stats screen.
 - More robust terminal controls.
 - Lobby display refinements.
 - Manual LAN validation across multiple machines.
+
+See `docs/milestone-6-plan.md` for the detailed multiplayer polish plan.
 
 ### Milestone 7: Internet Play Decision
 

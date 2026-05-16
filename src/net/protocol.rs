@@ -100,6 +100,29 @@ pub struct RaceSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceResultRow {
+    pub placement: usize,
+    pub player_id: PlayerId,
+    pub name: String,
+    pub color: AssignedColor,
+    pub status: RaceResultStatus,
+    pub progress_words: usize,
+    pub track_words: usize,
+    pub wpm: u32,
+    pub accuracy_percent: u32,
+    pub typo_chars: usize,
+    pub backspaces: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RaceResultStatus {
+    Finished,
+    TimedOut,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModConfigSnapshot {
     pub word_set_id: String,
     pub word_set_name: String,
@@ -179,6 +202,7 @@ pub enum ServerMessage {
     },
     RaceResults {
         placements: Vec<PlayerId>,
+        rows: Vec<RaceResultRow>,
     },
     Error {
         message: String,
@@ -207,7 +231,7 @@ mod tests {
         decode_client_message, decode_server_message, encode_client_message, encode_server_message,
         AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
         ClientMessage, ClientSequence, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
-        PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage,
+        PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
     };
 
     #[test]
@@ -305,6 +329,34 @@ mod tests {
     fn server_message_round_trips_race_results() {
         let message = ServerMessage::RaceResults {
             placements: vec![PlayerId(2), PlayerId(1)],
+            rows: vec![
+                RaceResultRow {
+                    placement: 1,
+                    player_id: PlayerId(2),
+                    name: "alex".to_string(),
+                    color: AssignedColor::Red,
+                    status: RaceResultStatus::Finished,
+                    progress_words: 20,
+                    track_words: 20,
+                    wpm: 72,
+                    accuracy_percent: 98,
+                    typo_chars: 1,
+                    backspaces: 2,
+                },
+                RaceResultRow {
+                    placement: 2,
+                    player_id: PlayerId(1),
+                    name: "tom".to_string(),
+                    color: AssignedColor::Cyan,
+                    status: RaceResultStatus::TimedOut,
+                    progress_words: 17,
+                    track_words: 20,
+                    wpm: 54,
+                    accuracy_percent: 95,
+                    typo_chars: 3,
+                    backspaces: 4,
+                },
+            ],
         };
 
         let encoded = encode_server_message(&message).unwrap();
