@@ -46,7 +46,7 @@ Implemented before Milestone 6:
 Known rough edges:
 
 - Event feed is functional but can be noisy or underspecified.
-- Disconnect behavior exists but has not been validated deeply during race edge cases.
+- Disconnect behavior has automated coverage for lobby capacity/color reuse, countdown cancellation, and no-connected-racer race completion, but still needs manual LAN validation.
 - LAN behavior has mainly been tested on loopback.
 - Terminal controls are implicit and not discoverable enough.
 - Item pool is still Mushroom, Banana, and Shield.
@@ -89,15 +89,17 @@ Validation:
 
 ### Slice 3: Disconnect Handling
 
+Status: implemented for server-side phase handling; still needs manual LAN validation.
+
 Clarify what happens when players leave during lobby, countdown, racing, and results.
 
 Target behavior:
 
 - Lobby disconnects free capacity and color slots.
-- Countdown disconnects should not leave the race stuck.
+- Countdown disconnects should not leave the race stuck; if no connected racers remain, the countdown is cancelled back to waiting.
 - Racing disconnects mark the racer disconnected but keep them visible for context.
 - Disconnected unfinished racers can be ranked after active racers at timeout.
-- If all remaining active racers finish or disconnect, the race ends cleanly.
+- If all remaining active racers finish or all racers disconnect, the race ends cleanly.
 
 Validation:
 

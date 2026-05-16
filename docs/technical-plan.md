@@ -668,7 +668,7 @@ See `docs/modding-architecture-plan.md` for the shared modding architecture, `do
 ### Milestone 6: Multiplayer Polish
 
 - Structured multiplayer results screen.
-- Better disconnect handling.
+- Better disconnect handling for countdown and racing edge cases.
 - Better event feed.
 - Item weighting.
 - Star Power.

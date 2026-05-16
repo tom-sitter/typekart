@@ -533,15 +533,21 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
     state.spent_bonus_gaps.remove(&player_id);
     state.player_effects.remove(&player_id);
     state.clients.retain(|client| client.player_id != player_id);
-    update_race_status(&mut state, std::time::Instant::now());
+    let was_race_screen_phase = matches!(
+        state.phase,
+        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing | NetworkRacePhase::Finished
+    );
+    reconcile_phase_after_disconnect(&mut state, std::time::Instant::now());
     print_lobby_snapshot(&state.players);
     if let Err(error) = broadcast_lobby_snapshot(&mut state) {
         server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
     }
-    if state.phase == NetworkRacePhase::Finished {
+    if was_race_screen_phase {
         if let Err(error) = broadcast_race_snapshot(&mut state) {
             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
         }
+    }
+    if state.phase == NetworkRacePhase::Finished {
         if let Err(error) = broadcast_race_results_once(&mut state) {
             server_eprintln!("Failed to broadcast race results: {error:#}");
         }
@@ -1303,6 +1309,21 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
     for remaining_seconds in [2, 1] {
         thread::sleep(Duration::from_secs(1));
         let mut guard = state.lock().expect("host state poisoned");
+        if !matches!(guard.phase, NetworkRacePhase::Countdown { .. }) {
+            push_network_log(&guard.debug_log, "countdown stopped before next tick");
+            return;
+        }
+        if !countdown_has_connected_racers(&guard) {
+            cancel_countdown(&mut guard);
+            if let Err(error) = broadcast_race_snapshot(&mut guard) {
+                server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+            }
+            if let Err(error) = broadcast_lobby_snapshot(&mut guard) {
+                server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+            }
+            return;
+        }
+
         guard.phase = NetworkRacePhase::Countdown { remaining_seconds };
         push_network_log(
             &guard.debug_log,
@@ -1316,6 +1337,21 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
 
     thread::sleep(Duration::from_secs(1));
     let mut guard = state.lock().expect("host state poisoned");
+    if !matches!(guard.phase, NetworkRacePhase::Countdown { .. }) {
+        push_network_log(&guard.debug_log, "countdown stopped before race start");
+        return;
+    }
+    if !countdown_has_connected_racers(&guard) {
+        cancel_countdown(&mut guard);
+        if let Err(error) = broadcast_race_snapshot(&mut guard) {
+            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+        }
+        if let Err(error) = broadcast_lobby_snapshot(&mut guard) {
+            server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+        }
+        return;
+    }
+
     guard.phase = NetworkRacePhase::Racing;
     push_event(&mut guard, "Race started".to_string());
     push_network_log(&guard.debug_log, "race started");
@@ -1366,6 +1402,34 @@ fn all_connected_players_ready(players: &[LobbyPlayer]) -> bool {
         .iter()
         .filter(|player| player.connected)
         .all(|player| player.ready)
+}
+
+fn reconcile_phase_after_disconnect(state: &mut HostState, now: Instant) {
+    match state.phase {
+        NetworkRacePhase::Countdown { .. } => {
+            if !countdown_has_connected_racers(state) {
+                cancel_countdown(state);
+            }
+        }
+        NetworkRacePhase::Racing => update_race_status(state, now),
+        NetworkRacePhase::Finished => {}
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {}
+    }
+}
+
+fn countdown_has_connected_racers(state: &HostState) -> bool {
+    state
+        .race
+        .players
+        .iter()
+        .any(|player| player.connected && !player.state.is_finished())
+}
+
+fn cancel_countdown(state: &mut HostState) {
+    state.phase = NetworkRacePhase::WaitingForHost;
+    push_event(state, "Countdown cancelled".to_string());
+    push_network_log(&state.debug_log, "countdown cancelled no connected racers");
+    server_println!("Countdown cancelled");
 }
 
 fn push_event(state: &mut HostState, event: String) {
@@ -1599,18 +1663,19 @@ fn update_race_status(state: &mut HostState, now: Instant) {
         .filter(|player| player.connected && player.state.is_finished())
         .count();
     let all_connected_finished = connected_racers > 0 && connected_finished == connected_racers;
+    let all_connected_disconnected = connected_racers == 0;
     let timeout_expired = state.first_finished_at.is_some_and(|first_finished_at| {
         now.duration_since(first_finished_at) >= POST_FIRST_FINISH_TIMEOUT
     });
 
-    if all_connected_finished || timeout_expired {
+    if all_connected_finished || all_connected_disconnected || timeout_expired {
         append_unfinished_connected_placements(state);
         state.phase = NetworkRacePhase::Finished;
         push_event(state, "Race finished".to_string());
         push_network_log(
             &state.debug_log,
             format!(
-                "race finished all_connected_finished={all_connected_finished} timeout_expired={timeout_expired}"
+                "race finished all_connected_finished={all_connected_finished} all_connected_disconnected={all_connected_disconnected} timeout_expired={timeout_expired}"
             ),
         );
     }
@@ -1801,9 +1866,9 @@ mod tests {
         activate_network_pickup, all_connected_players_ready, apply_network_banana_to_player,
         apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
         build_race_result_rows, build_race_snapshot, connected_player_count, first_available_color,
-        handle_client_messages, push_event, read_join_hello, update_host_ready, update_race_status,
-        welcome_joiner, AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
-        POST_FIRST_FINISH_TIMEOUT,
+        handle_client_messages, push_event, read_join_hello, reconcile_phase_after_disconnect,
+        update_host_ready, update_race_status, welcome_joiner, AssignedColor, ConnectedClient,
+        HostState, NetworkRacePhase, PlayerId, POST_FIRST_FINISH_TIMEOUT,
     };
     use crate::game::{
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
@@ -2336,6 +2401,65 @@ mod tests {
 
         assert_eq!(state.phase, NetworkRacePhase::Finished);
         assert_eq!(state.placements, vec![PlayerId(2), PlayerId(1)]);
+    }
+
+    #[test]
+    fn race_status_finishes_when_all_racers_disconnect() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        for player in &mut state.players {
+            player.connected = false;
+        }
+        for player in &mut state.race.players {
+            player.connected = false;
+        }
+
+        update_race_status(&mut state, now);
+
+        assert_eq!(state.phase, NetworkRacePhase::Finished);
+        assert!(state.placements.is_empty());
+        assert!(state.events.iter().any(|event| event == "Race finished"));
+    }
+
+    #[test]
+    fn countdown_cancels_when_no_connected_racers_remain() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Countdown {
+            remaining_seconds: 2,
+        });
+        for player in &mut state.players {
+            player.connected = false;
+        }
+        for player in &mut state.race.players {
+            player.connected = false;
+        }
+
+        reconcile_phase_after_disconnect(&mut state, now);
+
+        assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
+        assert!(state
+            .events
+            .iter()
+            .any(|event| event == "Countdown cancelled"));
+    }
+
+    #[test]
+    fn countdown_continues_when_at_least_one_racer_remains_connected() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Countdown {
+            remaining_seconds: 2,
+        });
+        state.players[1].connected = false;
+        state.race.players[1].connected = false;
+
+        reconcile_phase_after_disconnect(&mut state, now);
+
+        assert_eq!(
+            state.phase,
+            NetworkRacePhase::Countdown {
+                remaining_seconds: 2
+            }
+        );
     }
 
     #[test]
