@@ -1701,6 +1701,7 @@ mod tests {
         net::TcpListener,
         sync::{Arc, Mutex},
         thread,
+        time::Duration,
     };
 
     use super::{
@@ -2069,14 +2070,9 @@ mod tests {
 
         apply_network_key_input(&mut state, PlayerId(1), KeyAction::Char('d'), now);
         apply_network_key_input(&mut state, PlayerId(2), KeyAction::Char('d'), now);
-        for action in [
-            KeyAction::Char('a'),
-            KeyAction::Char('s'),
-            KeyAction::Char('h'),
-            KeyAction::Space,
-        ] {
-            apply_network_key_input(&mut state, PlayerId(1), action, now);
-        }
+        state.bonuses.points[0].choices[0].status = BonusChoiceStatus::Cooldown {
+            until: now + Duration::from_secs(4),
+        };
         for action in [
             KeyAction::Char('a'),
             KeyAction::Char('s'),

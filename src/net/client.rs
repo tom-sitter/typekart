@@ -1117,6 +1117,7 @@ fn network_racer_lines<'a>(
                 window,
                 player,
                 player.id == state.player_id,
+                snapshot.phase,
                 state.icon_mode,
             )
         })
@@ -1127,6 +1128,7 @@ fn network_racer_line<'a>(
     window: &NetworkTrackWindow<'_>,
     player: &PlayerSnapshot,
     is_local: bool,
+    phase: NetworkRacePhase,
     icon_mode: IconMode,
 ) -> Line<'a> {
     let mut cells = vec![NetworkTrackCell::default(); window.width];
@@ -1174,12 +1176,12 @@ fn network_racer_line<'a>(
         marker
     };
     write_network_marker(&mut cells, start, marker, style);
-    let label = if is_local { " you" } else { "" };
-    if !label.is_empty() {
+    let label = network_racer_label(is_local, phase);
+    if let Some(label) = label {
         write_network_marker(
             &mut cells,
             start + marker.chars().count() + after_marker_width,
-            label,
+            label.as_str(),
             style,
         );
     }
@@ -1190,6 +1192,20 @@ fn network_racer_line<'a>(
             .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
             .collect::<Vec<_>>(),
     )
+}
+
+fn network_racer_label(is_local: bool, phase: NetworkRacePhase) -> Option<String> {
+    if !is_local {
+        return None;
+    }
+
+    match phase {
+        NetworkRacePhase::WaitingForHost => Some(" Space".to_string()),
+        NetworkRacePhase::Countdown { remaining_seconds } => Some(format!(" {remaining_seconds}")),
+        NetworkRacePhase::Lobby | NetworkRacePhase::Racing | NetworkRacePhase::Finished => {
+            Some(" you".to_string())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1438,7 +1454,7 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 mod tests {
     use super::{
         AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, PlayerId, PlayerSnapshot,
-        display_word_number, network_bonus_column, network_minimap_column,
+        display_word_number, network_bonus_column, network_minimap_column, network_racer_label,
         stream_index_for_word_char, visible_network_bonus_point,
     };
     use crate::net::protocol::{
@@ -1535,6 +1551,28 @@ mod tests {
         let player = player(PlayerId(1), 3, "", None, true);
 
         assert_eq!(display_word_number(&player, 3), 3);
+    }
+
+    #[test]
+    fn network_local_racer_label_shows_countdown() {
+        assert_eq!(
+            network_racer_label(
+                true,
+                NetworkRacePhase::Countdown {
+                    remaining_seconds: 3
+                }
+            ),
+            Some(" 3".to_string())
+        );
+        assert_eq!(
+            network_racer_label(
+                false,
+                NetworkRacePhase::Countdown {
+                    remaining_seconds: 3
+                }
+            ),
+            None
+        );
     }
 
     fn words<const N: usize>(words: [&str; N]) -> Vec<String> {
