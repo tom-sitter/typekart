@@ -18,9 +18,10 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
 
 use crate::game::{
+    ai::AiDifficulty,
     bonus::{claim_bonus_choice, BonusChoiceStatus, BonusState},
     effects::ActiveEffect,
     items::{
@@ -30,7 +31,7 @@ use crate::game::{
     mods::ActiveModConfig,
     race::{PlayerColorId, RacePlayerId, RaceState},
     track::{Track, WordList},
-    typing::{first_typo_index, KeyAction},
+    typing::{first_typo_index, KeyAction, TypingEvent},
 };
 
 use super::log::{push_network_log, SharedNetworkLog};
@@ -79,6 +80,8 @@ pub struct HostConfig {
     pub item_registry: ItemRegistry,
     pub active_mod_config: ActiveModConfig,
     pub max_players: usize,
+    pub ai_racer_count: usize,
+    pub ai_difficulty: AiDifficulty,
     pub ready_signal: Option<Sender<SocketAddr>>,
     pub console_logging: bool,
     pub debug_log: Option<SharedNetworkLog>,
@@ -93,6 +96,7 @@ struct HostState {
     players: Vec<LobbyPlayer>,
     clients: Vec<ConnectedClient>,
     race: RaceState,
+    ai_racers: HashMap<PlayerId, NetworkAiRacer>,
     word_list: WordList,
     bonuses: BonusState,
     item_registry: ItemRegistry,
@@ -107,6 +111,13 @@ struct HostState {
     first_finished_at: Option<Instant>,
     debug_log: Option<SharedNetworkLog>,
     race_results_sent: bool,
+}
+
+#[derive(Debug, Clone)]
+struct NetworkAiRacer {
+    words_per_minute: f64,
+    char_budget: f64,
+    last_update: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,9 +150,7 @@ enum NetworkItemCueKind {
 pub fn run_host(config: HostConfig) -> Result<()> {
     SERVER_CONSOLE_LOGGING.store(config.console_logging, Ordering::Relaxed);
 
-    if config.max_players == 0 || config.max_players > COLOR_ROTATION.len() {
-        bail!("max players must be between 1 and {}", COLOR_ROTATION.len());
-    }
+    validate_host_capacity(config.max_players, config.ai_racer_count)?;
 
     let listener = TcpListener::bind(config.bind)
         .with_context(|| format!("failed to bind host socket at {}", config.bind))?;
@@ -154,9 +163,11 @@ pub fn run_host(config: HostConfig) -> Result<()> {
     push_network_log(
         &config.debug_log,
         format!(
-            "server listening addr={local_addr} max_players={} words={}",
+            "server listening addr={local_addr} max_players={} words={} ai_racers={} ai_difficulty={}",
             config.max_players,
-            config.track.len()
+            config.track.len(),
+            config.ai_racer_count,
+            config.ai_difficulty.name()
         ),
     );
     push_network_log(&config.debug_log, config.active_mod_config.log_summary());
@@ -182,11 +193,19 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         });
         next_player_id = 2;
     }
+    let ai_racers = add_network_ai_racers(
+        &mut race,
+        &mut players,
+        config.ai_racer_count,
+        config.ai_difficulty,
+        std::time::Instant::now(),
+    );
 
     let state = Arc::new(Mutex::new(HostState {
         players,
         clients: Vec::new(),
         race,
+        ai_racers,
         word_list: config.word_list,
         bonuses,
         item_registry: config.item_registry,
@@ -261,7 +280,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 continue;
             }
 
-            let player_id = PlayerId(next_player_id);
+            let player_id = first_available_player_id(&state.players, next_player_id);
             let assigned_color = first_available_color(&state.players);
             let write_stream = match welcome_joiner(&stream, player_id, assigned_color) {
                 Ok(write_stream) => write_stream,
@@ -317,9 +336,53 @@ pub fn run_host(config: HostConfig) -> Result<()> {
 
         let state_for_client = Arc::clone(&state);
         thread::spawn(move || handle_client_messages(player_id, stream, state_for_client));
-        next_player_id += 1;
+        next_player_id = next_player_id.max(player_id.0 + 1);
     }
 
+    Ok(())
+}
+
+fn add_network_ai_racers(
+    race: &mut RaceState,
+    players: &mut Vec<LobbyPlayer>,
+    ai_racer_count: usize,
+    ai_difficulty: AiDifficulty,
+    now: Instant,
+) -> HashMap<PlayerId, NetworkAiRacer> {
+    let mut ai_racers = HashMap::new();
+    let mut rng = thread_rng();
+    for index in 0..ai_racer_count {
+        let player_id = PlayerId(index as u64 + 2);
+        let name = format!("ai-{}", index + 1);
+        let color = COLOR_ROTATION[index + 1];
+        race.add_player(RacePlayerId(player_id.0), name.clone(), color.into(), now);
+        ai_racers.insert(
+            player_id,
+            NetworkAiRacer {
+                words_per_minute: rng.gen_range(ai_difficulty.wpm_range()),
+                char_budget: 0.0,
+                last_update: now,
+            },
+        );
+        players.push(LobbyPlayer {
+            id: player_id,
+            name,
+            kind: PlayerKind::Bot,
+            color,
+            ready: true,
+            connected: true,
+        });
+    }
+    ai_racers
+}
+
+fn validate_host_capacity(max_players: usize, ai_racer_count: usize) -> Result<()> {
+    if max_players == 0 || max_players > COLOR_ROTATION.len() {
+        bail!("max players must be between 1 and {}", COLOR_ROTATION.len());
+    }
+    if ai_racer_count >= max_players {
+        bail!("ai racers must be less than max players so the host has a slot");
+    }
     Ok(())
 }
 
@@ -444,6 +507,14 @@ fn welcome_joiner(
 
 fn connected_player_count(players: &[LobbyPlayer]) -> usize {
     players.iter().filter(|player| player.connected).count()
+}
+
+fn first_available_player_id(players: &[LobbyPlayer], start_at: u64) -> PlayerId {
+    let mut id = start_at;
+    while players.iter().any(|player| player.id == PlayerId(id)) {
+        id += 1;
+    }
+    PlayerId(id)
 }
 
 fn first_available_color(players: &[LobbyPlayer]) -> AssignedColor {
@@ -722,6 +793,10 @@ fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
             now,
         );
     }
+    for ai in state.ai_racers.values_mut() {
+        ai.char_budget = 0.0;
+        ai.last_update = now;
+    }
 
     state.bonuses = BonusState::generate(&state.race.track, &state.word_list);
     state.bonus_attempts.clear();
@@ -820,6 +895,21 @@ fn apply_network_key_input(
         .race
         .apply_key_input(RacePlayerId(player_id.0), action, now)
         .is_some()
+}
+
+fn apply_network_track_key_input(
+    state: &mut HostState,
+    player_id: PlayerId,
+    action: KeyAction,
+    now: Instant,
+) -> Option<Vec<TypingEvent>> {
+    if player_input_is_paused(state, player_id, now) {
+        return Some(Vec::new());
+    }
+
+    state
+        .race
+        .apply_key_input(RacePlayerId(player_id.0), action, now)
 }
 
 fn apply_network_bonus_typing_action(
@@ -1404,6 +1494,76 @@ fn advance_network_mushroom_one_word(
     true
 }
 
+fn advance_network_ai_racers(state: &mut HostState, now: Instant) {
+    let player_ids = state.ai_racers.keys().copied().collect::<Vec<_>>();
+    for player_id in player_ids {
+        advance_network_ai_typing(state, player_id, now);
+    }
+}
+
+fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: Instant) {
+    let paused = state
+        .race
+        .player(RacePlayerId(player_id.0))
+        .is_none_or(|player| player.state.is_finished())
+        || player_input_is_paused(state, player_id, now);
+
+    let Some(ai) = state.ai_racers.get_mut(&player_id) else {
+        return;
+    };
+    let elapsed = now.saturating_duration_since(ai.last_update);
+    ai.last_update = now;
+
+    if paused {
+        return;
+    }
+
+    ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(ai.words_per_minute);
+
+    while state
+        .ai_racers
+        .get(&player_id)
+        .is_some_and(|ai| ai.char_budget >= 1.0)
+    {
+        let Some(action) = next_network_ai_key(state, player_id) else {
+            break;
+        };
+        let events =
+            apply_network_track_key_input(state, player_id, action, now).unwrap_or_else(Vec::new);
+        if let Some(ai) = state.ai_racers.get_mut(&player_id) {
+            ai.char_budget -= 1.0;
+        }
+
+        if events
+            .iter()
+            .any(|event| matches!(event, TypingEvent::RaceFinished))
+        {
+            push_event(
+                state,
+                format!("{} finished", player_label(state, player_id)),
+            );
+            break;
+        }
+    }
+}
+
+fn next_network_ai_key(state: &HostState, player_id: PlayerId) -> Option<KeyAction> {
+    let player = state.race.player(RacePlayerId(player_id.0))?;
+    let target = state.race.track.current_word(player.state.word_index)?;
+    if player.state.input == target {
+        return Some(KeyAction::Space);
+    }
+
+    target
+        .chars()
+        .nth(player.state.input.chars().count())
+        .map(KeyAction::Char)
+}
+
+fn ai_chars_per_second(words_per_minute: f64) -> f64 {
+    words_per_minute * 5.0 / 60.0
+}
+
 fn player_has_active_mushroom_effect(
     player: &crate::game::race::RacePlayer,
     _now: Instant,
@@ -1572,8 +1732,9 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
         }
 
         let now = Instant::now();
-        update_race_status(&mut state, now);
         advance_network_mushrooms(&mut state, now);
+        advance_network_ai_racers(&mut state, now);
+        update_race_status(&mut state, now);
         let expired_choices = expire_bonus_cooldowns(&mut state, now);
         if expired_choices > 0 {
             push_network_log(
@@ -1987,7 +2148,7 @@ fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
                 PlayerSnapshot {
                     id: player_id,
                     name: player.name.clone(),
-                    kind: PlayerKind::Human,
+                    kind: player_kind(state, player_id),
                     color: player.color.into(),
                     word_index: player.state.word_index,
                     input: player.state.input.clone(),
@@ -2024,6 +2185,15 @@ fn build_item_cue_snapshot(cue: Option<NetworkItemCue>, now: Instant) -> Option<
         placement: cue.placement,
         remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
     })
+}
+
+fn player_kind(state: &HostState, player_id: PlayerId) -> PlayerKind {
+    state
+        .players
+        .iter()
+        .find(|player| player.id == player_id)
+        .map(|player| player.kind)
+        .unwrap_or(PlayerKind::Human)
 }
 
 fn build_bonus_snapshots(bonuses: &BonusState, now: Instant) -> Vec<BonusPointSnapshot> {
@@ -2107,20 +2277,22 @@ mod tests {
         net::TcpListener,
         sync::{Arc, Mutex},
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use super::{
-        activate_network_pickup, all_connected_players_ready, apply_network_banana_to_player,
-        apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
-        build_race_result_rows, build_race_snapshot, cleanup_disconnected_waiting_players,
-        client_is_in_current_race, connected_player_count, first_available_color,
-        handle_client_messages, push_event, read_join_hello, reconcile_phase_after_disconnect,
-        reset_race_from_lobby, return_to_lobby_for_rematch, update_host_ready, update_race_status,
-        welcome_joiner, AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
-        POST_FIRST_FINISH_TIMEOUT,
+        activate_network_pickup, add_network_ai_racers, advance_network_ai_racers,
+        all_connected_players_ready, apply_network_banana_to_player, apply_network_key_input,
+        broadcast_lobby_snapshot, broadcast_race_results_once, build_race_result_rows,
+        build_race_snapshot, cleanup_disconnected_waiting_players, client_is_in_current_race,
+        connected_player_count, first_available_color, handle_client_messages, push_event,
+        read_join_hello, reconcile_phase_after_disconnect, reset_race_from_lobby,
+        return_to_lobby_for_rematch, update_host_ready, update_race_status, validate_host_capacity,
+        welcome_joiner, AssignedColor, ConnectedClient, HostState, NetworkAiRacer,
+        NetworkRacePhase, PlayerId, POST_FIRST_FINISH_TIMEOUT,
     };
     use crate::game::{
+        ai::AiDifficulty,
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         effects::ActiveEffect,
         items::{HeldItem, ItemPickup, ItemRegistry},
@@ -2186,6 +2358,7 @@ mod tests {
                 }],
                 players: test_players(false),
                 race: test_race_state(),
+                ai_racers: HashMap::new(),
                 word_list: test_word_list(),
                 bonuses: test_bonus_state(),
                 item_registry: ItemRegistry::builtin(),
@@ -2242,6 +2415,7 @@ mod tests {
                 }],
                 players: test_players(false),
                 race: test_race_state(),
+                ai_racers: HashMap::new(),
                 word_list: test_word_list(),
                 bonuses: test_bonus_state(),
                 item_registry: ItemRegistry::builtin(),
@@ -2313,6 +2487,85 @@ mod tests {
 
         assert_eq!(connected_player_count(&players), 1);
         assert_eq!(first_available_color(&players), AssignedColor::Red);
+    }
+
+    #[test]
+    fn network_ai_racers_are_added_as_ready_bots() {
+        let now = Instant::now();
+        let mut race = RaceState::new(Track::new(vec!["one".to_string(), "two".to_string()]));
+        let mut players = Vec::new();
+
+        let ai_racers = add_network_ai_racers(&mut race, &mut players, 2, AiDifficulty::Easy, now);
+
+        assert_eq!(players.len(), 2);
+        assert_eq!(race.players.len(), 2);
+        assert_eq!(ai_racers.len(), 2);
+        assert_eq!(players[0].id, PlayerId(2));
+        assert_eq!(players[0].name, "ai-1");
+        assert_eq!(players[0].kind, PlayerKind::Bot);
+        assert_eq!(players[0].color, AssignedColor::Red);
+        assert!(players[0].ready);
+        assert!(players[0].connected);
+        assert_eq!(players[1].id, PlayerId(3));
+        assert_eq!(players[1].color, AssignedColor::Green);
+    }
+
+    #[test]
+    fn network_ai_racers_reserve_human_host_slot() {
+        assert!(validate_host_capacity(6, 5).is_ok());
+        assert!(validate_host_capacity(6, 6).is_err());
+        assert!(validate_host_capacity(0, 0).is_err());
+        assert!(validate_host_capacity(7, 0).is_err());
+    }
+
+    #[test]
+    fn network_ai_racer_advances_from_wpm_budget() {
+        let now = Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players[1].kind = PlayerKind::Bot;
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                words_per_minute: 60.0,
+                char_budget: 0.0,
+                last_update: now,
+            },
+        );
+
+        advance_network_ai_racers(&mut state, now + Duration::from_secs(1));
+
+        let ai = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(ai.state.word_index, 1);
+        assert_eq!(ai.state.input, "t");
+    }
+
+    #[test]
+    fn network_ai_racer_does_not_type_while_stunned() {
+        let now = Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players[1].kind = PlayerKind::Bot;
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                words_per_minute: 120.0,
+                char_budget: 0.0,
+                last_update: now,
+            },
+        );
+        state.player_effects.insert(
+            PlayerId(2),
+            super::NetworkPlayerEffects {
+                stunned_until: Some(now + Duration::from_secs(1)),
+                ..Default::default()
+            },
+        );
+
+        advance_network_ai_racers(&mut state, now + Duration::from_millis(500));
+
+        let ai = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(ai.state.word_index, 0);
+        assert_eq!(ai.state.input, "");
+        assert_eq!(state.ai_racers.get(&PlayerId(2)).unwrap().char_budget, 0.0);
     }
 
     #[test]
@@ -2420,6 +2673,7 @@ mod tests {
                 connected: true,
             }],
             race: test_race_state(),
+            ai_racers: HashMap::new(),
             word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
@@ -2459,6 +2713,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            ai_racers: HashMap::new(),
             word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
@@ -2501,6 +2756,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            ai_racers: HashMap::new(),
             word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
@@ -2694,6 +2950,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            ai_racers: HashMap::new(),
             word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
@@ -2731,6 +2988,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            ai_racers: HashMap::new(),
             word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
@@ -2818,6 +3076,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            ai_racers: HashMap::new(),
             word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
@@ -2958,6 +3217,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            ai_racers: HashMap::new(),
             word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),

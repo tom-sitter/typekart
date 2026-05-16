@@ -74,6 +74,8 @@ Validation:
 
 ### Slice 2: Host Config And Bot Roster
 
+Status: implemented for CLI/config and static bot roster. Bot movement begins in Slice 3.
+
 Add host CLI/config support and create bot racers.
 
 Deliverables:
@@ -94,6 +96,8 @@ Validation:
 
 ### Slice 3: Server AI Typing
 
+Status: implemented for main-track typing. Bonus claiming and item use remain separate slices.
+
 Move or reuse local AI typing behavior on the host.
 
 Deliverables:
@@ -103,6 +107,7 @@ Deliverables:
 - On race ticks, apply AI key input through server-authoritative typing paths.
 - Respect countdown/racing/finished states.
 - Respect stun and Mushroom input pause.
+- Keep main-track AI typing separate from bonus intent inference until Slice 4.
 
 Validation:
 

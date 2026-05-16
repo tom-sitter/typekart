@@ -85,6 +85,12 @@ enum Command {
         /// Maximum total players, including the host.
         #[arg(long, default_value_t = 6)]
         max_players: usize,
+        /// Number of server-owned AI racers to include, capped by max players.
+        #[arg(long, default_value_t = 0)]
+        ai_racers: usize,
+        /// Difficulty used by all network AI racers.
+        #[arg(long, value_enum, default_value_t = CliAiDifficulty::Easy)]
+        ai_difficulty: CliAiDifficulty,
         /// Write detailed network diagnostics to this file after the session exits.
         #[arg(long)]
         debug_log: Option<PathBuf>,
@@ -160,6 +166,8 @@ fn main() -> Result<()> {
             item_pack_file,
             bind,
             max_players,
+            ai_racers,
+            ai_difficulty,
             debug_log,
             unicode_icons,
         } => app::host(
@@ -169,6 +177,8 @@ fn main() -> Result<()> {
             word_set_selection(word_set, word_set_file, word_set_dir)?,
             item_pack_file,
             max_players,
+            ai_racers,
+            ai_difficulty.into(),
             if unicode_icons {
                 IconMode::Unicode
             } else {

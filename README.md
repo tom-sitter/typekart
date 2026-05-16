@@ -93,6 +93,12 @@ Set the lobby size, including the host:
 cargo run -- host --name host --max-players 6 --bind 127.0.0.1:4000
 ```
 
+Add network AI racers for multiplayer testing:
+
+```sh
+cargo run -- host --name host --bind 127.0.0.1:4000 --ai-racers 4 --ai-difficulty easy
+```
+
 Use Unicode item icons for host and joiners:
 
 ```sh

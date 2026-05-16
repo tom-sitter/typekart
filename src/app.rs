@@ -69,6 +69,8 @@ pub fn host(
     word_set: WordSetSelection,
     item_pack_file: Option<PathBuf>,
     max_players: usize,
+    ai_racer_count: usize,
+    ai_difficulty: AiDifficulty,
     icon_mode: IconMode,
     debug_log: Option<PathBuf>,
 ) -> Result<()> {
@@ -97,6 +99,8 @@ pub fn host(
             item_registry,
             active_mod_config,
             max_players,
+            ai_racer_count,
+            ai_difficulty,
             ready_signal: Some(ready_sender),
             console_logging: false,
             debug_log: server_log,
