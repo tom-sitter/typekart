@@ -96,6 +96,7 @@ struct HostState {
     players: Vec<LobbyPlayer>,
     clients: Vec<ConnectedClient>,
     race: RaceState,
+    word_list: WordList,
     bonuses: BonusState,
     item_registry: ItemRegistry,
     active_mod_config: ActiveModConfig,
@@ -161,7 +162,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
     push_network_log(&config.debug_log, config.active_mod_config.log_summary());
 
     let bonuses = BonusState::generate(&config.track, &config.word_list);
-    let mut race = RaceState::new(config.track);
+    let mut race = RaceState::new(config.track.clone());
     let mut players = Vec::new();
     let mut next_player_id = 1;
     if let Some(host_name) = config.host_name {
@@ -185,6 +186,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         players,
         clients: Vec::new(),
         race,
+        word_list: config.word_list,
         bonuses,
         item_registry: config.item_registry,
         active_mod_config: config.active_mod_config,
@@ -269,12 +271,17 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 ready: false,
                 connected: true,
             });
-            state.race.add_player(
-                RacePlayerId(player_id.0),
-                player_name.clone(),
-                assigned_color.into(),
-                std::time::Instant::now(),
-            );
+            if matches!(
+                state.phase,
+                NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
+            ) {
+                state.race.add_player(
+                    RacePlayerId(player_id.0),
+                    player_name.clone(),
+                    assigned_color.into(),
+                    std::time::Instant::now(),
+                );
+            }
             push_network_log(
                 &state.debug_log,
                 format!(
@@ -538,6 +545,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing | NetworkRacePhase::Finished
     );
     reconcile_phase_after_disconnect(&mut state, std::time::Instant::now());
+    cleanup_disconnected_waiting_players(&mut state);
     print_lobby_snapshot(&state.players);
     if let Err(error) = broadcast_lobby_snapshot(&mut state) {
         server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
@@ -606,12 +614,25 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
         let mut state = state.lock().expect("host state poisoned");
         match state.phase {
             NetworkRacePhase::WaitingForHost | NetworkRacePhase::Lobby => {}
-            NetworkRacePhase::Countdown { .. }
-            | NetworkRacePhase::Racing
-            | NetworkRacePhase::Finished => {
+            NetworkRacePhase::Finished => {
+                if let Err(error) = reset_race_from_lobby(&mut state) {
+                    server_eprintln!("Failed to prepare rematch: {error:#}");
+                    push_network_log(
+                        &state.debug_log,
+                        format!("failed to prepare rematch: {error:#}"),
+                    );
+                    return;
+                }
+            }
+            NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => {
                 server_println!("Race has already started");
                 return;
             }
+        }
+
+        if connected_player_count(&state.players) < 2 {
+            server_println!("Cannot start: at least two connected players are required");
+            return;
         }
 
         if !all_connected_players_ready(&state.players) {
@@ -634,6 +655,41 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
     if should_start {
         thread::spawn(move || run_countdown(state));
     }
+}
+
+fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
+    cleanup_disconnected_waiting_players(state);
+
+    let word_count = state.race.track.len();
+    let track = Track::generate(&state.word_list, word_count)
+        .context("failed to generate rematch track")?;
+    state.race = RaceState::new(track);
+    let now = Instant::now();
+    for player in state.players.iter().filter(|player| player.connected) {
+        state.race.add_player(
+            RacePlayerId(player.id.0),
+            player.name.clone(),
+            player.color.into(),
+            now,
+        );
+    }
+
+    state.bonuses = BonusState::generate(&state.race.track, &state.word_list);
+    state.bonus_attempts.clear();
+    state.spent_bonus_gaps.clear();
+    state.player_effects.clear();
+    state.placements.clear();
+    state.first_finished_at = None;
+    state.race_results_sent = false;
+    state.events.clear();
+    state.snapshot_sequence = 0;
+    state.phase = NetworkRacePhase::WaitingForHost;
+    push_network_log(
+        &state.debug_log,
+        format!("prepared rematch racers={}", state.race.players.len()),
+    );
+
+    Ok(())
 }
 
 fn current_phase(state: &Arc<Mutex<HostState>>) -> NetworkRacePhase {
@@ -1313,7 +1369,7 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
             push_network_log(&guard.debug_log, "countdown stopped before next tick");
             return;
         }
-        if !countdown_has_connected_racers(&guard) {
+        if !countdown_has_enough_connected_racers(&guard) {
             cancel_countdown(&mut guard);
             if let Err(error) = broadcast_race_snapshot(&mut guard) {
                 server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -1341,7 +1397,7 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
         push_network_log(&guard.debug_log, "countdown stopped before race start");
         return;
     }
-    if !countdown_has_connected_racers(&guard) {
+    if !countdown_has_enough_connected_racers(&guard) {
         cancel_countdown(&mut guard);
         if let Err(error) = broadcast_race_snapshot(&mut guard) {
             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -1407,7 +1463,7 @@ fn all_connected_players_ready(players: &[LobbyPlayer]) -> bool {
 fn reconcile_phase_after_disconnect(state: &mut HostState, now: Instant) {
     match state.phase {
         NetworkRacePhase::Countdown { .. } => {
-            if !countdown_has_connected_racers(state) {
+            if !countdown_has_enough_connected_racers(state) {
                 cancel_countdown(state);
             }
         }
@@ -1417,19 +1473,55 @@ fn reconcile_phase_after_disconnect(state: &mut HostState, now: Instant) {
     }
 }
 
-fn countdown_has_connected_racers(state: &HostState) -> bool {
+fn countdown_has_enough_connected_racers(state: &HostState) -> bool {
     state
         .race
         .players
         .iter()
-        .any(|player| player.connected && !player.state.is_finished())
+        .filter(|player| player.connected && !player.state.is_finished())
+        .count()
+        >= 2
 }
 
 fn cancel_countdown(state: &mut HostState) {
     state.phase = NetworkRacePhase::WaitingForHost;
     push_event(state, "Countdown cancelled".to_string());
-    push_network_log(&state.debug_log, "countdown cancelled no connected racers");
+    push_network_log(
+        &state.debug_log,
+        "countdown cancelled fewer than two connected racers",
+    );
     server_println!("Countdown cancelled");
+}
+
+fn cleanup_disconnected_waiting_players(state: &mut HostState) {
+    if !matches!(
+        state.phase,
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost | NetworkRacePhase::Finished
+    ) {
+        return;
+    }
+
+    let disconnected_ids = state
+        .players
+        .iter()
+        .filter(|player| !player.connected)
+        .map(|player| player.id)
+        .collect::<Vec<_>>();
+    if disconnected_ids.is_empty() {
+        return;
+    }
+
+    state
+        .players
+        .retain(|player| !disconnected_ids.contains(&player.id));
+    state
+        .race
+        .players
+        .retain(|player| !disconnected_ids.contains(&PlayerId(player.id.0)));
+    push_network_log(
+        &state.debug_log,
+        format!("cleaned up disconnected waiting players={disconnected_ids:?}"),
+    );
 }
 
 fn push_event(state: &mut HostState, event: String) {
@@ -1456,6 +1548,9 @@ fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
 
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
+        if !client_is_in_current_race(&state.race, client.player_id) {
+            continue;
+        }
         if let Err(error) = write_server_message(&mut client.stream, &snapshot) {
             server_eprintln!(
                 "Failed to send race snapshot to player {}: {error:#}",
@@ -1515,6 +1610,9 @@ fn broadcast_race_results(state: &mut HostState) -> Result<()> {
 
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
+        if !client_is_in_current_race(&state.race, client.player_id) {
+            continue;
+        }
         if let Err(error) = write_server_message(&mut client.stream, &results) {
             server_eprintln!(
                 "Failed to send race results to player {}: {error:#}",
@@ -1528,6 +1626,12 @@ fn broadcast_race_results(state: &mut HostState) -> Result<()> {
         .clients
         .retain(|client| !failed_clients.contains(&client.player_id));
     Ok(())
+}
+
+fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
+    race.players
+        .iter()
+        .any(|player| player.id == RacePlayerId(player_id.0))
 }
 
 fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow> {
@@ -1865,10 +1969,12 @@ mod tests {
     use super::{
         activate_network_pickup, all_connected_players_ready, apply_network_banana_to_player,
         apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
-        build_race_result_rows, build_race_snapshot, connected_player_count, first_available_color,
+        build_race_result_rows, build_race_snapshot, cleanup_disconnected_waiting_players,
+        client_is_in_current_race, connected_player_count, first_available_color,
         handle_client_messages, push_event, read_join_hello, reconcile_phase_after_disconnect,
-        update_host_ready, update_race_status, welcome_joiner, AssignedColor, ConnectedClient,
-        HostState, NetworkRacePhase, PlayerId, POST_FIRST_FINISH_TIMEOUT,
+        reset_race_from_lobby, update_host_ready, update_race_status, welcome_joiner,
+        AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
+        POST_FIRST_FINISH_TIMEOUT,
     };
     use crate::game::{
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
@@ -1935,6 +2041,7 @@ mod tests {
                 }],
                 players: test_players(false),
                 race: test_race_state(),
+                word_list: test_word_list(),
                 bonuses: test_bonus_state(),
                 item_registry: ItemRegistry::builtin(),
                 active_mod_config: test_active_mod_config(),
@@ -1990,6 +2097,7 @@ mod tests {
                 }],
                 players: test_players(false),
                 race: test_race_state(),
+                word_list: test_word_list(),
                 bonuses: test_bonus_state(),
                 item_registry: ItemRegistry::builtin(),
                 active_mod_config: test_active_mod_config(),
@@ -2023,10 +2131,12 @@ mod tests {
         let state = server.join().unwrap();
         let state = state.lock().unwrap();
 
+        assert!(state.players.iter().all(|player| player.id != PlayerId(2)));
         assert!(state
+            .race
             .players
             .iter()
-            .any(|player| { player.id == PlayerId(2) && !player.ready && !player.connected }));
+            .all(|player| player.id != RacePlayerId(2)));
         assert!(matches!(
             decode_server_message(snapshot_line.trim_end()).unwrap(),
             ServerMessage::LobbySnapshot { ref players, .. }
@@ -2058,6 +2168,82 @@ mod tests {
     }
 
     #[test]
+    fn waiting_cleanup_removes_disconnected_players_from_next_race_roster() {
+        let mut state = test_host_state(NetworkRacePhase::WaitingForHost);
+        state.players[1].connected = false;
+        state.race.players[1].connected = false;
+
+        cleanup_disconnected_waiting_players(&mut state);
+
+        assert_eq!(state.players.len(), 1);
+        assert_eq!(state.race.players.len(), 1);
+        assert!(state.players.iter().all(|player| player.id != PlayerId(2)));
+        assert!(state
+            .race
+            .players
+            .iter()
+            .all(|player| player.id != RacePlayerId(2)));
+    }
+
+    #[test]
+    fn waiting_cleanup_keeps_disconnected_players_during_active_race() {
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players[1].connected = false;
+        state.race.players[1].connected = false;
+
+        cleanup_disconnected_waiting_players(&mut state);
+
+        assert_eq!(state.players.len(), 2);
+        assert_eq!(state.race.players.len(), 2);
+    }
+
+    #[test]
+    fn rematch_rebuilds_race_from_connected_lobby_players() {
+        let mut state = test_host_state(NetworkRacePhase::Finished);
+        state.placements = vec![PlayerId(2), PlayerId(1)];
+        state.race_results_sent = true;
+        state.players.push(LobbyPlayer {
+            id: PlayerId(3),
+            name: "casey".to_string(),
+            color: AssignedColor::Green,
+            ready: true,
+            connected: true,
+        });
+
+        reset_race_from_lobby(&mut state).unwrap();
+
+        assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
+        assert_eq!(state.race.players.len(), 3);
+        assert!(state
+            .race
+            .players
+            .iter()
+            .any(|player| player.id == RacePlayerId(3)));
+        assert!(state.placements.is_empty());
+        assert!(!state.race_results_sent);
+        assert!(state.events.is_empty());
+    }
+
+    #[test]
+    fn late_joiner_is_not_part_of_current_race_until_rematch() {
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players.push(LobbyPlayer {
+            id: PlayerId(3),
+            name: "casey".to_string(),
+            color: AssignedColor::Green,
+            ready: true,
+            connected: true,
+        });
+
+        assert!(!client_is_in_current_race(&state.race, PlayerId(3)));
+
+        state.phase = NetworkRacePhase::Finished;
+        reset_race_from_lobby(&mut state).unwrap();
+
+        assert!(client_is_in_current_race(&state.race, PlayerId(3)));
+    }
+
+    #[test]
     fn host_ready_command_updates_host_player() {
         let state = Arc::new(Mutex::new(HostState {
             clients: Vec::new(),
@@ -2069,6 +2255,7 @@ mod tests {
                 connected: true,
             }],
             race: test_race_state(),
+            word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
@@ -2107,6 +2294,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
@@ -2148,6 +2336,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
@@ -2340,6 +2529,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
@@ -2376,6 +2566,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
@@ -2422,17 +2613,13 @@ mod tests {
     }
 
     #[test]
-    fn countdown_cancels_when_no_connected_racers_remain() {
+    fn countdown_cancels_when_fewer_than_two_connected_racers_remain() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Countdown {
             remaining_seconds: 2,
         });
-        for player in &mut state.players {
-            player.connected = false;
-        }
-        for player in &mut state.race.players {
-            player.connected = false;
-        }
+        state.players[1].connected = false;
+        state.race.players[1].connected = false;
 
         reconcile_phase_after_disconnect(&mut state, now);
 
@@ -2444,13 +2631,11 @@ mod tests {
     }
 
     #[test]
-    fn countdown_continues_when_at_least_one_racer_remains_connected() {
+    fn countdown_continues_when_at_least_two_racers_remain_connected() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Countdown {
             remaining_seconds: 2,
         });
-        state.players[1].connected = false;
-        state.race.players[1].connected = false;
 
         reconcile_phase_after_disconnect(&mut state, now);
 
@@ -2468,6 +2653,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
@@ -2577,14 +2763,23 @@ mod tests {
         )
     }
 
+    fn test_word_list() -> WordList {
+        WordList {
+            words: vec![
+                "one".to_string(),
+                "two".to_string(),
+                "three".to_string(),
+                "four".to_string(),
+            ],
+        }
+    }
+
     fn test_active_mod_config() -> ActiveModConfig {
         let item_registry = ItemRegistry::builtin();
         ActiveModConfig::new(
             &WordSetDefinition {
                 metadata: ContentMetadata::built_in("classic", "Classic"),
-                words: WordList {
-                    words: vec!["one".to_string(), "two".to_string()],
-                },
+                words: test_word_list(),
             },
             &item_registry,
             None,
@@ -2596,6 +2791,7 @@ mod tests {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
+            word_list: test_word_list(),
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),

@@ -171,8 +171,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                     log_client_snapshot(&reader_log, &snapshot);
                     *reader_phase.lock().expect("client phase poisoned") = snapshot.phase;
                     let mut state = reader_view_state.lock().expect("client view poisoned");
-                    state.mod_config = Some(snapshot.mod_config.clone());
-                    state.race_snapshot = Some(snapshot);
+                    state.apply_race_snapshot(snapshot);
                 }
                 Ok(ServerMessage::Error { message }) => {
                     push_network_log(&reader_log, format!("client received error: {message}"));
@@ -311,6 +310,22 @@ impl NetworkViewState {
 
     fn is_host(&self) -> bool {
         self.host_id == Some(self.player_id)
+    }
+
+    fn apply_race_snapshot(&mut self, snapshot: RaceSnapshot) {
+        self.mod_config = Some(snapshot.mod_config.clone());
+        match snapshot.phase {
+            NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {
+                self.race_snapshot = None;
+                self.placements.clear();
+                self.result_rows.clear();
+            }
+            NetworkRacePhase::Countdown { .. }
+            | NetworkRacePhase::Racing
+            | NetworkRacePhase::Finished => {
+                self.race_snapshot = Some(snapshot);
+            }
+        }
     }
 }
 
@@ -1567,7 +1582,7 @@ mod tests {
     use super::{
         display_word_number, network_bonus_column, network_minimap_column, network_racer_label,
         stream_index_for_word_char, visible_network_bonus_point, AssignedColor,
-        NetworkMarkerPosition, NetworkTrackWindow, PlayerId, PlayerSnapshot,
+        NetworkMarkerPosition, NetworkTrackWindow, NetworkViewState, PlayerId, PlayerSnapshot,
     };
     use crate::net::protocol::{
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ModConfigSnapshot,
@@ -1685,6 +1700,21 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn waiting_snapshot_returns_network_view_to_lobby() {
+        let mut state = NetworkViewState::new(PlayerId(1), crate::ui::render::IconMode::Ascii);
+        let mut snapshot = snapshot_with_bonus(0);
+        state.apply_race_snapshot(snapshot.clone());
+        assert!(state.race_snapshot.is_some());
+
+        snapshot.phase = NetworkRacePhase::WaitingForHost;
+        state.apply_race_snapshot(snapshot);
+
+        assert!(state.race_snapshot.is_none());
+        assert!(state.placements.is_empty());
+        assert!(state.result_rows.is_empty());
     }
 
     fn words<const N: usize>(words: [&str; N]) -> Vec<String> {

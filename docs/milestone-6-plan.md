@@ -15,6 +15,7 @@ Milestone 6 includes:
 - Better event feed behavior.
 - Better disconnect handling.
 - More useful multiplayer results and stats.
+- Returning from results into a fresh race.
 - Item weighting and balance improvements.
 - Additional item effects only if they build cleanly on existing mechanics.
 - More robust terminal controls and help text.
@@ -46,7 +47,7 @@ Implemented before Milestone 6:
 Known rough edges:
 
 - Event feed is functional but can be noisy or underspecified.
-- Disconnect behavior has automated coverage for lobby capacity/color reuse, countdown cancellation, and no-connected-racer race completion, but still needs manual LAN validation.
+- Disconnect/rematch behavior has automated coverage for lobby cleanup, capacity/color reuse, countdown cancellation, rematch roster rebuilds, and no-connected-racer race completion, but still needs manual LAN validation.
 - LAN behavior has mainly been tested on loopback.
 - Terminal controls are implicit and not discoverable enough.
 - Item pool is still Mushroom, Banana, and Shield.
@@ -96,10 +97,12 @@ Clarify what happens when players leave during lobby, countdown, racing, and res
 Target behavior:
 
 - Lobby disconnects free capacity and color slots.
-- Countdown disconnects should not leave the race stuck; if no connected racers remain, the countdown is cancelled back to waiting.
+- Disconnected lobby/waiting players are removed from the next race roster.
+- Countdown disconnects should not leave the race stuck; if fewer than two connected racers remain, the countdown is cancelled back to waiting.
 - Racing disconnects mark the racer disconnected but keep them visible for context.
 - Disconnected unfinished racers can be ranked after active racers at timeout.
 - If all remaining active racers finish or all racers disconnect, the race ends cleanly.
+- After results, the host can start a fresh race using the currently connected lobby players, including players who joined while the previous race was active.
 
 Validation:
 
