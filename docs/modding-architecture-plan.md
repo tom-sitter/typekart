@@ -112,7 +112,8 @@ When implementing item and word set modding, build these pieces in a general way
 - Done: `ContentId` conventions shared by items, word sets, and future themes/rules.
 - Done: `ActiveModConfig` metadata for the selected word set and effective item registry.
 - Done: Stable hashes for selected word-set contents, item registry contents, and the combined active mod config.
-- Done: Race snapshots expose mod metadata for connected clients.
+- Done: Lobby and race snapshots expose mod metadata for connected clients.
+- Done: Network UI displays the active word set, item pack, and short combined mod hash.
 - Done: Local and network debug logs include the active mod summary.
 - Later: `ModPackManifest` with built-in default metadata.
 - `ContentRegistry` validation helpers for duplicate ids and unknown references.
@@ -137,7 +138,7 @@ Suggested stages:
 
 1. Built-in registries only.
 2. Optional local files loaded by the host. First implemented examples are `--word-set-file` for custom word lists, `--word-set-dir` for random selection from a directory of word sets, and `--item-pack-file` for JSON item packs that tune built-in items.
-3. Host sends metadata and display definitions to clients.
+3. Done for current built-ins/tuning: Host sends metadata to clients and the network UI displays it.
 4. Optional client-side local display packs.
 
 Avoid auto-downloading files or executing scripts.

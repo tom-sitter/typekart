@@ -326,7 +326,8 @@ Current network behavior:
 
 - The host loads word sets and item packs before generating the track.
 - Generated track words are still sent to clients in race snapshots.
-- `RaceSnapshot.mod_config` exposes the active word set id/name/hash, item pack name/hash, and combined mod hash.
+- `LobbySnapshot.mod_config` and `RaceSnapshot.mod_config` expose the active word set id/name/hash, item pack name/hash, and combined mod hash.
+- The network client displays the active word set, item pack, and short combined hash in the lobby and race screen.
 - Local and network debug logs include the active mod summary.
 
 Current constraints:
@@ -340,7 +341,7 @@ Current constraints:
 Future modding work:
 
 - Manifest-backed word packs with weighted random, rotation, or shuffle-bag selection.
-- Lobby display for active word set and item pack metadata.
+- Richer lobby display for active word set and item pack metadata.
 - Compatibility checks before race start.
 - Shared item engine for new item effects.
 - Generic effect/cue snapshots.
@@ -632,18 +633,17 @@ Manual tests:
 - Countdown.
 - Server-authoritative input.
 - Race snapshots.
-- Active mod metadata in race snapshots.
 - Finish order.
 
 See `docs/milestone-4-plan.md` for the detailed implementation plan.
 
-Current status: Milestone 4 has host/join, host-as-local-client, lobby readiness, countdown snapshots, server-owned race state, server-authoritative raw key input during racing, fixed-rate racing snapshots, server-authoritative finish order, race end, `RaceResults`, `--debug-log` and `--unicode-icons` for host/join, server-owned bonus choices/cooldowns, network bonus claiming, server-owned Mushroom/Banana/Shield resolution, active mod metadata in race snapshots/logs, and a focused Ratatui network client screen with a windowed track, shared bonus lanes, racer lanes, item effect cues, on-track typo coloring, and a minimap. Remaining work is manual LAN validation.
+Current status: Milestone 4 has host/join, host-as-local-client, lobby readiness, countdown snapshots, server-owned race state, server-authoritative raw key input during racing, fixed-rate racing snapshots, server-authoritative finish order, race end, `RaceResults`, `--debug-log` and `--unicode-icons` for host/join, server-owned bonus choices/cooldowns, network bonus claiming, server-owned Mushroom/Banana/Shield resolution, and a focused Ratatui network client screen with a windowed track, shared bonus lanes, racer lanes, item effect cues, on-track typo coloring, and a minimap. Remaining work is manual LAN validation.
 
-### Milestone 5: Modding And Multiplayer Polish
+### Milestone 5: Modding Foundation
 
-Milestone 5 now includes an injected modding foundation before deeper multiplayer polish.
+Milestone 5 is dedicated to the modding foundation. This keeps content extensibility separate from later multiplayer polish.
 
-Implemented modding injection:
+Implemented:
 
 - Shared content id/source metadata.
 - Host/local custom word-set files.
@@ -651,17 +651,19 @@ Implemented modding injection:
 - Item registry for built-in items.
 - JSON item packs that tune or disable built-in items.
 - Active mod metadata and stable hashes.
-- Mod metadata in race snapshots and debug logs.
+- Mod metadata in lobby/race snapshots and debug logs.
+- Network UI displays active word set, item pack, and a short combined mod hash.
 
-Remaining modding work:
+Remaining:
 
-- Lobby display for active mod metadata.
 - Compatibility warnings or rejection for unsupported mod hashes.
 - Manifest-backed word-pack collections.
 - Shared item engine for new item effects.
 - Generic item effect/cue snapshots.
 
-Multiplayer polish still includes:
+See `docs/modding-architecture-plan.md` for the shared modding architecture, `docs/milestone-5-item-modding-plan.md` and `docs/milestone-5-word-set-modding-plan.md` for the first two modding targets, and the rules/theme plan for later expansion.
+
+### Milestone 6: Multiplayer Polish
 
 - Better disconnect handling.
 - Better event feed.
@@ -670,10 +672,10 @@ Multiplayer polish still includes:
 - Blue Shell.
 - Stats screen.
 - More robust terminal controls.
+- Lobby display refinements.
+- Manual LAN validation across multiple machines.
 
-See `docs/modding-architecture-plan.md` for the shared modding architecture, `docs/milestone-5-item-modding-plan.md` and `docs/milestone-5-word-set-modding-plan.md` for the first two modding targets, and the rules/theme plan for later expansion.
-
-### Milestone 6: Internet Play Decision
+### Milestone 7: Internet Play Decision
 
 - Measure local network behavior.
 - Decide whether to use relay, direct port forwarding, or hosted authoritative servers.

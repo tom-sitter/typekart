@@ -307,7 +307,8 @@ The first implementation slice is in place:
 - Existing public item enums remain in place so local play, network play, and render code keep their current behavior.
 - `play` and `host` support `--item-pack-file ./path/to/items.json`.
 - Custom item packs can currently change built-in item names, enabled flags, and standard/nearby roll weights.
-- Race snapshots include the active item pack name and effective item registry hash.
+- Lobby and race snapshots include the active item pack name and effective item registry hash.
+- The network UI displays the active item pack before and during the race.
 - Debug logs include the active item registry hash and combined mod hash.
 
 This slice intentionally rejects unknown item ids. Adding new item effects still needs the larger behavior refactor: a shared item engine, generic effect/cue snapshots, richer external item-pack schema, and multiplayer compatibility checks.

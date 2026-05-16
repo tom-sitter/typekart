@@ -171,6 +171,7 @@ pub enum ServerMessage {
     LobbySnapshot {
         players: Vec<LobbyPlayer>,
         host_id: PlayerId,
+        mod_config: ModConfigSnapshot,
     },
     RaceSnapshot(RaceSnapshot),
     RaceEvent {
@@ -246,6 +247,7 @@ mod tests {
     fn server_message_round_trips_lobby_snapshot() {
         let message = ServerMessage::LobbySnapshot {
             host_id: PlayerId(1),
+            mod_config: test_mod_config(),
             players: vec![LobbyPlayer {
                 id: PlayerId(1),
                 name: "tom".to_string(),

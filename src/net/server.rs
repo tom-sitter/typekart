@@ -575,6 +575,7 @@ fn broadcast_lobby_snapshot(state: &mut HostState) -> Result<()> {
     let snapshot = ServerMessage::LobbySnapshot {
         players: state.players.clone(),
         host_id: PlayerId(1),
+        mod_config: (&state.active_mod_config).into(),
     };
 
     let mut failed_clients = Vec::new();

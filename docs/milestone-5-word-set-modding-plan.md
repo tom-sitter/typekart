@@ -194,7 +194,7 @@ This can eventually replace direct `WordList::load("words_alpha.txt")` calls in 
 - Word-set directories load `.txt` files only.
 - Word-set directories reject empty collections.
 - Track generation uses the selected set.
-- Host race snapshots include selected word set id/hash.
+- Host lobby and race snapshots include selected word set id/hash.
 - Joiners can race without the source word file.
 
 ## Non-Goals
@@ -217,10 +217,11 @@ The first word-set modding slice is implemented:
 - `play` and `host` support `--word-set classic`.
 - `play` and `host` support `--word-set-file ./path/to/words.txt`.
 - `play` and `host` support `--word-set-dir ./path/to/word-packs`, which picks one `.txt` word set at random.
-- Race snapshots include the selected word set id, name, and stable content hash.
+- Lobby and race snapshots include the selected word set id, name, and stable content hash.
+- The network UI displays the selected word set before and during the race.
 - Debug logs include the active mod summary, including the selected word set hash.
 - The host remains authoritative in multiplayer; joiners do not need the source word-set file.
 - Custom word files are validated as lowercase ASCII words with enough unique entries.
 - The built-in `classic` word set keeps the existing trusted-load behavior so the refactor does not unexpectedly reject curated repository data.
 
-The remaining work is metadata polish: lobby display, optional metadata files for custom sets, and manifest-backed collection selection modes.
+The remaining work is optional metadata files for custom sets and manifest-backed collection selection modes.

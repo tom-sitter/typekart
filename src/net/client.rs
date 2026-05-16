@@ -31,8 +31,8 @@ use ratatui::{
 use super::log::{push_network_log, write_network_log, NetworkLog, SharedNetworkLog};
 use super::protocol::{
     decode_server_message, encode_client_message, AssignedColor, AttackDirectionSnapshot,
-    ClientMessage, ClientSequence, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase, PlayerId,
-    PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage,
+    ClientMessage, ClientSequence, ItemCueSnapshotKind, LobbyPlayer, ModConfigSnapshot,
+    NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage,
 };
 use crate::ui::render::IconMode;
 
@@ -141,7 +141,11 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                 break;
             };
             match decode_server_message(line.trim_end()) {
-                Ok(ServerMessage::LobbySnapshot { players, host_id }) => {
+                Ok(ServerMessage::LobbySnapshot {
+                    players,
+                    host_id,
+                    mod_config,
+                }) => {
                     push_network_log(
                         &reader_log,
                         format!(
@@ -153,6 +157,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                     let mut state = reader_view_state.lock().expect("client view poisoned");
                     state.lobby_players = players;
                     state.host_id = Some(host_id);
+                    state.mod_config = Some(mod_config);
                 }
                 Ok(ServerMessage::RaceEvent { message }) => {
                     push_network_log(&reader_log, format!("client received event: {message}"));
@@ -164,10 +169,9 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                 Ok(ServerMessage::RaceSnapshot(snapshot)) => {
                     log_client_snapshot(&reader_log, &snapshot);
                     *reader_phase.lock().expect("client phase poisoned") = snapshot.phase;
-                    reader_view_state
-                        .lock()
-                        .expect("client view poisoned")
-                        .race_snapshot = Some(snapshot);
+                    let mut state = reader_view_state.lock().expect("client view poisoned");
+                    state.mod_config = Some(snapshot.mod_config.clone());
+                    state.race_snapshot = Some(snapshot);
                 }
                 Ok(ServerMessage::Error { message }) => {
                     push_network_log(&reader_log, format!("client received error: {message}"));
@@ -268,6 +272,7 @@ struct NetworkViewState {
     icon_mode: IconMode,
     lobby_players: Vec<LobbyPlayer>,
     host_id: Option<PlayerId>,
+    mod_config: Option<ModConfigSnapshot>,
     race_snapshot: Option<RaceSnapshot>,
     placements: Vec<PlayerId>,
     messages: VecDeque<String>,
@@ -281,6 +286,7 @@ impl NetworkViewState {
             icon_mode,
             lobby_players: Vec::new(),
             host_id: None,
+            mod_config: None,
             race_snapshot: None,
             placements: Vec::new(),
             messages: VecDeque::new(),
@@ -541,7 +547,11 @@ fn network_header<'a>(state: &NetworkViewState) -> Paragraph<'a> {
 fn render_lobby(frame: &mut Frame<'_>, area: Rect, state: &NetworkViewState) {
     let body = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(6)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(5),
+            Constraint::Length(6),
+        ])
         .split(area);
 
     let players = state
@@ -578,7 +588,8 @@ fn render_lobby(frame: &mut Frame<'_>, area: Rect, state: &NetworkViewState) {
         Paragraph::new(players).block(Block::default().title("Lobby").borders(Borders::ALL)),
         body[0],
     );
-    frame.render_widget(messages_view(state), body[1]);
+    frame.render_widget(mod_config_view(state.mod_config.as_ref()), body[1]);
+    frame.render_widget(messages_view(state), body[2]);
 }
 
 fn render_race(
@@ -593,12 +604,17 @@ fn render_race(
         .split(area);
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .constraints([
+            Constraint::Percentage(45),
+            Constraint::Length(5),
+            Constraint::Percentage(55),
+        ])
         .split(columns[1]);
 
     frame.render_widget(track_view(state, snapshot, columns[0].width), columns[0]);
     frame.render_widget(player_list_view(state, snapshot), right[0]);
-    frame.render_widget(messages_and_events_view(state, snapshot), right[1]);
+    frame.render_widget(mod_config_view(Some(&snapshot.mod_config)), right[1]);
+    frame.render_widget(messages_and_events_view(state, snapshot), right[2]);
 }
 
 fn track_view<'a>(
@@ -1386,6 +1402,33 @@ fn messages_view<'a>(state: &'a NetworkViewState) -> Paragraph<'a> {
         .map(|message| Line::from(message.as_str()))
         .collect::<Vec<_>>();
     Paragraph::new(lines).block(Block::default().title("Events").borders(Borders::ALL))
+}
+
+fn mod_config_view<'a>(mod_config: Option<&'a ModConfigSnapshot>) -> Paragraph<'a> {
+    let lines = if let Some(config) = mod_config {
+        vec![
+            Line::from(vec![
+                Span::styled("Words ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(format!("{} ({})", config.word_set_name, config.word_set_id)),
+            ]),
+            Line::from(vec![
+                Span::styled("Items ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(config.item_pack_name.clone()),
+            ]),
+            Line::from(vec![
+                Span::styled("Mod ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(short_hash(&config.combined_hash)),
+            ]),
+        ]
+    } else {
+        vec![Line::from("Waiting for host settings")]
+    };
+
+    Paragraph::new(lines).block(Block::default().title("Mods").borders(Borders::ALL))
+}
+
+fn short_hash(hash: &str) -> String {
+    hash.chars().take(8).collect()
 }
 
 fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragraph<'a> {
