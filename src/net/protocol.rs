@@ -79,6 +79,11 @@ pub struct PlayerSnapshot {
     pub typo_index: Option<usize>,
     pub finished: bool,
     pub connected: bool,
+    pub shielded: bool,
+    pub boosted: bool,
+    pub stunned: bool,
+    pub impact_remaining_ms: u64,
+    pub item_cue: Option<ItemCueSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +113,26 @@ pub struct BonusChoiceSnapshot {
 pub enum BonusChoiceSnapshotStatus {
     Available,
     Cooldown { remaining_ms: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemCueSnapshot {
+    pub kind: ItemCueSnapshotKind,
+    pub remaining_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ItemCueSnapshotKind {
+    Banana { direction: AttackDirectionSnapshot },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttackDirectionSnapshot {
+    Ahead,
+    Behind,
+    Overlap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +257,11 @@ mod tests {
                 typo_index: None,
                 finished: false,
                 connected: true,
+                shielded: false,
+                boosted: false,
+                stunned: false,
+                impact_remaining_ms: 0,
+                item_cue: None,
             }],
             events: vec!["Go".to_string()],
         });

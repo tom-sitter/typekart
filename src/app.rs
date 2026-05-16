@@ -52,6 +52,7 @@ pub fn host(
     name: String,
     word_count: usize,
     max_players: usize,
+    icon_mode: IconMode,
     debug_log: Option<PathBuf>,
 ) -> Result<()> {
     let word_list = WordList::load("words_alpha.txt").context("failed to load word list")?;
@@ -85,6 +86,7 @@ pub fn host(
     let result = run_join(JoinConfig {
         server,
         name,
+        icon_mode,
         debug_log: None,
         shared_log: network_log.clone(),
     });
@@ -107,10 +109,16 @@ fn loopback_server_addr(address: SocketAddr) -> SocketAddr {
     SocketAddr::new(ip, address.port())
 }
 
-pub fn join(server: SocketAddr, name: String, debug_log: Option<PathBuf>) -> Result<()> {
+pub fn join(
+    server: SocketAddr,
+    name: String,
+    icon_mode: IconMode,
+    debug_log: Option<PathBuf>,
+) -> Result<()> {
     run_join(JoinConfig {
         server,
         name,
+        icon_mode,
         debug_log,
         shared_log: None,
     })

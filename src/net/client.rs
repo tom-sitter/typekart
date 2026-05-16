@@ -30,18 +30,21 @@ use ratatui::{
 
 use super::log::{NetworkLog, SharedNetworkLog, push_network_log, write_network_log};
 use super::protocol::{
-    AssignedColor, ClientMessage, ClientSequence, LobbyPlayer, NetworkRacePhase, PlayerId,
-    PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage, decode_server_message,
-    encode_client_message,
+    AssignedColor, AttackDirectionSnapshot, ClientMessage, ClientSequence, ItemCueSnapshotKind,
+    LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey, RaceSnapshot,
+    ServerMessage, decode_server_message, encode_client_message,
 };
+use crate::ui::render::IconMode;
 
 const NETWORK_RACER_MARKER: &str = "███";
 const NETWORK_FINISHED_EDGE_MARKER: &str = ">!";
+const NETWORK_BOOST_PREFIX: &str = ">>>";
 
 #[derive(Debug, Clone)]
 pub struct JoinConfig {
     pub server: SocketAddr,
     pub name: String,
+    pub icon_mode: IconMode,
     pub debug_log: Option<PathBuf>,
     pub shared_log: Option<SharedNetworkLog>,
 }
@@ -125,7 +128,10 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
 
     let phase = Arc::new(Mutex::new(NetworkRacePhase::WaitingForHost));
     let reader_phase = Arc::clone(&phase);
-    let view_state = Arc::new(Mutex::new(NetworkViewState::new(player_id)));
+    let view_state = Arc::new(Mutex::new(NetworkViewState::new(
+        player_id,
+        config.icon_mode,
+    )));
     let reader_view_state = Arc::clone(&view_state);
     let reader_log = log.clone();
 
@@ -259,6 +265,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
 #[derive(Debug, Clone)]
 struct NetworkViewState {
     player_id: PlayerId,
+    icon_mode: IconMode,
     lobby_players: Vec<LobbyPlayer>,
     host_id: Option<PlayerId>,
     race_snapshot: Option<RaceSnapshot>,
@@ -268,9 +275,10 @@ struct NetworkViewState {
 }
 
 impl NetworkViewState {
-    fn new(player_id: PlayerId) -> Self {
+    fn new(player_id: PlayerId, icon_mode: IconMode) -> Self {
         Self {
             player_id,
+            icon_mode,
             lobby_players: Vec::new(),
             host_id: None,
             race_snapshot: None,
@@ -731,44 +739,12 @@ impl<'a> NetworkTrackWindow<'a> {
         }
 
         let current_index = current_index.min(words.len().saturating_sub(1));
-        let mut first_index = current_index;
-        let mut used_width = words[current_index].chars().count().min(width);
-
-        while first_index > 0 {
-            let candidate_width = words[first_index - 1].chars().count() + 1;
-            if used_width + candidate_width > width {
-                break;
-            }
-            first_index -= 1;
-            used_width += candidate_width;
-        }
-
-        let mut visible = Vec::new();
-        let mut col = 0;
-        for (index, word) in words.iter().enumerate().skip(first_index) {
-            let word_width = word.chars().count();
-            let separator_width = usize::from(!visible.is_empty());
-            if !visible.is_empty() && col + separator_width + word_width > width {
-                break;
-            }
-            if !visible.is_empty() {
-                col += separator_width;
-            }
-
-            let start_col = col;
-            let available_width = width.saturating_sub(start_col);
-            let rendered_width = word_width.min(available_width);
-            visible.push(NetworkVisibleWord {
-                index,
-                word,
-                start_col,
-                end_col: start_col + rendered_width,
-            });
-            col += rendered_width;
-
-            if col >= width {
-                break;
-            }
+        let mut first_index = current_index.saturating_sub(3);
+        let mut visible = build_network_visible_words(words, first_index, width);
+        while !visible.iter().any(|word| word.index == current_index) && first_index < current_index
+        {
+            first_index += 1;
+            visible = build_network_visible_words(words, first_index, width);
         }
 
         Self {
@@ -874,6 +850,51 @@ impl<'a> NetworkTrackWindow<'a> {
             .last()
             .map(|word| word.end_col.min(self.width.saturating_sub(1)))
     }
+}
+
+fn build_network_visible_words<'a>(
+    words: &'a [String],
+    first_index: usize,
+    width: usize,
+) -> Vec<NetworkVisibleWord<'a>> {
+    let mut visible = Vec::new();
+    let mut col = 0;
+    for (index, word) in words.iter().enumerate().skip(first_index) {
+        let word_width = word.chars().count();
+        let separator_width = usize::from(!visible.is_empty());
+        if !visible.is_empty() && col + separator_width + word_width > width {
+            break;
+        }
+        if visible.is_empty() && word_width > width {
+            visible.push(NetworkVisibleWord {
+                index,
+                word,
+                start_col: 0,
+                end_col: width,
+            });
+            break;
+        }
+        if !visible.is_empty() {
+            col += separator_width;
+        }
+
+        let start_col = col;
+        let available_width = width.saturating_sub(start_col);
+        let rendered_width = word_width.min(available_width);
+        visible.push(NetworkVisibleWord {
+            index,
+            word,
+            start_col,
+            end_col: start_col + rendered_width,
+        });
+        col += rendered_width;
+
+        if col >= width {
+            break;
+        }
+    }
+
+    visible
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1091,7 +1112,14 @@ fn network_racer_lines<'a>(
 
     players
         .iter()
-        .map(|player| network_racer_line(window, player, player.id == state.player_id))
+        .map(|player| {
+            network_racer_line(
+                window,
+                player,
+                player.id == state.player_id,
+                state.icon_mode,
+            )
+        })
         .collect()
 }
 
@@ -1099,10 +1127,11 @@ fn network_racer_line<'a>(
     window: &NetworkTrackWindow<'_>,
     player: &PlayerSnapshot,
     is_local: bool,
+    icon_mode: IconMode,
 ) -> Line<'a> {
     let mut cells = vec![NetworkTrackCell::default(); window.width];
     let color = assigned_color(player.color);
-    let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+    let style = network_marker_style(player, color);
 
     let (start, marker) = match window.marker_for_player(player) {
         NetworkMarkerPosition::Visible { start } => (start, NETWORK_RACER_MARKER),
@@ -1116,10 +1145,43 @@ fn network_racer_line<'a>(
         ),
     };
 
+    if player.boosted {
+        let boost = network_boost_prefix(icon_mode);
+        let boost_start = start.saturating_sub(boost.chars().count());
+        write_network_marker(&mut cells, boost_start, boost, style);
+    }
+    let mut after_marker_width = 0;
+    if let Some((cue, placement)) = network_item_cue(player, icon_mode) {
+        match placement {
+            NetworkCuePlacement::Before => {
+                let cue_start = start.saturating_sub(cue.chars().count());
+                write_network_marker(&mut cells, cue_start, cue, style);
+            }
+            NetworkCuePlacement::After => {
+                write_network_marker(&mut cells, start + marker.chars().count(), cue, style);
+                after_marker_width = cue.chars().count();
+            }
+        }
+    }
+
+    let marker = if player.shielded && matches!(marker, NETWORK_RACER_MARKER) {
+        network_shield_marker(icon_mode)
+    } else if player.shielded && marker == "<" {
+        network_edge_shield_marker('<', icon_mode)
+    } else if player.shielded && marker == ">" {
+        network_edge_shield_marker('>', icon_mode)
+    } else {
+        marker
+    };
     write_network_marker(&mut cells, start, marker, style);
     let label = if is_local { " you" } else { "" };
     if !label.is_empty() {
-        write_network_marker(&mut cells, start + marker.chars().count(), label, style);
+        write_network_marker(
+            &mut cells,
+            start + marker.chars().count() + after_marker_width,
+            label,
+            style,
+        );
     }
 
     Line::from(
@@ -1128,6 +1190,66 @@ fn network_racer_line<'a>(
             .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
             .collect::<Vec<_>>(),
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NetworkCuePlacement {
+    Before,
+    After,
+}
+
+fn network_item_cue(
+    player: &PlayerSnapshot,
+    icon_mode: IconMode,
+) -> Option<(&'static str, NetworkCuePlacement)> {
+    let cue = player.item_cue.as_ref()?;
+    match (&cue.kind, icon_mode) {
+        (ItemCueSnapshotKind::Banana { direction }, IconMode::Ascii) => match direction {
+            &AttackDirectionSnapshot::Ahead => Some((" ))>>", NetworkCuePlacement::After)),
+            &AttackDirectionSnapshot::Behind => Some(("((<< ", NetworkCuePlacement::Before)),
+            &AttackDirectionSnapshot::Overlap => Some((" ))<>", NetworkCuePlacement::After)),
+        },
+        (ItemCueSnapshotKind::Banana { direction }, IconMode::Unicode) => match direction {
+            &AttackDirectionSnapshot::Ahead => Some((" 🍌 >>", NetworkCuePlacement::After)),
+            &AttackDirectionSnapshot::Behind => Some(("<< 🍌 ", NetworkCuePlacement::Before)),
+            &AttackDirectionSnapshot::Overlap => Some((" 🍌 <>", NetworkCuePlacement::After)),
+        },
+    }
+}
+
+fn network_boost_prefix(icon_mode: IconMode) -> &'static str {
+    match icon_mode {
+        IconMode::Ascii => NETWORK_BOOST_PREFIX,
+        IconMode::Unicode => ">>🍄",
+    }
+}
+
+fn network_shield_marker(icon_mode: IconMode) -> &'static str {
+    match icon_mode {
+        IconMode::Ascii => "[███]",
+        IconMode::Unicode => "█🛡",
+    }
+}
+
+fn network_edge_shield_marker(direction: char, icon_mode: IconMode) -> &'static str {
+    match (direction, icon_mode) {
+        ('<', IconMode::Ascii) => "[<]",
+        ('>', IconMode::Ascii) => "[>]",
+        ('<', IconMode::Unicode) => "<🛡",
+        ('>', IconMode::Unicode) => ">🛡",
+        _ => "",
+    }
+}
+
+fn network_marker_style(player: &PlayerSnapshot, color: Color) -> Style {
+    let base = Style::default().fg(color).add_modifier(Modifier::BOLD);
+    if player.impact_remaining_ms > 0 {
+        base.bg(Color::Yellow).fg(Color::Black)
+    } else if player.stunned {
+        base.bg(Color::Red).fg(Color::White)
+    } else {
+        base
+    }
 }
 
 fn write_network_marker(cells: &mut [NetworkTrackCell], start: usize, marker: &str, style: Style) {
@@ -1334,6 +1456,16 @@ mod tests {
     }
 
     #[test]
+    fn network_track_window_keeps_three_completed_words_behind_player() {
+        let words = words([
+            "zero", "one", "two", "three", "four", "five", "six", "seven",
+        ]);
+        let window = NetworkTrackWindow::new(&words, 5, 80);
+
+        assert_eq!(window.words.first().map(|word| word.index), Some(2));
+    }
+
+    #[test]
     fn network_marker_tracks_current_character_position() {
         let words = words(["one", "two", "three"]);
         let window = NetworkTrackWindow::new(&words, 1, 20);
@@ -1425,6 +1557,11 @@ mod tests {
             typo_index,
             finished,
             connected: true,
+            shielded: false,
+            boosted: false,
+            stunned: false,
+            impact_remaining_ms: 0,
+            item_cue: None,
         }
     }
 

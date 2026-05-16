@@ -61,6 +61,9 @@ enum Command {
         /// Write detailed network diagnostics to this file after the session exits.
         #[arg(long)]
         debug_log: Option<PathBuf>,
+        /// Use Unicode item icons instead of ASCII-safe markers.
+        #[arg(long)]
+        unicode_icons: bool,
     },
     /// Join a local-network multiplayer lobby.
     Join {
@@ -73,6 +76,9 @@ enum Command {
         /// Write detailed network diagnostics to this file after the session exits.
         #[arg(long)]
         debug_log: Option<PathBuf>,
+        /// Use Unicode item icons instead of ASCII-safe markers.
+        #[arg(long)]
+        unicode_icons: bool,
     },
 }
 
@@ -118,11 +124,33 @@ fn main() -> Result<()> {
             bind,
             max_players,
             debug_log,
-        } => app::host(bind, name, words, max_players, debug_log),
+            unicode_icons,
+        } => app::host(
+            bind,
+            name,
+            words,
+            max_players,
+            if unicode_icons {
+                IconMode::Unicode
+            } else {
+                IconMode::Ascii
+            },
+            debug_log,
+        ),
         Command::Join {
             name,
             server,
             debug_log,
-        } => app::join(server, name, debug_log),
+            unicode_icons,
+        } => app::join(
+            server,
+            name,
+            if unicode_icons {
+                IconMode::Unicode
+            } else {
+                IconMode::Ascii
+            },
+            debug_log,
+        ),
     }
 }

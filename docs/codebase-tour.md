@@ -24,7 +24,7 @@ It uses `clap` to parse command-line arguments:
 typekart play --words 40
 ```
 
-Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--unicode-icons`, and `--debug-log <PATH>`. The network `host` and `join` commands also accept `--debug-log <PATH>` for protocol/session diagnostics.
+Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--unicode-icons`, and `--debug-log <PATH>`. The network `host` and `join` commands also accept `--unicode-icons` and `--debug-log <PATH>` for protocol/session diagnostics.
 
 The important Rust idea here is that `main` returns `anyhow::Result<()>`. That lets us use the `?` operator inside the call chain and let errors bubble up cleanly instead of manually matching every error.
 
@@ -167,7 +167,7 @@ Important Rust concepts:
 - The network layer maps protocol ids and colors into game-level ids and colors.
 - `RaceState::apply_key_input` returns `Option<Vec<TypingEvent>>`: `None` means the player id was unknown; `Some(events)` means input was applied and produced zero or more typing events.
 
-This module is still small. Bonus claiming and item resolution have not been moved into it yet. For now, network bonus state, finish order, and race-end status live in `src/net/server.rs` because they depend on connected-player handling, shared cooldowns, and wall-clock timeouts.
+This module is still small. For now, network bonus claims, item resolution, bonus state, finish order, and race-end status live in `src/net/server.rs` because they depend on connected-player handling, shared cooldowns, and wall-clock timeouts.
 
 ### `src/game/effects.rs`
 
@@ -450,7 +450,7 @@ join terminal key event
   net::client renders track words, bonus choices, player progress, and minimap state
 ```
 
-This is intentionally transitional. Local `play` uses the richer production race renderer; network `join` now uses raw key events during racing and a focused Ratatui network screen. The network screen has its own windowed track, shared bonus lanes, racer lanes, on-track typo coloring, and minimap. The next network gameplay step is typed bonus claiming and item effect cues after the server owns item resolution.
+This is intentionally transitional. Local `play` uses the richer production race renderer; network `join` now uses raw key events during racing and a focused Ratatui network screen. The network screen has its own windowed track, shared bonus lanes, racer lanes, item effect cues, on-track typo coloring, and minimap.
 
 ## Network Modules
 
@@ -509,6 +509,9 @@ Current responsibilities:
 - Start a 3-second countdown.
 - Store the authoritative `RaceState`.
 - Store authoritative bonus choices and refresh cooldowns.
+- Serialize bonus claims from typed input.
+- Resolve auto-activated Mushroom, Banana, and Shield pickups.
+- Store network-only stun, impact blink, and item cue timers.
 - Apply `KeyInput` to server-owned player state.
 - Track finish order.
 - End races when all connected racers finish or the post-first-place timeout expires.
@@ -546,7 +549,7 @@ Current responsibilities:
 - During `Racing`, convert raw character, Space, and Backspace key events into `KeyInput` messages.
 - Render lobby and race snapshots in an alternate-screen Ratatui UI.
 
-Current limitation: this client uses a network-specific Ratatui screen, not the full local race renderer. It has track, bonus-lane, racer-lane, and minimap basics, but bonus claiming and item effect cues are not wired yet.
+Current limitation: this client uses a network-specific Ratatui screen, not the full local race renderer. It has track, bonus-lane, racer-lane, minimap, and item cue basics in both ASCII and optional Unicode mode.
 
 ## Borrowing And Ownership In This Code
 
@@ -640,6 +643,8 @@ Join from another terminal:
 cargo run -- join --name alex --server 127.0.0.1:4000
 ```
 
+Add `--unicode-icons` to either network command to render item icons in terminals that handle emoji widths correctly.
+
 Current network lobby commands:
 
 ```text
@@ -685,9 +690,9 @@ Recommended order:
 ## Things That Are Intentionally Simple For Now
 
 - The UI is functional, not final.
-- Network multiplayer is still incomplete: lobby, countdown, server-authoritative typing, results, basic race rendering, and server-owned bonus snapshots work, but bonus claiming and items are not server-owned yet.
+- Network multiplayer is still incomplete, but the core local-network race loop is now broad: lobby, countdown, server-authoritative typing, results, basic race rendering, server-owned bonus snapshots, bonus claiming, and first-pass item resolution work.
 - The network client uses a simpler Ratatui screen instead of the full local race renderer.
-- Bonus claiming and item behavior are local-only in `play`; network bonus claiming and item resolution are not implemented yet.
+- Local and network renderers are still separate implementations, so future UI changes may need to be mirrored deliberately.
 - The typing engine still only owns main-track typing. Bonus attempts are coordinated by `LocalSession`.
 - Track generation samples with replacement, so repeated words can appear.
 - Most state fields are public to keep early iteration straightforward.

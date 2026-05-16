@@ -54,15 +54,17 @@ Implemented:
 - Server-owned bonus state with shared bonus choices and cooldown refresh.
 - Race snapshots containing bonus point choices and cooldown state.
 - Network race screen bonus lanes rendered from server snapshots.
+- Network bonus claiming from typed input, including shared cooldowns and contested-claim loss handling.
+- Server-owned Mushroom, Banana, and Shield resolution for network racers.
+- Network item effect state in race snapshots, including boost, shield, stun, impact blink, and Banana direction cues.
 - Fixed-rate race snapshot broadcast loop at 20 snapshots per second while racing.
 - `--debug-log` support for `host` and `join`.
+- `--unicode-icons` support for `host` and `join`.
 - Network diagnostics for joins, readiness, countdown, key input, sampled snapshots, finish order, results, and disconnects.
 
 Not implemented yet:
 
-- Network bonus claiming from typed input.
-- Server-owned multiplayer item resolution.
-- Network item effect cues.
+- No known implementation gaps for the local-network milestone.
 
 Milestone 4 excludes:
 
@@ -123,6 +125,12 @@ Useful debug option on both:
 --debug-log typekart-debug.log
 ```
 
+Optional icon mode on both:
+
+```sh
+--unicode-icons
+```
+
 Current network controls:
 
 ```text
@@ -132,7 +140,7 @@ After racing starts: character keys, Space, and Backspace are sent immediately
 Leave during network racing: Esc or Ctrl-C
 ```
 
-The network client now uses a focused Ratatui screen with a windowed track, shared bonus lanes, racer lanes, typo coloring on the track, and a minimap. The next gameplay slice is bonus claiming and server-owned item resolution.
+The network client now uses a focused Ratatui screen with a windowed track, shared bonus lanes, racer lanes, typo coloring on the track, item effect cues, and a minimap. The server now serializes bonus claims, shared cooldowns, and the first multiplayer item effects.
 
 ## Proposed File Changes
 
@@ -358,7 +366,7 @@ Implemented:
 Remaining:
 
 - Moving bonus ownership fully into `RaceState`, if we choose that path.
-- Shared item resolution.
+- Moving item ownership fully into `RaceState`, if we choose that path.
 - Shared finish order/race status.
 - Adapting local `LocalSession` to the shared state, if we choose that path.
 
@@ -446,12 +454,14 @@ Implemented:
 - Server broadcasts race snapshots at 20 snapshots per second while racing.
 - Server owns bonus choices and cooldown refresh.
 - Server includes bonus choice state in race snapshots.
+- Server serializes bonus claims from typed input.
+- Losing a contested bonus claim clears the attempt and prevents retrying another bonus at that same gap.
+- Server applies auto-activated Mushroom, Shield, and Banana pickups.
+- Server snapshots include item effect display state.
 
 Remaining:
 
-- Bonus claiming.
-- Item race UI.
-- Item resolution.
+- Manual validation on an actual LAN, outside same-machine loopback.
 
 Deliverables:
 
@@ -475,10 +485,10 @@ Deliverables:
 
 - Bonus claims are serialized by the server.
 - Bonus cooldowns are shared.
-- Mushroom, Shield, and Banana work against human players.
-- Banana ignores finished and already-stunned players.
-- Shield blocks Banana and consumes the active shield.
-- Item cues and impact blinks appear on all relevant clients.
+- Mushroom, Shield, and Banana work against human players. Implemented.
+- Banana ignores finished and already-stunned players. Implemented.
+- Shield blocks Banana and consumes the active shield. Implemented.
+- Item cues and impact blinks appear on all relevant clients. Implemented with ASCII and optional Unicode network cues.
 
 Validation:
 
@@ -494,7 +504,7 @@ Add enough logging and tests to make local network bugs diagnosable.
 Deliverables:
 
 - `--debug-log` works for host and join. Implemented.
-- Server log includes joins, disconnects, inputs, sampled snapshots, results, and finish events. Item targeting will be added when server-owned items are implemented.
+- Server log includes joins, disconnects, inputs, sampled snapshots, results, finish events, bonus claims, and item targeting.
 - Client log includes sent inputs, received snapshots, and connection errors. Implemented.
 - Basic handling for a disconnected client.
 
