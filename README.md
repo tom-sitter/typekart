@@ -33,10 +33,10 @@ Use harder AI players:
 cargo run -- play --ai-racers 6 --ai-difficulty hard
 ```
 
-Use Unicode item icons:
+Use ASCII-safe item markers:
 
 ```sh
-cargo run -- play --unicode-icons
+cargo run -- play --ascii
 ```
 
 ## Multiplayer On One Computer
@@ -99,11 +99,11 @@ Add network AI racers for multiplayer testing:
 cargo run -- host --name host --bind 127.0.0.1:4000 --ai-racers 4 --ai-difficulty easy
 ```
 
-Use Unicode item icons for host and joiners:
+Use ASCII-safe item markers for host and joiners:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 --unicode-icons
-cargo run -- join --name player2 --server 127.0.0.1:4000 --unicode-icons
+cargo run -- host --name host --bind 127.0.0.1:4000 --ascii
+cargo run -- join --name player2 --server 127.0.0.1:4000 --ascii
 ```
 
 Write debug logs:

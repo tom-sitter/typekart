@@ -20,9 +20,14 @@ Milestone 6 includes:
 - Additional item effects only if they build cleanly on existing mechanics.
 - More robust terminal controls and help text.
 
+Related standalone work:
+
+- Network AI racers are tracked separately in `docs/network-ai-racers-plan.md`. They are useful for testing Milestone 6 multiplayer flows, but they are not part of the Milestone 6 scope.
+
 Milestone 6 excludes:
 
 - Internet matchmaking, relay servers, NAT traversal, or hosted authoritative servers.
+- Network AI racer implementation work, which is tracked as a standalone injection.
 - Arbitrary mod scripts.
 - Manifest-backed mod-pack selection UI.
 - Large renderer rewrites.

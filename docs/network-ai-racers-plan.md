@@ -1,10 +1,18 @@
-# Network AI Racers Plan
+# Network AI Racers Injection Plan
 
 ## Goal
 
 Add server-owned AI racers to multiplayer so the host can manually test race behavior, item interactions, results, and rematches without needing many human joiners or many terminal windows.
 
 Network AI racers should behave like normal race participants from the client's perspective: they appear in lobby/race/results, move over the network through server snapshots, can claim bonuses, can trigger items, can be targeted by humans, and can finish races.
+
+## Planning Status
+
+This is a standalone implementation injection, not part of Milestone 6.
+
+It supports Milestone 6 manual multiplayer validation by making it possible to test multiplayer-like races with fewer human joiners, but its scope is tracked here independently from the Milestone 6 polish work.
+
+Current status: implemented for the host-owned bot model.
 
 ## Design Direction
 

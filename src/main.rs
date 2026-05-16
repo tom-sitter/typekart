@@ -52,9 +52,9 @@ enum Command {
         /// Difficulty used by all local AI racers.
         #[arg(long, value_enum, default_value_t = CliAiDifficulty::Easy)]
         ai_difficulty: CliAiDifficulty,
-        /// Use Unicode item icons instead of ASCII-safe markers.
-        #[arg(long)]
-        unicode_icons: bool,
+        /// Use ASCII-safe markers instead of Unicode item icons.
+        #[arg(long = "ascii")]
+        ascii_icons: bool,
         /// Write detailed run diagnostics to this file after the race session exits.
         #[arg(long)]
         debug_log: Option<PathBuf>,
@@ -94,9 +94,9 @@ enum Command {
         /// Write detailed network diagnostics to this file after the session exits.
         #[arg(long)]
         debug_log: Option<PathBuf>,
-        /// Use Unicode item icons instead of ASCII-safe markers.
-        #[arg(long)]
-        unicode_icons: bool,
+        /// Use ASCII-safe markers instead of Unicode item icons.
+        #[arg(long = "ascii")]
+        ascii_icons: bool,
     },
     /// Join a local-network multiplayer lobby.
     Join {
@@ -109,9 +109,9 @@ enum Command {
         /// Write detailed network diagnostics to this file after the session exits.
         #[arg(long)]
         debug_log: Option<PathBuf>,
-        /// Use Unicode item icons instead of ASCII-safe markers.
-        #[arg(long)]
-        unicode_icons: bool,
+        /// Use ASCII-safe markers instead of Unicode item icons.
+        #[arg(long = "ascii")]
+        ascii_icons: bool,
     },
 }
 
@@ -142,7 +142,7 @@ fn main() -> Result<()> {
             item_pack_file,
             ai_racers,
             ai_difficulty,
-            unicode_icons,
+            ascii_icons,
             debug_log,
         } => app::play(
             words,
@@ -150,10 +150,10 @@ fn main() -> Result<()> {
             item_pack_file,
             ai_racers,
             ai_difficulty.into(),
-            if unicode_icons {
-                IconMode::Unicode
-            } else {
+            if ascii_icons {
                 IconMode::Ascii
+            } else {
+                IconMode::Unicode
             },
             debug_log,
         ),
@@ -169,7 +169,7 @@ fn main() -> Result<()> {
             ai_racers,
             ai_difficulty,
             debug_log,
-            unicode_icons,
+            ascii_icons,
         } => app::host(
             bind,
             name,
@@ -179,10 +179,10 @@ fn main() -> Result<()> {
             max_players,
             ai_racers,
             ai_difficulty.into(),
-            if unicode_icons {
-                IconMode::Unicode
-            } else {
+            if ascii_icons {
                 IconMode::Ascii
+            } else {
+                IconMode::Unicode
             },
             debug_log,
         ),
@@ -190,14 +190,14 @@ fn main() -> Result<()> {
             name,
             server,
             debug_log,
-            unicode_icons,
+            ascii_icons,
         } => app::join(
             server,
             name,
-            if unicode_icons {
-                IconMode::Unicode
-            } else {
+            if ascii_icons {
                 IconMode::Ascii
+            } else {
+                IconMode::Unicode
             },
             debug_log,
         ),

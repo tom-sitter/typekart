@@ -59,7 +59,7 @@ Implemented:
 - Network item effect state in race snapshots, including boost, shield, stun, impact blink, and Banana direction cues.
 - Fixed-rate race snapshot broadcast loop at 20 snapshots per second while racing.
 - `--debug-log` support for `host` and `join`.
-- `--unicode-icons` support for `host` and `join`.
+- `--ascii` fallback support for `host` and `join`.
 - Network diagnostics for joins, readiness, countdown, key input, sampled snapshots, finish order, results, and disconnects.
 
 Not implemented yet:
@@ -128,7 +128,7 @@ Useful debug option on both:
 Optional icon mode on both:
 
 ```sh
---unicode-icons
+--ascii
 ```
 
 Current network controls:

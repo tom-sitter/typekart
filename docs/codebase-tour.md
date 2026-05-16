@@ -24,7 +24,7 @@ It uses `clap` to parse command-line arguments:
 typekart play --words 40
 ```
 
-Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--unicode-icons`, and `--debug-log <PATH>`. The network `host` and `join` commands also accept `--unicode-icons` and `--debug-log <PATH>` for protocol/session diagnostics.
+Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--ascii`, and `--debug-log <PATH>`. The network `host` and `join` commands also accept `--ascii` and `--debug-log <PATH>` for protocol/session diagnostics.
 
 The important Rust idea here is that `main` returns `anyhow::Result<()>`. That lets us use the `?` operator inside the call chain and let errors bubble up cleanly instead of manually matching every error.
 
@@ -643,7 +643,7 @@ Join from another terminal:
 cargo run -- join --name alex --server 127.0.0.1:4000
 ```
 
-Add `--unicode-icons` to either network command to render item icons in terminals that handle emoji widths correctly.
+Unicode icons are enabled by default. Add `--ascii` to either network command when validating terminals that do not handle emoji widths correctly.
 
 Current network lobby commands:
 

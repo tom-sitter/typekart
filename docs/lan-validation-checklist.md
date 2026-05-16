@@ -24,7 +24,7 @@ Useful shorter race:
 cargo run -- host --name host --bind 0.0.0.0:4000 --words 20 --debug-log host-debug.log
 ```
 
-Use the same `--unicode-icons` setting on host and joiners when validating icon rendering.
+Use the same `--ascii` setting on host and joiners when validating ASCII fallback rendering.
 
 ## Lobby
 

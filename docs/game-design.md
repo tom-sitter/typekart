@@ -446,12 +446,12 @@ Rules:
 
 ### Icon Mode
 
-The default display should remain ASCII-safe because terminal emoji width and styling support varies. A settings toggle can enable Unicode icons for terminals that render them well.
+The default display uses Unicode item icons. An ASCII fallback flag is available for terminals that render emoji width or styling poorly.
 
 Current command-line toggle:
 
 ```text
---unicode-icons
+--ascii
 ```
 
 Unicode mode affects:
