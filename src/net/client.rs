@@ -17,22 +17,22 @@ use anyhow::{Context, Result};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
+    Frame, Terminal,
 };
 
-use super::log::{NetworkLog, SharedNetworkLog, push_network_log, write_network_log};
+use super::log::{push_network_log, write_network_log, NetworkLog, SharedNetworkLog};
 use super::protocol::{
-    AssignedColor, AttackDirectionSnapshot, ClientMessage, ClientSequence, ItemCueSnapshotKind,
-    LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey, RaceSnapshot,
-    ServerMessage, decode_server_message, encode_client_message,
+    decode_server_message, encode_client_message, AssignedColor, AttackDirectionSnapshot,
+    ClientMessage, ClientSequence, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase, PlayerId,
+    PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage,
 };
 use crate::ui::render::IconMode;
 
@@ -1453,13 +1453,13 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, PlayerId, PlayerSnapshot,
         display_word_number, network_bonus_column, network_minimap_column, network_racer_label,
-        stream_index_for_word_char, visible_network_bonus_point,
+        stream_index_for_word_char, visible_network_bonus_point, AssignedColor,
+        NetworkMarkerPosition, NetworkTrackWindow, PlayerId, PlayerSnapshot,
     };
     use crate::net::protocol::{
-        BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, NetworkRacePhase,
-        RaceSnapshot,
+        BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ModConfigSnapshot,
+        NetworkRacePhase, RaceSnapshot,
     };
 
     #[test]
@@ -1607,6 +1607,7 @@ mod tests {
         RaceSnapshot {
             sequence: 1,
             phase: NetworkRacePhase::Racing,
+            mod_config: test_mod_config(),
             track_words: words(["one", "two", "three"]),
             bonuses: vec![BonusPointSnapshot {
                 after_word_index,
@@ -1617,6 +1618,17 @@ mod tests {
             }],
             players: Vec::new(),
             events: Vec::new(),
+        }
+    }
+
+    fn test_mod_config() -> ModConfigSnapshot {
+        ModConfigSnapshot {
+            word_set_id: "classic".to_string(),
+            word_set_name: "Classic".to_string(),
+            word_set_hash: "0000000000000001".to_string(),
+            item_pack_name: "classic".to_string(),
+            item_registry_hash: "0000000000000002".to_string(),
+            combined_hash: "0000000000000003".to_string(),
         }
     }
 }

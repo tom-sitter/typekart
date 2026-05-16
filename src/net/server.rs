@@ -9,32 +9,33 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use rand::thread_rng;
 
 use crate::game::{
-    bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
+    bonus::{claim_bonus_choice, BonusChoiceStatus, BonusState},
     effects::ActiveEffect,
-    items::{HeldItem, ItemPickup, RacerPosition, select_nearest_banana_target},
+    items::{select_nearest_banana_target, HeldItem, ItemPickup, ItemRegistry, RacerPosition},
+    mods::ActiveModConfig,
     race::{PlayerColorId, RacePlayerId, RaceState},
     track::{Track, WordList},
-    typing::{KeyAction, first_typo_index},
+    typing::{first_typo_index, KeyAction},
 };
 
-use super::log::{SharedNetworkLog, push_network_log};
+use super::log::{push_network_log, SharedNetworkLog};
 use super::protocol::{
-    AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshot, BonusChoiceSnapshotStatus,
-    BonusPointSnapshot, ClientMessage, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer,
-    NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage,
-    decode_client_message, encode_server_message,
+    decode_client_message, encode_server_message, AssignedColor, AttackDirectionSnapshot,
+    BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
+    ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot,
+    ProtocolKey, RaceSnapshot, ServerMessage,
 };
 
 const COLOR_ROTATION: [AssignedColor; 6] = [
@@ -78,6 +79,8 @@ pub struct HostConfig {
     pub host_name: Option<String>,
     pub track: Track,
     pub word_list: WordList,
+    pub item_registry: ItemRegistry,
+    pub active_mod_config: ActiveModConfig,
     pub max_players: usize,
     pub ready_signal: Option<Sender<SocketAddr>>,
     pub console_logging: bool,
@@ -94,6 +97,8 @@ struct HostState {
     clients: Vec<ConnectedClient>,
     race: RaceState,
     bonuses: BonusState,
+    item_registry: ItemRegistry,
+    active_mod_config: ActiveModConfig,
     bonus_attempts: HashMap<PlayerId, NetworkBonusAttempt>,
     spent_bonus_gaps: HashMap<PlayerId, usize>,
     player_effects: HashMap<PlayerId, NetworkPlayerEffects>,
@@ -153,6 +158,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
             config.track.len()
         ),
     );
+    push_network_log(&config.debug_log, config.active_mod_config.log_summary());
 
     let bonuses = BonusState::generate(&config.track, &config.word_list);
     let mut race = RaceState::new(config.track);
@@ -180,6 +186,8 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         clients: Vec::new(),
         race,
         bonuses,
+        item_registry: config.item_registry,
+        active_mod_config: config.active_mod_config,
         bonus_attempts: HashMap::new(),
         spent_bonus_gaps: HashMap::new(),
         player_effects: HashMap::new(),
@@ -851,6 +859,7 @@ fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant)
         .get(attempt.point_index)
         .map(|point| point.after_word_index);
     let has_nearby_racer = player_has_nearby_racer(state, player_id, 5);
+    let item_registry = state.item_registry.clone();
     let mut rng = thread_rng();
     let pickup = claim_bonus_choice(
         &mut state.bonuses,
@@ -858,6 +867,7 @@ fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant)
         attempt.choice_index,
         now,
         has_nearby_racer,
+        &item_registry,
         &mut rng,
     );
 
@@ -1317,37 +1327,35 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
 }
 
 fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
-    thread::spawn(move || {
-        loop {
-            thread::sleep(RACE_SNAPSHOT_INTERVAL);
-            let mut state = state.lock().expect("host state poisoned");
-            if state.phase != NetworkRacePhase::Racing {
-                break;
-            }
+    thread::spawn(move || loop {
+        thread::sleep(RACE_SNAPSHOT_INTERVAL);
+        let mut state = state.lock().expect("host state poisoned");
+        if state.phase != NetworkRacePhase::Racing {
+            break;
+        }
 
-            let now = Instant::now();
-            update_race_status(&mut state, now);
-            advance_network_mushrooms(&mut state, now);
-            let expired_choices = expire_bonus_cooldowns(&mut state, now);
-            if expired_choices > 0 {
-                push_network_log(
-                    &state.debug_log,
-                    format!("bonus refreshed choices={expired_choices}"),
-                );
-            }
+        let now = Instant::now();
+        update_race_status(&mut state, now);
+        advance_network_mushrooms(&mut state, now);
+        let expired_choices = expire_bonus_cooldowns(&mut state, now);
+        if expired_choices > 0 {
+            push_network_log(
+                &state.debug_log,
+                format!("bonus refreshed choices={expired_choices}"),
+            );
+        }
 
-            if let Err(error) = broadcast_race_snapshot(&mut state) {
-                server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-            }
+        if let Err(error) = broadcast_race_snapshot(&mut state) {
+            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+        }
 
-            if state.phase == NetworkRacePhase::Finished {
-                server_println!("Race finished");
-                push_network_log(&state.debug_log, "race finished on snapshot tick");
-                if let Err(error) = broadcast_race_results_once(&mut state) {
-                    server_eprintln!("Failed to broadcast race results: {error:#}");
-                }
-                break;
+        if state.phase == NetworkRacePhase::Finished {
+            server_println!("Race finished");
+            push_network_log(&state.debug_log, "race finished on snapshot tick");
+            if let Err(error) = broadcast_race_results_once(&mut state) {
+                server_eprintln!("Failed to broadcast race results: {error:#}");
             }
+            break;
         }
     });
 }
@@ -1569,6 +1577,7 @@ fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
     RaceSnapshot {
         sequence: state.snapshot_sequence,
         phase: state.phase,
+        mod_config: (&state.active_mod_config).into(),
         track_words: state.race.track.words.clone(),
         bonuses: build_bonus_snapshots(&state.bonuses, now),
         players: state
@@ -1705,23 +1714,25 @@ mod tests {
     };
 
     use super::{
-        AssignedColor, ConnectedClient, HostState, NetworkRacePhase, POST_FIRST_FINISH_TIMEOUT,
-        PlayerId, activate_network_pickup, all_connected_players_ready,
-        apply_network_banana_to_player, apply_network_key_input, broadcast_lobby_snapshot,
-        broadcast_race_results_once, build_race_snapshot, connected_player_count,
-        first_available_color, handle_client_messages, push_event, read_join_hello,
-        update_host_ready, update_race_status, welcome_joiner,
+        activate_network_pickup, all_connected_players_ready, apply_network_banana_to_player,
+        apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
+        build_race_snapshot, connected_player_count, first_available_color, handle_client_messages,
+        push_event, read_join_hello, update_host_ready, update_race_status, welcome_joiner,
+        AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
+        POST_FIRST_FINISH_TIMEOUT,
     };
     use crate::game::{
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         effects::ActiveEffect,
-        items::{HeldItem, ItemPickup},
+        items::{HeldItem, ItemPickup, ItemRegistry},
+        mods::{ActiveModConfig, ContentMetadata},
         race::{PlayerColorId, RacePlayerId, RaceState},
-        track::Track,
+        track::{Track, WordList},
         typing::KeyAction,
+        words::WordSetDefinition,
     };
     use crate::net::protocol::{
-        ClientMessage, LobbyPlayer, ServerMessage, decode_server_message, encode_client_message,
+        decode_server_message, encode_client_message, ClientMessage, LobbyPlayer, ServerMessage,
     };
 
     #[test]
@@ -1774,6 +1785,8 @@ mod tests {
                 players: test_players(false),
                 race: test_race_state(),
                 bonuses: test_bonus_state(),
+                item_registry: ItemRegistry::builtin(),
+                active_mod_config: test_active_mod_config(),
                 bonus_attempts: HashMap::new(),
                 spent_bonus_gaps: HashMap::new(),
                 player_effects: HashMap::new(),
@@ -1827,6 +1840,8 @@ mod tests {
                 players: test_players(false),
                 race: test_race_state(),
                 bonuses: test_bonus_state(),
+                item_registry: ItemRegistry::builtin(),
+                active_mod_config: test_active_mod_config(),
                 bonus_attempts: HashMap::new(),
                 spent_bonus_gaps: HashMap::new(),
                 player_effects: HashMap::new(),
@@ -1857,12 +1872,10 @@ mod tests {
         let state = server.join().unwrap();
         let state = state.lock().unwrap();
 
-        assert!(
-            state
-                .players
-                .iter()
-                .any(|player| { player.id == PlayerId(2) && !player.ready && !player.connected })
-        );
+        assert!(state
+            .players
+            .iter()
+            .any(|player| { player.id == PlayerId(2) && !player.ready && !player.connected }));
         assert!(matches!(
             decode_server_message(snapshot_line.trim_end()).unwrap(),
             ServerMessage::LobbySnapshot { ref players, .. }
@@ -1906,6 +1919,8 @@ mod tests {
             }],
             race: test_race_state(),
             bonuses: test_bonus_state(),
+            item_registry: ItemRegistry::builtin(),
+            active_mod_config: test_active_mod_config(),
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -1942,6 +1957,8 @@ mod tests {
             players: test_players(true),
             race: test_race_state(),
             bonuses: test_bonus_state(),
+            item_registry: ItemRegistry::builtin(),
+            active_mod_config: test_active_mod_config(),
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -1981,6 +1998,8 @@ mod tests {
             players: test_players(true),
             race: test_race_state(),
             bonuses: test_bonus_state(),
+            item_registry: ItemRegistry::builtin(),
+            active_mod_config: test_active_mod_config(),
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -2053,12 +2072,10 @@ mod tests {
             state.bonuses.points[0].choices[0].status,
             BonusChoiceStatus::Cooldown { .. }
         ));
-        assert!(
-            state
-                .events
-                .iter()
-                .any(|event| event.starts_with("alex picked up "))
-        );
+        assert!(state
+            .events
+            .iter()
+            .any(|event| event.starts_with("alex picked up ")));
     }
 
     #[test]
@@ -2137,20 +2154,16 @@ mod tests {
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.input, "");
-        assert!(
-            state
-                .player_effects
-                .get(&PlayerId(2))
-                .and_then(|effects| effects.stunned_until)
-                .is_some_and(|until| until > now)
-        );
-        assert!(
-            state
-                .player_effects
-                .get(&PlayerId(1))
-                .and_then(|effects| effects.item_cue)
-                .is_some()
-        );
+        assert!(state
+            .player_effects
+            .get(&PlayerId(2))
+            .and_then(|effects| effects.stunned_until)
+            .is_some_and(|until| until > now));
+        assert!(state
+            .player_effects
+            .get(&PlayerId(1))
+            .and_then(|effects| effects.item_cue)
+            .is_some());
     }
 
     #[test]
@@ -2177,6 +2190,8 @@ mod tests {
             players: test_players(true),
             race: test_race_state(),
             bonuses: test_bonus_state(),
+            item_registry: ItemRegistry::builtin(),
+            active_mod_config: test_active_mod_config(),
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -2211,6 +2226,8 @@ mod tests {
             players: test_players(true),
             race: test_race_state(),
             bonuses: test_bonus_state(),
+            item_registry: ItemRegistry::builtin(),
+            active_mod_config: test_active_mod_config(),
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -2242,6 +2259,8 @@ mod tests {
             players: test_players(true),
             race: test_race_state(),
             bonuses: test_bonus_state(),
+            item_registry: ItemRegistry::builtin(),
+            active_mod_config: test_active_mod_config(),
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -2311,12 +2330,28 @@ mod tests {
         )
     }
 
+    fn test_active_mod_config() -> ActiveModConfig {
+        let item_registry = ItemRegistry::builtin();
+        ActiveModConfig::new(
+            &WordSetDefinition {
+                metadata: ContentMetadata::built_in("classic", "Classic"),
+                words: WordList {
+                    words: vec!["one".to_string(), "two".to_string()],
+                },
+            },
+            &item_registry,
+            None,
+        )
+    }
+
     fn test_host_state(phase: NetworkRacePhase) -> HostState {
         HostState {
             clients: Vec::new(),
             players: test_players(true),
             race: test_race_state(),
             bonuses: test_bonus_state(),
+            item_registry: ItemRegistry::builtin(),
+            active_mod_config: test_active_mod_config(),
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),

@@ -15,20 +15,23 @@ use anyhow::{Context, Result};
 
 use crate::game::{
     ai::AiDifficulty,
+    items::ItemRegistry,
+    mods::ActiveModConfig,
     player::PlayerState,
     track::Track,
     words::{WordSetRegistry, WordSetSelection},
 };
 use crate::net::{
-    client::{JoinConfig, run_join},
-    log::{NetworkLog, write_network_log},
-    server::{HostConfig, run_host},
+    client::{run_join, JoinConfig},
+    log::{write_network_log, NetworkLog},
+    server::{run_host, HostConfig},
 };
 use crate::ui::{render::IconMode, terminal::run_typing_session};
 
 pub fn play(
     word_count: usize,
     word_set: WordSetSelection,
+    item_pack_file: Option<PathBuf>,
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
     icon_mode: IconMode,
@@ -37,6 +40,11 @@ pub fn play(
     let word_set = WordSetRegistry::builtin()
         .load(&word_set)
         .context("failed to load selected word set")?;
+    let item_pack_source = item_pack_file
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let item_registry = load_item_registry(item_pack_file)?;
+    let active_mod_config = ActiveModConfig::new(&word_set, &item_registry, item_pack_source);
     let word_list = word_set.words;
     let track = Track::generate(&word_list, word_count).context("failed to generate track")?;
     let player = PlayerState::new(Instant::now());
@@ -47,6 +55,8 @@ pub fn play(
         word_list,
         ai_racer_count,
         ai_difficulty,
+        item_registry,
+        active_mod_config,
         icon_mode,
         debug_log,
     )
@@ -57,6 +67,7 @@ pub fn host(
     name: String,
     word_count: usize,
     word_set: WordSetSelection,
+    item_pack_file: Option<PathBuf>,
     max_players: usize,
     icon_mode: IconMode,
     debug_log: Option<PathBuf>,
@@ -64,6 +75,11 @@ pub fn host(
     let word_set = WordSetRegistry::builtin()
         .load(&word_set)
         .context("failed to load selected word set")?;
+    let item_pack_source = item_pack_file
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let item_registry = load_item_registry(item_pack_file)?;
+    let active_mod_config = ActiveModConfig::new(&word_set, &item_registry, item_pack_source);
     let word_list = word_set.words;
     let track = Track::generate(&word_list, word_count).context("failed to generate track")?;
     let (ready_sender, ready_receiver) = mpsc::channel();
@@ -78,6 +94,8 @@ pub fn host(
             host_name: None,
             track,
             word_list,
+            item_registry,
+            active_mod_config,
             max_players,
             ready_signal: Some(ready_sender),
             console_logging: false,
@@ -106,6 +124,15 @@ pub fn host(
     }
 
     result
+}
+
+fn load_item_registry(item_pack_file: Option<PathBuf>) -> Result<ItemRegistry> {
+    if let Some(path) = item_pack_file {
+        ItemRegistry::load_json_file(&path)
+            .with_context(|| format!("failed to load item pack file {}", path.display()))
+    } else {
+        Ok(ItemRegistry::builtin())
+    }
 }
 
 fn loopback_server_addr(address: SocketAddr) -> SocketAddr {

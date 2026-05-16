@@ -15,6 +15,8 @@ TypeKart is a real-time terminal multiplayer game. The implementation needs to s
 - Multiple players connected to one race.
 - Server-authoritative race state.
 - Shared bonus-word state and item effects.
+- Host-selected word sets and effective item registries.
+- Active mod metadata and compatibility hashes.
 - Per-player rendering differences, such as greyed-out bonus words when a player already has an item.
 - Local network play first, with a path toward internet play later.
 
@@ -138,6 +140,8 @@ The server owns:
 - Player list.
 - Race phase.
 - Track words.
+- Active mod configuration metadata.
+- Effective item registry.
 - Bonus point choices and cooldowns.
 - Player progress.
 - Held items.
@@ -248,6 +252,8 @@ Error
 
 The server can broadcast snapshots at a fixed tick rate and send important events immediately.
 
+`RaceSnapshot` now includes active mod metadata so clients can log or later display the host's selected word set and item registry without needing local copies of those files.
+
 Initial recommendation:
 
 - Server tick rate: 20 ticks per second.
@@ -284,8 +290,61 @@ Current network prototype:
 - The server sends a `RaceSnapshot` immediately after accepted input.
 - The join client uses raw terminal input during racing and sends character, Space, and Backspace events immediately.
 - The join client renders lobby/race snapshots in a focused Ratatui alternate-screen UI.
+- Race snapshots include active mod metadata for the selected word set and effective item registry.
 
 This proves the protocol and authoritative input path. It is not the final client experience.
+
+## Modding Architecture
+
+TypeKart's first modding path is data-first and host-authoritative.
+
+Implemented mod surfaces:
+
+- `--word-set classic` selects the built-in word set.
+- `--word-set-file <PATH>` loads one custom newline-delimited word set for `play` or `host`.
+- `--word-set-dir <PATH>` loads a directory of `.txt` word sets and chooses one at random for the race.
+- `--item-pack-file <PATH>` loads a JSON item pack that can tune or disable built-in items.
+
+Core modules:
+
+```text
+src/game/mods.rs
+src/game/words.rs
+src/game/items.rs
+```
+
+Current responsibilities:
+
+- `ContentId` and `ContentMetadata` define stable ids and sources.
+- `WordSetDefinition` wraps a `WordList` with metadata.
+- `WordSetCollection` loads a directory of `.txt` word sets and randomly selects one.
+- `ItemRegistry` owns the effective built-in or tuned item definitions.
+- `ActiveModConfig` summarizes the selected word set and item registry.
+- Stable hashes are generated for selected word-set contents, item registry contents, and the combined active mod config.
+
+Current network behavior:
+
+- The host loads word sets and item packs before generating the track.
+- Generated track words are still sent to clients in race snapshots.
+- `RaceSnapshot.mod_config` exposes the active word set id/name/hash, item pack name/hash, and combined mod hash.
+- Local and network debug logs include the active mod summary.
+
+Current constraints:
+
+- Custom word files are strict lowercase ASCII word lists.
+- The built-in `classic` word set remains trusted repository data.
+- Item packs can tune or disable built-in Mushroom, Banana, and Shield behavior.
+- Item packs cannot define new effects yet.
+- Clients do not currently reject incompatible mod hashes; metadata is informational.
+
+Future modding work:
+
+- Manifest-backed word packs with weighted random, rotation, or shuffle-bag selection.
+- Lobby display for active word set and item pack metadata.
+- Compatibility checks before race start.
+- Shared item engine for new item effects.
+- Generic effect/cue snapshots.
+- Rules presets, themes, AI profiles, and event text packs.
 
 ## Core State Model
 
@@ -406,6 +465,13 @@ Then add:
 - Blue Shell.
 - Better item weighting.
 
+Current modding injection:
+
+- Item definitions now flow through `ItemRegistry`.
+- Built-in item roll weights can be tuned by JSON item packs.
+- Bonus claiming uses the selected item registry in local and network play.
+- New item effects still require the planned shared item engine.
+
 ## Terminal Rendering
 
 Use a retained state terminal UI rather than printing lines manually.
@@ -507,6 +573,9 @@ High-value tests:
 - Banana target selection.
 - Blue Shell capitalization generation.
 - Finish order.
+- Custom word-set file and directory loading.
+- Item-pack parsing and registry overrides.
+- Active mod hash determinism.
 
 Integration tests:
 
@@ -514,6 +583,7 @@ Integration tests:
 - Countdown starts both players.
 - Input from two clients updates server state.
 - Race completes and results are broadcast.
+- Race snapshots include active mod metadata.
 
 Manual tests:
 
@@ -522,6 +592,7 @@ Manual tests:
 - Overlapping racer markers.
 - Key handling across terminals.
 - Local network connection between two machines.
+- Host with `--word-set-file`, `--word-set-dir`, and `--item-pack-file`.
 
 ## Development Milestones
 
@@ -561,18 +632,39 @@ Manual tests:
 - Countdown.
 - Server-authoritative input.
 - Race snapshots.
+- Active mod metadata in race snapshots.
 - Finish order.
 
 See `docs/milestone-4-plan.md` for the detailed implementation plan.
 
-Current status: Milestone 4 has host/join, host-as-local-client, lobby readiness, countdown snapshots, server-owned race state, server-authoritative raw key input during racing, fixed-rate racing snapshots, server-authoritative finish order, race end, `RaceResults`, `--debug-log` and `--unicode-icons` for host/join, server-owned bonus choices/cooldowns, network bonus claiming, server-owned Mushroom/Banana/Shield resolution, and a focused Ratatui network client screen with a windowed track, shared bonus lanes, racer lanes, item effect cues, on-track typo coloring, and a minimap. Remaining work is manual LAN validation.
+Current status: Milestone 4 has host/join, host-as-local-client, lobby readiness, countdown snapshots, server-owned race state, server-authoritative raw key input during racing, fixed-rate racing snapshots, server-authoritative finish order, race end, `RaceResults`, `--debug-log` and `--unicode-icons` for host/join, server-owned bonus choices/cooldowns, network bonus claiming, server-owned Mushroom/Banana/Shield resolution, active mod metadata in race snapshots/logs, and a focused Ratatui network client screen with a windowed track, shared bonus lanes, racer lanes, item effect cues, on-track typo coloring, and a minimap. Remaining work is manual LAN validation.
 
-### Milestone 5: Multiplayer Polish
+### Milestone 5: Modding And Multiplayer Polish
+
+Milestone 5 now includes an injected modding foundation before deeper multiplayer polish.
+
+Implemented modding injection:
+
+- Shared content id/source metadata.
+- Host/local custom word-set files.
+- Host/local word-set directories with random selection.
+- Item registry for built-in items.
+- JSON item packs that tune or disable built-in items.
+- Active mod metadata and stable hashes.
+- Mod metadata in race snapshots and debug logs.
+
+Remaining modding work:
+
+- Lobby display for active mod metadata.
+- Compatibility warnings or rejection for unsupported mod hashes.
+- Manifest-backed word-pack collections.
+- Shared item engine for new item effects.
+- Generic item effect/cue snapshots.
+
+Multiplayer polish still includes:
 
 - Better disconnect handling.
 - Better event feed.
-- Refactor items around a registry and shared item engine so items are easier to add, remove, tune, and mod.
-- Add word set modding with host-selected built-in or file-backed word sets.
 - Item weighting.
 - Star Power.
 - Blue Shell.

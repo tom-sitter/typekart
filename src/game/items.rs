@@ -1,7 +1,10 @@
 //! Item types and item-specific helper rules.
 
-use anyhow::{Result, bail};
+use std::{fs, path::Path};
+
+use anyhow::{bail, Result};
 use rand::Rng;
+use serde::Deserialize;
 
 use super::mods::ContentId;
 
@@ -138,6 +141,57 @@ impl ItemRegistry {
         .expect("built-in item registry is valid")
     }
 
+    /// Load a host-provided item pack from JSON.
+    ///
+    /// This first external format intentionally tunes the built-in items only:
+    /// weights, names, and enabled flags. Adding entirely new item effects needs
+    /// the shared item engine first, because the current game still resolves
+    /// Mushroom, Banana, and Shield through concrete Rust handlers.
+    pub fn load_json_file(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let contents = fs::read_to_string(path)?;
+        let config: ItemPackConfig = serde_json::from_str(&contents)?;
+        Self::from_pack_config(config)
+    }
+
+    fn from_pack_config(config: ItemPackConfig) -> Result<Self> {
+        let mut registry = Self::builtin();
+
+        for override_item in config.items {
+            let target = registry
+                .items
+                .iter_mut()
+                .find(|item| item.id.as_str() == override_item.id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown item id '{}'; this modding slice can tune built-in items only",
+                        override_item.id
+                    )
+                })?;
+
+            if let Some(name) = override_item.name {
+                if name.trim().is_empty() {
+                    bail!("item '{}' cannot have an empty name", override_item.id);
+                }
+                target.name = name;
+            }
+
+            if let Some(enabled) = override_item.enabled {
+                target.enabled = enabled;
+            }
+
+            if let Some(weight) = override_item.standard_weight {
+                target.standard_weight = weight;
+            }
+
+            if let Some(weight) = override_item.nearby_racer_weight {
+                target.nearby_racer_weight = weight;
+            }
+        }
+
+        Self::new(registry.items)
+    }
+
     pub fn roll_pickup(&self, rng: &mut impl Rng, context: ItemRollContext) -> Option<ItemPickup> {
         let candidates = self
             .items
@@ -166,10 +220,25 @@ impl ItemRegistry {
     }
 }
 
+#[cfg(test)]
 pub fn roll_item_with_proximity(rng: &mut impl Rng, has_nearby_racer: bool) -> ItemPickup {
     ItemRegistry::builtin()
         .roll_pickup(rng, ItemRollContext { has_nearby_racer })
         .expect("built-in item registry has rollable items")
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemPackConfig {
+    items: Vec<ItemPackItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemPackItem {
+    id: String,
+    name: Option<String>,
+    enabled: Option<bool>,
+    standard_weight: Option<u32>,
+    nearby_racer_weight: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,11 +269,11 @@ pub fn select_nearest_banana_target(
 
 #[cfg(test)]
 mod tests {
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand::{rngs::StdRng, SeedableRng};
 
     use super::{
-        HeldItem, ItemActivation, ItemDefinition, ItemPickup, ItemRegistry, RacerPosition,
-        roll_item_with_proximity, select_nearest_banana_target,
+        roll_item_with_proximity, select_nearest_banana_target, HeldItem, ItemActivation,
+        ItemDefinition, ItemPackConfig, ItemPackItem, ItemPickup, ItemRegistry, RacerPosition,
     };
 
     #[test]
@@ -328,5 +397,112 @@ mod tests {
         ]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn item_pack_can_disable_a_builtin_item() {
+        let config = ItemPackConfig {
+            items: vec![ItemPackItem {
+                id: "banana".to_string(),
+                name: None,
+                enabled: Some(false),
+                standard_weight: None,
+                nearby_racer_weight: None,
+            }],
+        };
+
+        let registry = ItemRegistry::from_pack_config(config).unwrap();
+        let banana = registry
+            .items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Banana))
+            .unwrap();
+
+        assert!(!banana.enabled);
+    }
+
+    #[test]
+    fn item_rolls_ignore_disabled_items() {
+        let registry = ItemRegistry::new(vec![
+            ItemDefinition {
+                enabled: false,
+                ..ItemDefinition::built_in(
+                    "banana",
+                    "Banana",
+                    ItemPickup::Held(HeldItem::Banana),
+                    ItemActivation::Held,
+                    100,
+                    100,
+                )
+            },
+            ItemDefinition::built_in(
+                "shield",
+                "Shield",
+                ItemPickup::Shield,
+                ItemActivation::Immediate,
+                1,
+                1,
+            ),
+        ])
+        .unwrap();
+        let mut rng = StdRng::seed_from_u64(1);
+
+        for _ in 0..10 {
+            assert_eq!(
+                registry.roll_pickup(
+                    &mut rng,
+                    super::ItemRollContext {
+                        has_nearby_racer: false
+                    }
+                ),
+                Some(ItemPickup::Shield)
+            );
+        }
+    }
+
+    #[test]
+    fn item_pack_rejects_unknown_item_ids_until_new_effects_are_supported() {
+        let config = ItemPackConfig {
+            items: vec![ItemPackItem {
+                id: "lightning".to_string(),
+                name: None,
+                enabled: None,
+                standard_weight: Some(1),
+                nearby_racer_weight: Some(1),
+            }],
+        };
+
+        assert!(ItemRegistry::from_pack_config(config).is_err());
+    }
+
+    #[test]
+    fn item_pack_file_loads_weight_overrides() {
+        let path =
+            std::env::temp_dir().join(format!("typekart-item-pack-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"{
+                "items": [
+                    {
+                        "id": "mushroom",
+                        "standard_weight": 10,
+                        "nearby_racer_weight": 12
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let registry = ItemRegistry::load_json_file(&path).unwrap();
+        let mushroom = registry
+            .items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Mushroom))
+            .unwrap();
+
+        assert_eq!(mushroom.standard_weight, 10);
+        assert_eq!(mushroom.nearby_racer_weight, 12);
+
+        let _ = std::fs::remove_file(path);
     }
 }

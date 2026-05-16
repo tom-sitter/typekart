@@ -48,6 +48,7 @@ Implemented:
 - Race end when all connected racers finish.
 - Post-first-place timeout that ranks unfinished connected racers by progress.
 - `RaceResults` broadcast after the race ends.
+- Active mod metadata in race snapshots.
 - Local host-as-client architecture for the `host` command.
 - Host countdown start from the shared network UI with `Space` or `start`.
 - Network race screen with a windowed track, per-racer lanes, on-track typo coloring, and a minimap.
@@ -111,6 +112,15 @@ New host command:
 
 ```sh
 cargo run -- host --name tom --bind 0.0.0.0:4000 --words 40 --max-players 6
+```
+
+Optional host content flags:
+
+```sh
+--word-set classic
+--word-set-file ./mods/animals.txt
+--word-set-dir ./mods/word-packs
+--item-pack-file ./mods/items.json
 ```
 
 New join command:
@@ -270,6 +280,7 @@ Error
 `RaceSnapshot` should include enough display state for each client to render without re-running rules locally:
 
 - Race phase.
+- Active mod metadata and hashes.
 - Track words.
 - Bonus choices and cooldown state.
 - All player progress and display effects.
@@ -294,7 +305,7 @@ The host uses the same protocol and raw racing input path as other clients. The 
 
 ## Current Network Race Flow
 
-1. Host generates the race track from `words_alpha.txt`.
+1. Host loads the selected word set or word-set directory, then generates the race track from the selected words.
 2. Server stores the track in `RaceState`.
 3. When joiners connect, the server adds them to lobby state and race state.
 4. When all connected players are ready, the host can start countdown.
@@ -307,6 +318,12 @@ Current manual test shape:
 ```sh
 cargo run -- host --name host --words 20 --bind 127.0.0.1:4000 --max-players 2
 cargo run -- join --name alex --server 127.0.0.1:4000
+```
+
+Custom content can be added to the host command:
+
+```sh
+cargo run -- host --name host --word-set-dir ./mods/word-packs --item-pack-file ./mods/items.json
 ```
 
 Then:
@@ -458,6 +475,7 @@ Implemented:
 - Losing a contested bonus claim clears the attempt and prevents retrying another bonus at that same gap.
 - Server applies auto-activated Mushroom, Shield, and Banana pickups.
 - Server snapshots include item effect display state.
+- Server snapshots include active mod metadata for the selected word set and effective item registry.
 
 Remaining:
 
@@ -468,6 +486,7 @@ Deliverables:
 - Host Space starts countdown.
 - Server applies client key inputs.
 - Server broadcasts race snapshots 10 to 20 times per second.
+- Race snapshots include active mod metadata.
 - Finish order is server authoritative.
 - Race ends when all players finish or the post-first-finish timeout expires.
 
@@ -505,6 +524,7 @@ Deliverables:
 
 - `--debug-log` works for host and join. Implemented.
 - Server log includes joins, disconnects, inputs, sampled snapshots, results, finish events, bonus claims, and item targeting.
+- Server log includes the active mod summary.
 - Client log includes sent inputs, received snapshots, and connection errors. Implemented.
 - Basic handling for a disconnected client.
 

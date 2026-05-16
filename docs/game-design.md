@@ -28,7 +28,7 @@ The core experience should feel like a typing race first and an item battler sec
 - Persistent accounts, rankings, or progression.
 - Full matchmaking.
 - Voice chat or chat moderation.
-- Custom word packs beyond a basic local word source.
+- Downloaded mods, arbitrary scripts, or untrusted executable plugins.
 - Anti-cheat enforcement beyond server-authoritative race state.
 
 ## Core Race Model
@@ -36,8 +36,9 @@ The core experience should feel like a typing race first and an item battler sec
 Each race uses a generated track:
 
 - The main track is an ordered list of words.
-- Each word is lowercase alphabetic text.
+- The default race mode expects simple lowercase words.
 - Track length is configurable by word count.
+- Track words are generated from the active word set selected by the host or local player.
 - Each player starts before the first word.
 - A player advances by correctly typing the current required word.
 - A player finishes after completing the final main-track word.
@@ -312,6 +313,38 @@ This keeps all players synchronized and reduces trivial cheating compared with p
 
 The host is always also a player. Initial lobbies should support up to 6 players.
 
+## Modding Support
+
+TypeKart should be moddable through data files and registries, not arbitrary code execution.
+
+The host or local player owns the active mod configuration for a race. Joiners do not need local copies of word files or item-pack files because the server sends generated track words and authoritative race snapshots.
+
+Currently supported mod surfaces:
+
+- Built-in word set selection with `--word-set classic`.
+- Single custom word-set files with `--word-set-file`.
+- Directories of `.txt` word sets with `--word-set-dir`, where one valid word set is chosen at random for the race.
+- JSON item packs with `--item-pack-file` that can tune or disable built-in items.
+- Active mod metadata and stable hashes in race snapshots and debug logs.
+
+Current item packs intentionally tune built-in items only. Adding entirely new item effects should wait for the shared item engine and generic effect/cue snapshots.
+
+Future mod surfaces:
+
+- Manifest-backed word-pack collections.
+- Weighted random word-set selection.
+- Shuffle-bag or rotation selection between races.
+- Host selection or voting in the lobby.
+- Rules presets for bonus spacing, cooldowns, race length, and finish timeout.
+- Theme packs for marker glyphs, colors, and item cues.
+- AI profile packs for local practice.
+
+Mod compatibility should be visible to players:
+
+- Word set id, name, source, and content hash.
+- Item pack name/source and effective registry hash.
+- Combined active mod hash for race reconstruction.
+
 ## Join Flow
 
 1. Player chooses join.
@@ -532,6 +565,7 @@ Minimum requirements:
 - Broadcast server race snapshots to clients.
 - Handle disconnects.
 - End the race cleanly.
+- Include active mod metadata in race snapshots so clients can display or log the host's selected content.
 
 Nice-to-have later:
 
@@ -573,6 +607,8 @@ The server should track:
 - Player readiness.
 - Race phase.
 - Track words.
+- Active word set metadata and hash.
+- Active item registry metadata and hash.
 - Bonus point positions.
 - Active bonus choices and cooldowns.
 - Item random seed or item event log.
@@ -620,6 +656,8 @@ The first playable version should be intentionally small:
 - Host and join local network games.
 - Two to six players.
 - One generated lowercase word track.
+- Built-in word set plus optional host/local custom word-set files or directories.
+- Optional item-pack tuning for built-in items.
 - Basic terminal race UI.
 - Unique player colors.
 - Main typing progress.
@@ -639,11 +677,15 @@ After that works, add:
 - Better item weighting.
 - Better stats.
 - Improved rendering for dense player clusters.
+- Lobby display for active mod metadata.
+- Manifest-backed word packs and item packs.
 
 ## Open Questions
 
 - Which terminal key should activate normal item use?
 - Which terminal key or key combination should activate modified item use?
+- What word-pack selection modes should be exposed first: random, rotation, shuffle bag, host pick, or voting?
+- How strict should client compatibility checks be once custom item packs can define new effects?
 - After local network play works, should internet play use direct port forwarding, a relay server, or hosted authoritative servers?
 
 ## Glossary
@@ -655,3 +697,7 @@ After that works, add:
 - **Held item**: The item a player currently has available to activate.
 - **Active effect**: A temporary modifier currently affecting a player.
 - **Race snapshot**: A server broadcast describing current race state.
+- **Word set**: A source list used to generate race track and bonus words.
+- **Word-set collection**: Multiple word sets loaded together so the host can choose, rotate, or randomly select between them.
+- **Item pack**: Data that tunes the active item registry.
+- **Active mod config**: The selected word-set and item-pack metadata plus stable hashes for logging, display, and compatibility.

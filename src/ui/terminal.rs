@@ -14,18 +14,20 @@ use anyhow::{Context, Result};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::{
     game::{
         ai::AiDifficulty,
+        items::ItemRegistry,
+        mods::ActiveModConfig,
         player::PlayerState,
         track::{Track, WordList},
         typing::KeyAction,
     },
-    ui::render::{IconMode, TypingScreen, render},
+    ui::render::{render, IconMode, TypingScreen},
     ui::session::{LocalAction, LocalSession, RunLog},
 };
 
@@ -37,13 +39,23 @@ pub fn run_typing_session(
     word_list: WordList,
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
+    item_registry: ItemRegistry,
+    active_mod_config: ActiveModConfig,
     icon_mode: IconMode,
     debug_log: Option<PathBuf>,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
     let result = run_loop(
         &mut terminal,
-        LocalSession::new(track, player, word_list, ai_racer_count, ai_difficulty),
+        LocalSession::new(
+            track,
+            player,
+            word_list,
+            ai_racer_count,
+            ai_difficulty,
+            item_registry,
+            active_mod_config,
+        ),
         icon_mode,
     );
     restore_terminal(&mut terminal)?;

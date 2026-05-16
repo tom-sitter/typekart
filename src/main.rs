@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::game::{
     ai::AiDifficulty,
-    words::{DEFAULT_WORD_SET_ID, WordSetSelection},
+    words::{WordSetSelection, DEFAULT_WORD_SET_ID},
 };
 use crate::ui::render::IconMode;
 
@@ -40,6 +40,12 @@ enum Command {
         /// Load a custom word set from a newline-delimited text file.
         #[arg(long)]
         word_set_file: Option<PathBuf>,
+        /// Load a directory of .txt word sets and choose one at random.
+        #[arg(long)]
+        word_set_dir: Option<PathBuf>,
+        /// Load an item pack from a JSON file.
+        #[arg(long)]
+        item_pack_file: Option<PathBuf>,
         /// Number of local AI racers to include, capped at 6.
         #[arg(long, default_value_t = 0)]
         ai_racers: usize,
@@ -67,6 +73,12 @@ enum Command {
         /// Load a custom word set from a newline-delimited text file.
         #[arg(long)]
         word_set_file: Option<PathBuf>,
+        /// Load a directory of .txt word sets and choose one at random.
+        #[arg(long)]
+        word_set_dir: Option<PathBuf>,
+        /// Load an item pack from a JSON file.
+        #[arg(long)]
+        item_pack_file: Option<PathBuf>,
         /// Address and port to listen on.
         #[arg(long, default_value = "127.0.0.1:4000")]
         bind: SocketAddr,
@@ -120,13 +132,16 @@ fn main() -> Result<()> {
             words,
             word_set,
             word_set_file,
+            word_set_dir,
+            item_pack_file,
             ai_racers,
             ai_difficulty,
             unicode_icons,
             debug_log,
         } => app::play(
             words,
-            word_set_selection(word_set, word_set_file)?,
+            word_set_selection(word_set, word_set_file, word_set_dir)?,
+            item_pack_file,
             ai_racers,
             ai_difficulty.into(),
             if unicode_icons {
@@ -141,6 +156,8 @@ fn main() -> Result<()> {
             words,
             word_set,
             word_set_file,
+            word_set_dir,
+            item_pack_file,
             bind,
             max_players,
             debug_log,
@@ -149,7 +166,8 @@ fn main() -> Result<()> {
             bind,
             name,
             words,
-            word_set_selection(word_set, word_set_file)?,
+            word_set_selection(word_set, word_set_file, word_set_dir)?,
+            item_pack_file,
             max_players,
             if unicode_icons {
                 IconMode::Unicode
@@ -179,13 +197,22 @@ fn main() -> Result<()> {
 fn word_set_selection(
     word_set: String,
     word_set_file: Option<PathBuf>,
+    word_set_dir: Option<PathBuf>,
 ) -> Result<WordSetSelection> {
-    if let Some(path) = word_set_file {
-        if word_set != DEFAULT_WORD_SET_ID {
-            anyhow::bail!("use either --word-set or --word-set-file, not both");
+    match (word_set_file, word_set_dir) {
+        (Some(_), Some(_)) => anyhow::bail!("use only one of --word-set-file or --word-set-dir"),
+        (Some(path), None) => {
+            if word_set != DEFAULT_WORD_SET_ID {
+                anyhow::bail!("use either --word-set or --word-set-file, not both");
+            }
+            Ok(WordSetSelection::File(path))
         }
-        Ok(WordSetSelection::File(path))
-    } else {
-        Ok(WordSetSelection::BuiltIn(word_set))
+        (None, Some(path)) => {
+            if word_set != DEFAULT_WORD_SET_ID {
+                anyhow::bail!("use either --word-set or --word-set-dir, not both");
+            }
+            Ok(WordSetSelection::Directory(path))
+        }
+        (None, None) => Ok(WordSetSelection::BuiltIn(word_set)),
     }
 }

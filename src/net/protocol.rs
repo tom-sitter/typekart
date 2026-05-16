@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::game::mods::ActiveModConfig;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub u64);
 
@@ -90,10 +92,34 @@ pub struct PlayerSnapshot {
 pub struct RaceSnapshot {
     pub sequence: u64,
     pub phase: NetworkRacePhase,
+    pub mod_config: ModConfigSnapshot,
     pub track_words: Vec<String>,
     pub bonuses: Vec<BonusPointSnapshot>,
     pub players: Vec<PlayerSnapshot>,
     pub events: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModConfigSnapshot {
+    pub word_set_id: String,
+    pub word_set_name: String,
+    pub word_set_hash: String,
+    pub item_pack_name: String,
+    pub item_registry_hash: String,
+    pub combined_hash: String,
+}
+
+impl From<&ActiveModConfig> for ModConfigSnapshot {
+    fn from(config: &ActiveModConfig) -> Self {
+        Self {
+            word_set_id: config.word_set_id.clone(),
+            word_set_name: config.word_set_name.clone(),
+            word_set_hash: config.word_set_hash.hex(),
+            item_pack_name: config.item_pack_name.clone(),
+            item_registry_hash: config.item_registry_hash.hex(),
+            combined_hash: config.combined_hash.hex(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,10 +203,10 @@ pub fn decode_server_message(line: &str) -> serde_json::Result<ServerMessage> {
 #[cfg(test)]
 mod tests {
     use super::{
+        decode_client_message, decode_server_message, encode_client_message, encode_server_message,
         AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
-        ClientMessage, ClientSequence, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerSnapshot,
-        ProtocolKey, RaceSnapshot, ServerMessage, decode_client_message, decode_server_message,
-        encode_client_message, encode_server_message,
+        ClientMessage, ClientSequence, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
+        PlayerSnapshot, ProtocolKey, RaceSnapshot, ServerMessage,
     };
 
     #[test]
@@ -240,6 +266,7 @@ mod tests {
         let message = ServerMessage::RaceSnapshot(RaceSnapshot {
             sequence: 7,
             phase: NetworkRacePhase::Racing,
+            mod_config: test_mod_config(),
             track_words: vec!["one".to_string(), "two".to_string()],
             bonuses: vec![BonusPointSnapshot {
                 after_word_index: 0,
@@ -282,5 +309,16 @@ mod tests {
         let decoded = decode_server_message(&encoded).unwrap();
 
         assert_eq!(decoded, message);
+    }
+
+    fn test_mod_config() -> ModConfigSnapshot {
+        ModConfigSnapshot {
+            word_set_id: "classic".to_string(),
+            word_set_name: "Classic".to_string(),
+            word_set_hash: "0000000000000001".to_string(),
+            item_pack_name: "classic".to_string(),
+            item_registry_hash: "0000000000000002".to_string(),
+            combined_hash: "0000000000000003".to_string(),
+        }
     }
 }

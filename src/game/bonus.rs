@@ -2,10 +2,10 @@
 
 use std::time::{Duration, Instant};
 
-use rand::{Rng, seq::SliceRandom, thread_rng};
+use rand::{seq::SliceRandom, thread_rng, Rng};
 
 use super::{
-    items::{ItemPickup, roll_item_with_proximity},
+    items::{ItemPickup, ItemRegistry, ItemRollContext},
     track::{Track, WordList},
 };
 
@@ -161,6 +161,7 @@ pub fn claim_bonus_choice(
     choice_index: usize,
     now: Instant,
     has_nearby_racer: bool,
+    item_registry: &ItemRegistry,
     rng: &mut impl Rng,
 ) -> Option<ItemPickup> {
     let choice = bonus_state
@@ -176,7 +177,7 @@ pub fn claim_bonus_choice(
     choice.status = BonusChoiceStatus::Cooldown {
         until: now + BONUS_COOLDOWN,
     };
-    Some(roll_item_with_proximity(rng, has_nearby_racer))
+    item_registry.roll_pickup(rng, ItemRollContext { has_nearby_racer })
 }
 
 fn bonus_word_pool(word_list: &WordList) -> Vec<String> {
@@ -240,13 +241,16 @@ fn pick_bonus_word(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand::{rngs::StdRng, SeedableRng};
 
     use super::{
-        BONUS_CHOICE_COUNT, BONUS_COOLDOWN, BonusChoice, BonusChoiceStatus, BonusPoint, BonusState,
-        claim_bonus_choice,
+        claim_bonus_choice, BonusChoice, BonusChoiceStatus, BonusPoint, BonusState,
+        BONUS_CHOICE_COUNT, BONUS_COOLDOWN,
     };
-    use crate::game::track::{Track, WordList};
+    use crate::game::{
+        items::ItemRegistry,
+        track::{Track, WordList},
+    };
 
     fn track(words: &[&str]) -> Track {
         Track::new(words.iter().map(|word| word.to_string()).collect())
@@ -291,7 +295,15 @@ mod tests {
             vec!["boost".to_string()],
         );
 
-        let item = claim_bonus_choice(&mut bonuses, 0, 1, now, false, &mut rng);
+        let item = claim_bonus_choice(
+            &mut bonuses,
+            0,
+            1,
+            now,
+            false,
+            &ItemRegistry::builtin(),
+            &mut rng,
+        );
 
         assert!(item.is_some());
         assert!(matches!(

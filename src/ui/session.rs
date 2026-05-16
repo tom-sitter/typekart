@@ -9,16 +9,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 
 use crate::game::{
     ai::AiDifficulty,
-    bonus::{BonusState, claim_bonus_choice},
+    bonus::{claim_bonus_choice, BonusState},
     effects::{ActiveEffect, AttackWarning, PendingAttack},
-    items::{HeldItem, ItemPickup, ItemUse, RacerPosition, select_nearest_banana_target},
+    items::{
+        select_nearest_banana_target, HeldItem, ItemPickup, ItemRegistry, ItemUse, RacerPosition,
+    },
+    mods::ActiveModConfig,
     player::PlayerState,
     track::{Track, WordList},
-    typing::{KeyAction, TypingEvent, apply_key, first_typo_index},
+    typing::{apply_key, first_typo_index, KeyAction, TypingEvent},
 };
 
 const MUSHROOM_BOOST_WORDS: usize = 3;
@@ -51,6 +54,7 @@ pub struct LocalSession {
     word_count: usize,
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
+    item_registry: ItemRegistry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +206,8 @@ impl LocalSession {
         word_list: WordList,
         ai_racer_count: usize,
         ai_difficulty: AiDifficulty,
+        item_registry: ItemRegistry,
+        active_mod_config: ActiveModConfig,
     ) -> Self {
         let mut events = EventLog::new(8);
         events.push("Press Space to start");
@@ -212,6 +218,7 @@ impl LocalSession {
         let ai_racer_count = ai_racer_count.min(MAX_AI_RACERS);
         let ai_racers = build_ai_racers(ai_racer_count, ai_difficulty, now);
         let mut run_log = RunLog::new(now, 500);
+        run_log.push(now, active_mod_config.log_summary());
         run_log.push(
             now,
             format!(
@@ -237,6 +244,7 @@ impl LocalSession {
             word_count,
             ai_racer_count,
             ai_difficulty,
+            item_registry,
         }
     }
 
@@ -256,6 +264,7 @@ impl LocalSession {
             ],
         };
         let mut run_log = RunLog::new(player.started_at, 500);
+        let item_registry = ItemRegistry::builtin();
         run_log.push(
             player.started_at,
             format!("test session created words={word_count}"),
@@ -278,6 +287,7 @@ impl LocalSession {
             word_count,
             ai_racer_count: 0,
             ai_difficulty: AiDifficulty::Easy,
+            item_registry,
         }
     }
 
@@ -544,6 +554,7 @@ impl LocalSession {
             choice_index,
             now,
             has_nearby_racer,
+            &self.item_registry,
             &mut rng,
         ) else {
             return;
@@ -979,6 +990,7 @@ impl LocalSession {
             attempt.choice_index,
             now,
             false,
+            &self.item_registry,
             &mut rng,
         ) else {
             self.bonus_attempt = None;
@@ -1339,10 +1351,12 @@ mod tests {
             ai::AiDifficulty,
             bonus::{BonusChoice, BonusPoint, BonusState},
             effects::ActiveEffect,
-            items::{HeldItem, ItemPickup},
+            items::{HeldItem, ItemPickup, ItemRegistry},
+            mods::{ActiveModConfig, ContentMetadata},
             player::PlayerState,
             track::{Track, WordList},
             typing::KeyAction,
+            words::WordSetDefinition,
         },
         ui::session::{
             AiRacer, AttackDirection, EventLog, ItemCue, ItemCueKind, LocalAction, LocalSession,
@@ -1367,6 +1381,18 @@ mod tests {
                 "hotel".to_string(),
             ],
         }
+    }
+
+    fn test_active_mod_config() -> ActiveModConfig {
+        let item_registry = ItemRegistry::builtin();
+        ActiveModConfig::new(
+            &WordSetDefinition {
+                metadata: ContentMetadata::built_in("classic", "Classic"),
+                words: word_list(),
+            },
+            &item_registry,
+            None,
+        )
     }
 
     fn bonuses() -> BonusState {
@@ -1424,6 +1450,8 @@ mod tests {
             word_list(),
             0,
             AiDifficulty::Easy,
+            ItemRegistry::builtin(),
+            test_active_mod_config(),
         );
 
         session.apply_action(LocalAction::Typing(KeyAction::Char('o')), now);
@@ -1441,6 +1469,8 @@ mod tests {
             word_list(),
             1,
             AiDifficulty::Hard,
+            ItemRegistry::builtin(),
+            test_active_mod_config(),
         );
 
         session.apply_action(LocalAction::Typing(KeyAction::Space), now);
@@ -1514,6 +1544,8 @@ mod tests {
             word_list(),
             8,
             AiDifficulty::Easy,
+            ItemRegistry::builtin(),
+            test_active_mod_config(),
         );
 
         assert_eq!(session.ai_racers.len(), 6);
@@ -1528,6 +1560,8 @@ mod tests {
             word_list(),
             3,
             AiDifficulty::Hard,
+            ItemRegistry::builtin(),
+            test_active_mod_config(),
         );
 
         assert!(session.ai_racers.iter().all(|ai| {
@@ -1546,6 +1580,8 @@ mod tests {
             word_list(),
             1,
             AiDifficulty::Hard,
+            ItemRegistry::builtin(),
+            test_active_mod_config(),
         );
 
         session.apply_action(LocalAction::Typing(KeyAction::Space), now);
@@ -1648,12 +1684,10 @@ mod tests {
 
         assert!(session.ai_racers[0].is_stunned(now));
         assert!(session.ai_racers[1].is_stunned(now));
-        assert!(
-            session
-                .run_log
-                .entries()
-                .any(|entry| entry.contains("player banana target=ai-2"))
-        );
+        assert!(session
+            .run_log
+            .entries()
+            .any(|entry| entry.contains("player banana target=ai-2")));
     }
 
     #[test]
@@ -1676,12 +1710,10 @@ mod tests {
                 direction: AttackDirection::Overlap
             }
         );
-        assert!(
-            session
-                .run_log
-                .entries()
-                .any(|entry| entry.contains("direction=Overlap cue_placement=after-overlap"))
-        );
+        assert!(session
+            .run_log
+            .entries()
+            .any(|entry| entry.contains("direction=Overlap cue_placement=after-overlap")));
     }
 
     #[test]
@@ -1706,12 +1738,10 @@ mod tests {
         assert!(!entries.contains(&"Hit ai-1"));
         assert!(!session.ai_racers[0].is_stunned(now));
         assert!(session.ai_racers[0].player.active_effects.is_empty());
-        assert!(
-            session
-                .run_log
-                .entries()
-                .any(|entry| entry.contains("ai-1 blocked Banana"))
-        );
+        assert!(session
+            .run_log
+            .entries()
+            .any(|entry| entry.contains("ai-1 blocked Banana")));
     }
 
     #[test]
@@ -1783,12 +1813,10 @@ mod tests {
 
         assert!(session.ai_racers[1].is_stunned(now));
         assert!(session.ai_racers[2].is_stunned(now));
-        assert!(
-            session
-                .run_log
-                .entries()
-                .any(|entry| entry.contains("ai-1 banana target=ai-3"))
-        );
+        assert!(session
+            .run_log
+            .entries()
+            .any(|entry| entry.contains("ai-1 banana target=ai-3")));
     }
 
     #[test]
@@ -1968,26 +1996,22 @@ mod tests {
         assert_eq!(session.player.word_index, 1);
         assert_eq!(session.player.stats.completed_words, 1);
         assert_eq!(session.player.held_item, None);
-        assert!(
-            session
-                .player
-                .active_effects
-                .iter()
-                .any(|effect| matches!(effect, ActiveEffect::Mushroom { .. }))
-        );
+        assert!(session
+            .player
+            .active_effects
+            .iter()
+            .any(|effect| matches!(effect, ActiveEffect::Mushroom { .. })));
 
         session.tick(now + std::time::Duration::from_secs_f64(0.4));
         assert_eq!(session.player.word_index, 2);
 
         session.tick(now + std::time::Duration::from_secs_f64(0.8));
         assert_eq!(session.player.word_index, 3);
-        assert!(
-            !session
-                .player
-                .active_effects
-                .iter()
-                .any(|effect| matches!(effect, ActiveEffect::Mushroom { .. }))
-        );
+        assert!(!session
+            .player
+            .active_effects
+            .iter()
+            .any(|effect| matches!(effect, ActiveEffect::Mushroom { .. })));
     }
 
     #[test]
@@ -2110,11 +2134,9 @@ mod tests {
         session.apply_action(LocalAction::ActivateItem, Instant::now());
 
         assert_eq!(session.player.held_item, None);
-        assert!(
-            session
-                .events
-                .entries()
-                .any(|entry| entry == "No racer in range")
-        );
+        assert!(session
+            .events
+            .entries()
+            .any(|entry| entry == "No racer in range"));
     }
 }

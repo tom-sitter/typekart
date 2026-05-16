@@ -42,7 +42,7 @@ pub fn words_per_minute(correct_chars: usize, elapsed: Duration) -> f64 {
 mod tests {
     use std::time::Duration;
 
-    use super::{TypingStats, words_per_minute};
+    use super::{words_per_minute, TypingStats};
 
     #[test]
     fn accuracy_is_perfect_before_typing() {

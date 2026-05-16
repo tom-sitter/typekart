@@ -204,7 +204,7 @@ This gives us the modding-shaped architecture while staying type-safe and easy t
 
 ### Stage 2: Configurable Item Packs
 
-Load definitions from `items/*.toml` or one `items.toml` file.
+Load definitions from `items/*.toml`, `items/*.json`, or one item-pack file.
 
 Only allow data-backed composition at first:
 
@@ -217,17 +217,20 @@ Do not load arbitrary code or scripts. Arbitrary code mods create security and d
 
 Example:
 
-```toml
-[[items]]
-id = "micro_mushroom"
-name = "Micro Mushroom"
-activation = "immediate"
-effect = "mushroom_boost"
-words = 1
-wpm = 220
-weight = 4
-ascii_cue = ">"
-unicode_cue = ">🍄"
+```json
+{
+  "items": [
+    {
+      "id": "banana",
+      "enabled": false
+    },
+    {
+      "id": "mushroom",
+      "standard_weight": 6,
+      "nearby_racer_weight": 8
+    }
+  ]
+}
 ```
 
 ## Multiplayer Compatibility
@@ -259,8 +262,8 @@ Clients should only render snapshot state.
 6. Migrate local `LocalSession` to call the same item engine.
 7. Replace item-specific snapshot fields with generic effect/cue snapshots.
 8. Replace renderer-specific item branches with generic cue rendering.
-9. Add optional config loading for host-defined item packs.
-10. Add active pack id/hash metadata and compatibility checks so joiners know which item pack the host is using.
+9. Done, first slice: Add optional JSON loading for host-defined item packs that tune/disable built-in items.
+10. Partially done: Add active item registry hash metadata to race snapshots and debug logs. Compatibility checks are still future work.
 
 ## Testing Strategy
 
@@ -302,5 +305,9 @@ The first implementation slice is in place:
 - `src/game/mods.rs` owns shared content ids and content metadata.
 - `src/game/items.rs` now uses `ItemDefinition` and `ItemRegistry::builtin()` for Mushroom, Banana, and Shield weights.
 - Existing public item enums remain in place so local play, network play, and render code keep their current behavior.
+- `play` and `host` support `--item-pack-file ./path/to/items.json`.
+- Custom item packs can currently change built-in item names, enabled flags, and standard/nearby roll weights.
+- Race snapshots include the active item pack name and effective item registry hash.
+- Debug logs include the active item registry hash and combined mod hash.
 
-Remaining item-modding work is the larger behavior refactor: a shared item engine, generic effect/cue snapshots, external item-pack file loading, and multiplayer compatibility metadata.
+This slice intentionally rejects unknown item ids. Adding new item effects still needs the larger behavior refactor: a shared item engine, generic effect/cue snapshots, richer external item-pack schema, and multiplayer compatibility checks.

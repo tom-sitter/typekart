@@ -5,9 +5,12 @@
 //! pieces of metadata that can later be sent over the network or shown in a
 //! lobby.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+use super::{items::ItemRegistry, words::WordSetDefinition};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContentId(String);
 
 impl ContentId {
@@ -42,13 +45,22 @@ impl ContentId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContentSource {
     BuiltIn,
     File { path: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl ContentSource {
+    pub fn label(&self) -> String {
+        match self {
+            Self::BuiltIn => "built-in".to_string(),
+            Self::File { path } => path.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentMetadata {
     pub id: ContentId,
     pub name: String,
@@ -65,9 +77,115 @@ impl ContentMetadata {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModHash(pub u64);
+
+impl ModHash {
+    pub fn hex(self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveModConfig {
+    pub word_set_id: String,
+    pub word_set_name: String,
+    pub word_set_source: String,
+    pub word_set_hash: ModHash,
+    pub item_pack_name: String,
+    pub item_pack_source: String,
+    pub item_registry_hash: ModHash,
+    pub combined_hash: ModHash,
+}
+
+impl ActiveModConfig {
+    pub fn new(
+        word_set: &WordSetDefinition,
+        item_registry: &ItemRegistry,
+        item_pack_source: Option<String>,
+    ) -> Self {
+        let word_set_hash = hash_words(&word_set.words.words);
+        let item_registry_hash = hash_item_registry(item_registry);
+        let item_pack_name = if item_pack_source.is_some() {
+            "custom".to_string()
+        } else {
+            "classic".to_string()
+        };
+        let item_pack_source = item_pack_source.unwrap_or_else(|| "built-in".to_string());
+        let combined_hash = stable_hash([
+            "typekart-mod-config",
+            word_set.metadata.id.as_str(),
+            &word_set_hash.hex(),
+            &item_pack_name,
+            &item_pack_source,
+            &item_registry_hash.hex(),
+        ]);
+
+        Self {
+            word_set_id: word_set.metadata.id.as_str().to_string(),
+            word_set_name: word_set.metadata.name.clone(),
+            word_set_source: word_set.metadata.source.label(),
+            word_set_hash,
+            item_pack_name,
+            item_pack_source,
+            item_registry_hash,
+            combined_hash,
+        }
+    }
+
+    pub fn log_summary(&self) -> String {
+        format!(
+            "mods word_set={} source={} word_hash={} item_pack={} item_source={} item_hash={} combined_hash={}",
+            self.word_set_id,
+            self.word_set_source,
+            self.word_set_hash.hex(),
+            self.item_pack_name,
+            self.item_pack_source,
+            self.item_registry_hash.hex(),
+            self.combined_hash.hex()
+        )
+    }
+}
+
+fn hash_words(words: &[String]) -> ModHash {
+    stable_hash(words.iter().map(String::as_str))
+}
+
+fn hash_item_registry(item_registry: &ItemRegistry) -> ModHash {
+    let fields = item_registry.items.iter().flat_map(|item| {
+        [
+            item.id.as_str().to_string(),
+            item.name.clone(),
+            format!("{:?}", item.pickup),
+            format!("{:?}", item.activation),
+            item.standard_weight.to_string(),
+            item.nearby_racer_weight.to_string(),
+            item.enabled.to_string(),
+        ]
+    });
+
+    stable_hash(fields)
+}
+
+fn stable_hash(parts: impl IntoIterator<Item = impl AsRef<str>>) -> ModHash {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET;
+    for part in parts {
+        for byte in part.as_ref().as_bytes().iter().copied().chain([0]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+
+    ModHash(hash)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ContentId;
+    use super::{stable_hash, ActiveModConfig, ContentId};
+    use crate::game::{items::ItemRegistry, words::WordSetDefinition};
 
     #[test]
     fn content_ids_accept_cli_safe_values() {
@@ -86,5 +204,28 @@ mod tests {
         assert!(ContentId::new("Classic").is_err());
         assert!(ContentId::new("space words").is_err());
         assert!(ContentId::new("").is_err());
+    }
+
+    #[test]
+    fn stable_hash_is_deterministic() {
+        assert_eq!(
+            stable_hash(["alpha", "bravo"]),
+            stable_hash(["alpha", "bravo"])
+        );
+        assert_ne!(
+            stable_hash(["alpha", "bravo"]),
+            stable_hash(["bravo", "alpha"])
+        );
+    }
+
+    #[test]
+    fn active_mod_config_summarizes_builtin_content() {
+        let word_set = WordSetDefinition::load_builtin_default().unwrap();
+        let item_registry = ItemRegistry::builtin();
+        let config = ActiveModConfig::new(&word_set, &item_registry, None);
+
+        assert_eq!(config.word_set_id, "classic");
+        assert_eq!(config.item_pack_name, "classic");
+        assert!(config.log_summary().contains("combined_hash="));
     }
 }

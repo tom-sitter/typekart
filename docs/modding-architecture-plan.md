@@ -109,11 +109,14 @@ Do not make `game::mods` depend on Ratatui, sockets, local terminal sessions, or
 
 When implementing item and word set modding, build these pieces in a general way:
 
-- `ModPackManifest` with built-in default metadata.
-- `ModPackHash` for the active built-in pack, even before external files exist.
-- `ContentId` conventions shared by items, word sets, and future themes/rules.
+- Done: `ContentId` conventions shared by items, word sets, and future themes/rules.
+- Done: `ActiveModConfig` metadata for the selected word set and effective item registry.
+- Done: Stable hashes for selected word-set contents, item registry contents, and the combined active mod config.
+- Done: Race snapshots expose mod metadata for connected clients.
+- Done: Local and network debug logs include the active mod summary.
+- Later: `ModPackManifest` with built-in default metadata.
 - `ContentRegistry` validation helpers for duplicate ids and unknown references.
-- Network metadata field for the active pack id/hash.
+- Later: richer lobby metadata and compatibility checks before race start.
 
 This keeps future word packs and rules packs from needing a second compatibility mechanism.
 
@@ -133,7 +136,7 @@ For now, the server can expose pack metadata in lobby/race snapshots as informat
 Suggested stages:
 
 1. Built-in registries only.
-2. Optional local files loaded by the host.
+2. Optional local files loaded by the host. First implemented examples are `--word-set-file` for custom word lists, `--word-set-dir` for random selection from a directory of word sets, and `--item-pack-file` for JSON item packs that tune built-in items.
 3. Host sends metadata and display definitions to clients.
 4. Optional client-side local display packs.
 

@@ -4,9 +4,13 @@
 //! adds the modding-facing wrapper around it: ids, display names, sources, and
 //! stricter validation for user-provided files.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
+use rand::{seq::SliceRandom, thread_rng};
 
 use super::{
     mods::{ContentId, ContentMetadata, ContentSource},
@@ -70,9 +74,65 @@ impl WordSetDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordSetCollection {
+    pub name: String,
+    pub source_dir: PathBuf,
+    pub sets: Vec<WordSetDefinition>,
+}
+
+impl WordSetCollection {
+    pub fn load_dir(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let mut entries = fs::read_dir(path)
+            .with_context(|| format!("failed to read word set directory {}", path.display()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .with_context(|| format!("failed to read word set directory {}", path.display()))?;
+        entries.sort_by_key(|entry| entry.path());
+
+        let word_set_paths = entries
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("txt"))
+            .collect::<Vec<_>>();
+
+        if word_set_paths.is_empty() {
+            bail!(
+                "word set directory {} does not contain any .txt word sets",
+                path.display()
+            );
+        }
+
+        let sets = word_set_paths
+            .iter()
+            .map(WordSetDefinition::load_file)
+            .collect::<Result<Vec<_>>>()?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("word sets")
+            .replace(['-', '_'], " ");
+
+        Ok(Self {
+            name,
+            source_dir: path.to_path_buf(),
+            sets,
+        })
+    }
+
+    pub fn choose_random(&self) -> Result<WordSetDefinition> {
+        self.sets
+            .choose(&mut thread_rng())
+            .cloned()
+            .with_context(|| format!("word set collection '{}' is empty", self.name))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WordSetSelection {
     BuiltIn(String),
     File(PathBuf),
+    Directory(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +154,7 @@ impl WordSetRegistry {
         match selection {
             WordSetSelection::BuiltIn(id) => self.load_builtin(id),
             WordSetSelection::File(path) => WordSetDefinition::load_file(path),
+            WordSetSelection::Directory(path) => WordSetCollection::load_dir(path)?.choose_random(),
         }
     }
 
@@ -158,7 +219,9 @@ fn is_playable_word(word: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{WordSetDefinition, WordSetRegistry, WordSetSelection, validate_word_set};
+    use super::{
+        validate_word_set, WordSetCollection, WordSetDefinition, WordSetRegistry, WordSetSelection,
+    };
     use crate::game::track::WordList;
 
     #[test]
@@ -217,5 +280,53 @@ mod tests {
         assert_eq!(word_set.words.words.len(), 3);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn word_set_collection_loads_txt_files_from_directory() {
+        let dir = std::env::temp_dir().join(format!("typekart-word-sets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("animals.txt"), "alpha\nbravo\ncharlie\n").unwrap();
+        std::fs::write(dir.join("ignored.md"), "delta\necho\nfoxtrot\n").unwrap();
+
+        let collection = WordSetCollection::load_dir(&dir).unwrap();
+
+        assert_eq!(collection.sets.len(), 1);
+        assert_eq!(collection.sets[0].metadata.id.as_str(), "animals");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn word_set_collection_rejects_directories_without_txt_files() {
+        let dir =
+            std::env::temp_dir().join(format!("typekart-empty-word-sets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.md"), "alpha\nbravo\ncharlie\n").unwrap();
+
+        let result = WordSetCollection::load_dir(&dir);
+
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn registry_can_select_from_word_set_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "typekart-registry-word-sets-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("one.txt"), "alpha\nbravo\ncharlie\n").unwrap();
+        std::fs::write(dir.join("two.txt"), "delta\necho\nfoxtrot\n").unwrap();
+
+        let word_set = WordSetRegistry::builtin()
+            .load(&WordSetSelection::Directory(dir.clone()))
+            .unwrap();
+
+        assert!(["one", "two"].contains(&word_set.metadata.id.as_str()));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
