@@ -223,14 +223,24 @@ pub fn run_host(config: HostConfig) -> Result<()> {
 
         let (player_id, assigned_color) = {
             let mut state = state.lock().expect("host state poisoned");
-            if connected_player_count(&state.players) >= config.max_players {
+            let connected_players = connected_player_count(&state.players);
+            if connected_players >= config.max_players {
                 send_server_message(
                     stream,
                     &ServerMessage::Error {
-                        message: "Lobby is full".to_string(),
+                        message: format!(
+                            "Lobby is full: {connected_players}/{} connected players",
+                            config.max_players
+                        ),
                     },
                 )?;
-                push_network_log(&state.debug_log, "join rejected: lobby full");
+                push_network_log(
+                    &state.debug_log,
+                    format!(
+                        "join rejected: lobby full {connected_players}/{}",
+                        config.max_players
+                    ),
+                );
                 continue;
             }
 
@@ -458,6 +468,19 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         match message {
             ClientMessage::SetReady { ready } => {
                 let mut state = state.lock().expect("host state poisoned");
+                if !matches!(
+                    state.phase,
+                    NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
+                ) {
+                    push_network_log(
+                        &state.debug_log,
+                        format!(
+                            "ignored ready={} from player={} phase={:?}",
+                            ready, player_id.0, state.phase
+                        ),
+                    );
+                    continue;
+                }
                 if let Some(player) = state
                     .players
                     .iter_mut()
@@ -483,6 +506,23 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                 } else {
                     server_println!(
                         "Ignoring start request from non-host player {}",
+                        player_id.0
+                    );
+                }
+            }
+            ClientMessage::RestartRace => {
+                if player_id == PlayerId(1) {
+                    let mut state = state.lock().expect("host state poisoned");
+                    if let Err(error) = return_to_lobby_for_rematch(&mut state) {
+                        server_eprintln!("Failed to return to lobby: {error:#}");
+                        push_network_log(
+                            &state.debug_log,
+                            format!("failed to return to lobby: {error:#}"),
+                        );
+                    }
+                } else {
+                    server_println!(
+                        "Ignoring rematch request from non-host player {}",
                         player_id.0
                     );
                 }
@@ -688,6 +728,23 @@ fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
         &state.debug_log,
         format!("prepared rematch racers={}", state.race.players.len()),
     );
+
+    Ok(())
+}
+
+fn return_to_lobby_for_rematch(state: &mut HostState) -> Result<()> {
+    if state.phase != NetworkRacePhase::Finished {
+        return Ok(());
+    }
+
+    reset_race_from_lobby(state)?;
+    push_network_log(&state.debug_log, "returned to lobby for rematch");
+    if let Err(error) = broadcast_race_snapshot(state) {
+        server_eprintln!("Failed to broadcast rematch race snapshot: {error:#}");
+    }
+    if let Err(error) = broadcast_lobby_snapshot(state) {
+        server_eprintln!("Failed to broadcast rematch lobby snapshot: {error:#}");
+    }
 
     Ok(())
 }
@@ -1972,8 +2029,8 @@ mod tests {
         build_race_result_rows, build_race_snapshot, cleanup_disconnected_waiting_players,
         client_is_in_current_race, connected_player_count, first_available_color,
         handle_client_messages, push_event, read_join_hello, reconcile_phase_after_disconnect,
-        reset_race_from_lobby, update_host_ready, update_race_status, welcome_joiner,
-        AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
+        reset_race_from_lobby, return_to_lobby_for_rematch, update_host_ready, update_race_status,
+        welcome_joiner, AssignedColor, ConnectedClient, HostState, NetworkRacePhase, PlayerId,
         POST_FIRST_FINISH_TIMEOUT,
     };
     use crate::game::{
@@ -2241,6 +2298,20 @@ mod tests {
         reset_race_from_lobby(&mut state).unwrap();
 
         assert!(client_is_in_current_race(&state.race, PlayerId(3)));
+    }
+
+    #[test]
+    fn return_to_lobby_for_rematch_resets_finished_race() {
+        let mut state = test_host_state(NetworkRacePhase::Finished);
+        state.placements = vec![PlayerId(2), PlayerId(1)];
+        state.race_results_sent = true;
+
+        return_to_lobby_for_rematch(&mut state).unwrap();
+
+        assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
+        assert!(state.placements.is_empty());
+        assert!(!state.race_results_sent);
+        assert_eq!(state.race.players.len(), 2);
     }
 
     #[test]

@@ -254,6 +254,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
             key_event,
             &mut lobby_command,
             state.is_host(),
+            state.current_phase(),
             &log,
         )? {
             break;
@@ -310,6 +311,13 @@ impl NetworkViewState {
 
     fn is_host(&self) -> bool {
         self.host_id == Some(self.player_id)
+    }
+
+    fn current_phase(&self) -> NetworkRacePhase {
+        self.race_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.phase)
+            .unwrap_or(NetworkRacePhase::WaitingForHost)
     }
 
     fn apply_race_snapshot(&mut self, snapshot: RaceSnapshot) {
@@ -391,18 +399,27 @@ fn handle_lobby_key(
     key_event: KeyEvent,
     lobby_command: &mut String,
     is_host: bool,
+    phase: NetworkRacePhase,
     log: &Option<SharedNetworkLog>,
 ) -> Result<bool> {
-    if is_host && lobby_command.is_empty() && key_event.code == KeyCode::Char(' ') {
+    if space_starts_countdown(is_host, phase)
+        && lobby_command.is_empty()
+        && key_event.code == KeyCode::Char(' ')
+    {
         send_client_message(stream, &ClientMessage::StartCountdown)?;
         push_network_log(log, "client sent start countdown");
         return Ok(false);
     }
 
     if is_enter_key(key_event) {
-        let should_leave = send_lobby_command(stream, lobby_command.trim(), is_host, log)?;
+        let should_leave =
+            send_lifecycle_command(stream, lobby_command.trim(), is_host, phase, log)?;
         lobby_command.clear();
         return Ok(should_leave);
+    }
+
+    if !phase_accepts_typed_commands(is_host, phase) {
+        return Ok(false);
     }
 
     match key_event.code {
@@ -428,25 +445,61 @@ fn is_enter_key(key_event: KeyEvent) -> bool {
         && key_event.modifiers.contains(KeyModifiers::CONTROL))
 }
 
-fn send_lobby_command(
+fn send_lifecycle_command(
     stream: &mut std::net::TcpStream,
     command: &str,
     is_host: bool,
+    phase: NetworkRacePhase,
     log: &Option<SharedNetworkLog>,
 ) -> Result<bool> {
-    let message = match command {
-        "ready" => ClientMessage::SetReady { ready: true },
-        "unready" => ClientMessage::SetReady { ready: false },
-        "start" if is_host => ClientMessage::StartCountdown,
-        "quit" | "leave" => ClientMessage::Leave,
-        "" => return Ok(false),
-        _ => return Ok(false),
+    let Some(message) = lifecycle_command_message(command, is_host, phase) else {
+        return Ok(false);
     };
 
     send_client_message(stream, &message)?;
     push_network_log(log, format!("client sent lobby command={command}"));
 
     Ok(matches!(message, ClientMessage::Leave))
+}
+
+fn lifecycle_command_message(
+    command: &str,
+    is_host: bool,
+    phase: NetworkRacePhase,
+) -> Option<ClientMessage> {
+    match (command, phase) {
+        ("ready", NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost) => {
+            Some(ClientMessage::SetReady { ready: true })
+        }
+        ("unready", NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost) => {
+            Some(ClientMessage::SetReady { ready: false })
+        }
+        ("start", NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost) if is_host => {
+            Some(ClientMessage::StartCountdown)
+        }
+        ("start", NetworkRacePhase::Finished) if is_host => Some(ClientMessage::StartCountdown),
+        ("lobby" | "restart" | "rematch", NetworkRacePhase::Finished) if is_host => {
+            Some(ClientMessage::RestartRace)
+        }
+        ("quit" | "leave", _) => Some(ClientMessage::Leave),
+        ("", _) => None,
+        _ => None,
+    }
+}
+
+fn space_starts_countdown(is_host: bool, phase: NetworkRacePhase) -> bool {
+    is_host
+        && matches!(
+            phase,
+            NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost | NetworkRacePhase::Finished
+        )
+}
+
+fn phase_accepts_typed_commands(is_host: bool, phase: NetworkRacePhase) -> bool {
+    matches!(
+        phase,
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
+    ) || (is_host && phase == NetworkRacePhase::Finished)
 }
 
 fn send_race_key(
@@ -1516,21 +1569,14 @@ fn short_hash(hash: &str) -> String {
 }
 
 fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragraph<'a> {
-    let text = match state
-        .race_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.phase)
-        .unwrap_or(NetworkRacePhase::WaitingForHost)
-    {
+    let phase = state.current_phase();
+    let text = match phase {
+        NetworkRacePhase::Countdown { .. } => "Countdown active. Esc/Ctrl-C leaves.",
         NetworkRacePhase::Racing => "Type letters, Space, and Backspace. Esc/Ctrl-C leaves.",
         _ => "",
     };
     let line = if text.is_empty() {
-        let commands = if state.is_host() {
-            "    ready | unready | start | Space starts | quit"
-        } else {
-            "    ready | unready | quit"
-        };
+        let commands = lifecycle_command_help(state.is_host(), phase);
         Line::from(vec![
             Span::raw("Command: "),
             Span::styled(
@@ -1544,6 +1590,18 @@ fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragrap
     };
 
     Paragraph::new(line).block(Block::default().borders(Borders::TOP))
+}
+
+fn lifecycle_command_help(is_host: bool, phase: NetworkRacePhase) -> &'static str {
+    match phase {
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost if is_host => {
+            "    ready | unready | start | Space starts | quit"
+        }
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => "    ready | unready | quit",
+        NetworkRacePhase::Finished if is_host => "    lobby returns | start/Space rematch | quit",
+        NetworkRacePhase::Finished => "    wait for host | quit",
+        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => "",
+    }
 }
 
 fn connection_style(disconnected: bool) -> Style {
@@ -1580,13 +1638,15 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        display_word_number, network_bonus_column, network_minimap_column, network_racer_label,
-        stream_index_for_word_char, visible_network_bonus_point, AssignedColor,
-        NetworkMarkerPosition, NetworkTrackWindow, NetworkViewState, PlayerId, PlayerSnapshot,
+        display_word_number, lifecycle_command_help, lifecycle_command_message,
+        network_bonus_column, network_minimap_column, network_racer_label,
+        phase_accepts_typed_commands, space_starts_countdown, stream_index_for_word_char,
+        visible_network_bonus_point, AssignedColor, NetworkMarkerPosition, NetworkTrackWindow,
+        NetworkViewState, PlayerId, PlayerSnapshot,
     };
     use crate::net::protocol::{
-        BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ModConfigSnapshot,
-        NetworkRacePhase, RaceSnapshot,
+        BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
+        ModConfigSnapshot, NetworkRacePhase, RaceSnapshot,
     };
 
     #[test]
@@ -1715,6 +1775,44 @@ mod tests {
         assert!(state.race_snapshot.is_none());
         assert!(state.placements.is_empty());
         assert!(state.result_rows.is_empty());
+    }
+
+    #[test]
+    fn lifecycle_commands_are_phase_aware() {
+        assert_eq!(
+            lifecycle_command_message("ready", true, NetworkRacePhase::WaitingForHost),
+            Some(ClientMessage::SetReady { ready: true })
+        );
+        assert_eq!(
+            lifecycle_command_message("ready", true, NetworkRacePhase::Racing),
+            None
+        );
+        assert_eq!(
+            lifecycle_command_message("lobby", true, NetworkRacePhase::Finished),
+            Some(ClientMessage::RestartRace)
+        );
+        assert_eq!(
+            lifecycle_command_message("lobby", false, NetworkRacePhase::Finished),
+            None
+        );
+    }
+
+    #[test]
+    fn lifecycle_help_hides_irrelevant_commands() {
+        assert!(lifecycle_command_help(true, NetworkRacePhase::WaitingForHost).contains("ready"));
+        assert!(!lifecycle_command_help(true, NetworkRacePhase::Finished).contains("ready"));
+        assert!(lifecycle_command_help(true, NetworkRacePhase::Finished).contains("lobby"));
+        assert_eq!(
+            lifecycle_command_help(false, NetworkRacePhase::Finished),
+            "    wait for host | quit"
+        );
+        assert!(!phase_accepts_typed_commands(
+            true,
+            NetworkRacePhase::Countdown {
+                remaining_seconds: 2
+            }
+        ));
+        assert!(space_starts_countdown(true, NetworkRacePhase::Finished));
     }
 
     fn words<const N: usize>(words: [&str; N]) -> Vec<String> {

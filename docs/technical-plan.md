@@ -674,7 +674,7 @@ See `docs/modding-architecture-plan.md` for the shared modding architecture, `do
 - Item weighting.
 - Star Power.
 - Blue Shell.
-- More robust terminal controls.
+- Phase-aware terminal controls.
 - Lobby display refinements.
 - Manual LAN validation across multiple machines.
 

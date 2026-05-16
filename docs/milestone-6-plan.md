@@ -103,6 +103,7 @@ Target behavior:
 - Disconnected unfinished racers can be ranked after active racers at timeout.
 - If all remaining active racers finish or all racers disconnect, the race ends cleanly.
 - After results, the host can start a fresh race using the currently connected lobby players, including players who joined while the previous race was active.
+- After results, the host can use `lobby`, `restart`, or `rematch` to return everyone to the lobby before starting again, or use `start` / `Space` to start the rematch countdown directly.
 
 Validation:
 
@@ -147,11 +148,14 @@ Validation:
 
 ### Slice 6: Terminal Control Polish
 
+Status: partially implemented for phase-aware network command display and parsing.
+
 Make lobby and race controls easier to discover and less fragile.
 
 Deliverables:
 
 - Improve footer/help text.
+- Drive available commands from the current network phase so irrelevant commands are hidden and ignored.
 - Decide whether a lightweight help overlay is worthwhile.
 - Validate key handling on common terminal environments.
 - Keep manual item activation reserved until held items return.
