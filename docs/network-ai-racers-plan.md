@@ -96,7 +96,7 @@ Validation:
 
 ### Slice 3: Server AI Typing
 
-Status: implemented for main-track typing. Bonus claiming and item use remain separate slices.
+Status: implemented.
 
 Move or reuse local AI typing behavior on the host.
 
@@ -107,7 +107,7 @@ Deliverables:
 - On race ticks, apply AI key input through server-authoritative typing paths.
 - Respect countdown/racing/finished states.
 - Respect stun and Mushroom input pause.
-- Keep main-track AI typing separate from bonus intent inference until Slice 4.
+- Keep main-track AI typing separate from human bonus intent inference; bot bonus claiming is handled explicitly in Slice 4.
 
 Validation:
 
@@ -116,6 +116,8 @@ Validation:
 - Bot movement is visible to joiners through normal snapshots.
 
 ### Slice 4: Bonus Claiming
+
+Status: implemented.
 
 Let bots claim bonus words using the same server bonus state as humans.
 
@@ -133,6 +135,8 @@ Validation:
 - Bots cannot claim while shielded, boosted, stunned, or ineligible.
 
 ### Slice 5: Item Interactions
+
+Status: implemented for current built-in network items.
 
 Wire bot item effects through existing server-owned item resolution.
 
@@ -153,11 +157,13 @@ Validation:
 
 ### Slice 6: Rematch And Cleanup
 
+Status: implemented for the host-owned bot model.
+
 Make bots work across race lifecycle transitions.
 
 Deliverables:
 
-- Rebuild bots for each rematch/new race.
+- Rebuild bot race state for each rematch/new race.
 - Keep bot count stable unless the host restarts with different CLI options.
 - Ensure bots do not occupy disconnected human cleanup paths.
 

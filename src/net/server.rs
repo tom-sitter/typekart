@@ -793,10 +793,7 @@ fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
             now,
         );
     }
-    for ai in state.ai_racers.values_mut() {
-        ai.char_budget = 0.0;
-        ai.last_update = now;
-    }
+    reset_network_ai_timing(state, now);
 
     state.bonuses = BonusState::generate(&state.race.track, &state.word_list);
     state.bonus_attempts.clear();
@@ -1382,6 +1379,9 @@ fn apply_network_banana_to_player(
     let target = &mut state.race.players[target_index];
     target.state.input.clear();
     target.state.typo_index = None;
+    if let Some(ai) = state.ai_racers.get_mut(&target_id) {
+        ai.char_budget = 0.0;
+    }
     let effects = state.player_effects.entry(target_id).or_default();
     let banana = state.item_registry.banana_effect();
     effects.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
@@ -1495,10 +1495,78 @@ fn advance_network_mushroom_one_word(
 }
 
 fn advance_network_ai_racers(state: &mut HostState, now: Instant) {
+    if state.phase != NetworkRacePhase::Racing {
+        reset_network_ai_timing(state, now);
+        return;
+    }
+
     let player_ids = state.ai_racers.keys().copied().collect::<Vec<_>>();
     for player_id in player_ids {
+        network_ai_try_claim_bonus(state, player_id, now);
         advance_network_ai_typing(state, player_id, now);
     }
+}
+
+fn reset_network_ai_timing(state: &mut HostState, now: Instant) {
+    for ai in state.ai_racers.values_mut() {
+        ai.char_budget = 0.0;
+        ai.last_update = now;
+    }
+}
+
+fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: Instant) {
+    let Some(player) = state.race.player(RacePlayerId(player_id.0)) else {
+        return;
+    };
+    if player.state.held_item.is_some()
+        || player.state.has_active_shield(now)
+        || player_has_active_mushroom_effect(player, now)
+        || player_is_stunned(state, player_id, now)
+        || state
+            .player_effects
+            .get(&player_id)
+            .and_then(|effects| effects.item_cue.as_ref())
+            .is_some_and(|cue| cue.until > now)
+        || player.state.typo_index.is_some()
+        || !player.state.input.is_empty()
+        || player.state.is_finished()
+        || state.bonus_attempts.contains_key(&player_id)
+    {
+        return;
+    }
+
+    let Some((point_index, point)) = state.bonuses.point_for_gap(player.state.word_index) else {
+        return;
+    };
+    if state
+        .spent_bonus_gaps
+        .get(&player_id)
+        .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
+    {
+        return;
+    }
+
+    let available_choices = point
+        .choices
+        .iter()
+        .enumerate()
+        .filter(|(_, choice)| choice.is_available(now))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if available_choices.is_empty() {
+        return;
+    }
+
+    let mut rng = thread_rng();
+    let choice_index = available_choices[rng.gen_range(0..available_choices.len())];
+    state.bonus_attempts.insert(
+        player_id,
+        NetworkBonusAttempt {
+            point_index,
+            choice_index,
+        },
+    );
+    claim_network_bonus(state, player_id, now);
 }
 
 fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: Instant) {
@@ -1713,6 +1781,7 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
     }
 
     guard.phase = NetworkRacePhase::Racing;
+    reset_network_ai_timing(&mut guard, Instant::now());
     push_event(&mut guard, "Race started".to_string());
     push_network_log(&guard.debug_log, "race started");
     server_println!("Race started");
@@ -2295,7 +2364,7 @@ mod tests {
         ai::AiDifficulty,
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         effects::ActiveEffect,
-        items::{HeldItem, ItemPickup, ItemRegistry},
+        items::{HeldItem, ItemActivation, ItemDefinition, ItemPickup, ItemRegistry},
         mods::{ActiveModConfig, ContentMetadata},
         race::{PlayerColorId, RacePlayerId, RaceState},
         stats::TypingStats,
@@ -2569,6 +2638,125 @@ mod tests {
     }
 
     #[test]
+    fn network_ai_racer_does_not_advance_or_accrue_budget_during_countdown() {
+        let now = Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Countdown {
+            remaining_seconds: 3,
+        });
+        state.players[1].kind = PlayerKind::Bot;
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                words_per_minute: 120.0,
+                char_budget: 4.0,
+                last_update: now - Duration::from_secs(10),
+            },
+        );
+
+        advance_network_ai_racers(&mut state, now);
+
+        let bot = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(bot.state.word_index, 0);
+        assert_eq!(bot.state.input, "");
+        let ai = state.ai_racers.get(&PlayerId(2)).unwrap();
+        assert_eq!(ai.char_budget, 0.0);
+        assert_eq!(ai.last_update, now);
+
+        state.phase = NetworkRacePhase::Racing;
+        advance_network_ai_racers(&mut state, now + Duration::from_millis(50));
+
+        let bot = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(bot.state.word_index, 0);
+        assert_eq!(bot.state.input, "");
+        assert!(state.ai_racers.get(&PlayerId(2)).unwrap().char_budget < 1.0);
+    }
+
+    #[test]
+    fn network_ai_racer_can_claim_bonus_and_activate_shield() {
+        let now = Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players[1].kind = PlayerKind::Bot;
+        state.item_registry = test_single_item_registry(ItemPickup::Shield);
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                words_per_minute: 60.0,
+                char_budget: 0.0,
+                last_update: now,
+            },
+        );
+        state.race.players[1].state.word_index = 1;
+
+        advance_network_ai_racers(&mut state, now);
+
+        let bot = state.race.player(RacePlayerId(2)).unwrap();
+        assert!(bot.state.has_active_shield(now));
+        assert!(state.bonuses.points[0]
+            .choices
+            .iter()
+            .any(|choice| matches!(choice.status, BonusChoiceStatus::Cooldown { .. })));
+        assert_eq!(state.spent_bonus_gaps.get(&PlayerId(2)), Some(&0));
+        assert!(state.events.iter().any(|event| event == "alex got Shield"));
+    }
+
+    #[test]
+    fn network_ai_racer_can_claim_bonus_and_hit_human_with_banana() {
+        let now = Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players[1].kind = PlayerKind::Bot;
+        state.item_registry = test_single_item_registry(ItemPickup::Held(HeldItem::Banana));
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                words_per_minute: 60.0,
+                char_budget: 0.0,
+                last_update: now,
+            },
+        );
+        state.race.players[0].state.word_index = 1;
+        state.race.players[1].state.word_index = 1;
+
+        advance_network_ai_racers(&mut state, now);
+
+        assert!(state
+            .player_effects
+            .get(&PlayerId(1))
+            .and_then(|effects| effects.stunned_until)
+            .is_some_and(|until| until > now));
+        assert!(state
+            .player_effects
+            .get(&PlayerId(2))
+            .and_then(|effects| effects.item_cue.as_ref())
+            .is_some_and(|cue| cue.until > now));
+        assert!(state.events.iter().any(|event| event == "alex hit host"));
+    }
+
+    #[test]
+    fn human_banana_resets_network_ai_typing_budget() {
+        let now = Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players[1].kind = PlayerKind::Bot;
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                words_per_minute: 60.0,
+                char_budget: 3.0,
+                last_update: now,
+            },
+        );
+
+        let result = apply_network_banana_to_player(&mut state, PlayerId(2), now);
+
+        assert_eq!(result, Some(super::BananaResolution::SpunOut));
+        assert_eq!(state.ai_racers.get(&PlayerId(2)).unwrap().char_budget, 0.0);
+        assert!(state
+            .player_effects
+            .get(&PlayerId(2))
+            .and_then(|effects| effects.stunned_until)
+            .is_some_and(|until| until > now));
+    }
+
+    #[test]
     fn waiting_cleanup_removes_disconnected_players_from_next_race_roster() {
         let mut state = test_host_state(NetworkRacePhase::WaitingForHost);
         state.players[1].connected = false;
@@ -2658,6 +2846,33 @@ mod tests {
         assert!(state.placements.is_empty());
         assert!(!state.race_results_sent);
         assert_eq!(state.race.players.len(), 2);
+    }
+
+    #[test]
+    fn rematch_keeps_network_ai_racers_and_resets_ai_timing_state() {
+        let now = Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Finished);
+        state.players[1].kind = PlayerKind::Bot;
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                words_per_minute: 60.0,
+                char_budget: 5.0,
+                last_update: now - Duration::from_secs(5),
+            },
+        );
+        finish_player(&mut state, RacePlayerId(2), now);
+
+        reset_race_from_lobby(&mut state).unwrap();
+
+        assert!(client_is_in_current_race(&state.race, PlayerId(2)));
+        assert_eq!(
+            state.race.player(RacePlayerId(2)).unwrap().state.word_index,
+            0
+        );
+        let ai = state.ai_racers.get(&PlayerId(2)).unwrap();
+        assert_eq!(ai.char_budget, 0.0);
+        assert!(ai.last_update >= now);
     }
 
     #[test]
@@ -3210,6 +3425,18 @@ mod tests {
             &item_registry,
             None,
         )
+    }
+
+    fn test_single_item_registry(pickup: ItemPickup) -> ItemRegistry {
+        let (id, name, activation) = match pickup {
+            ItemPickup::Held(HeldItem::Mushroom) => ("mushroom", "Mushroom", ItemActivation::Held),
+            ItemPickup::Held(HeldItem::Banana) => ("banana", "Banana", ItemActivation::Held),
+            ItemPickup::Shield => ("shield", "Shield", ItemActivation::Immediate),
+        };
+        ItemRegistry::new(vec![ItemDefinition::built_in(
+            id, name, pickup, activation, 1, 1,
+        )])
+        .unwrap()
     }
 
     fn test_host_state(phase: NetworkRacePhase) -> HostState {
