@@ -292,6 +292,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                     std::time::Instant::now(),
                 );
             }
+            push_event(&mut state, format!("{player_name} joined"));
             push_network_log(
                 &state.debug_log,
                 format!(
@@ -489,6 +490,10 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                     let name = player.name.clone();
                     player.ready = ready;
                     server_println!("{} is {}", name, if ready { "ready" } else { "not ready" });
+                    push_event(
+                        &mut state,
+                        format!("{} {}", name, if ready { "ready" } else { "not ready" }),
+                    );
                     push_network_log(&state.debug_log, format!("{name} ready={ready}"));
                 }
                 print_lobby_snapshot(&state.players);
@@ -566,6 +571,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         player.connected = false;
         player.ready = false;
         server_println!("{name} disconnected");
+        push_event(&mut state, format!("{name} disconnected"));
         push_network_log(&state.debug_log, format!("{name} disconnected"));
     }
     if let Some(player) = state
@@ -630,6 +636,7 @@ fn broadcast_lobby_snapshot(state: &mut HostState) -> Result<()> {
         players: state.players.clone(),
         host_id: PlayerId(1),
         mod_config: (&state.active_mod_config).into(),
+        events: state.events.clone(),
     };
 
     let mut failed_clients = Vec::new();
@@ -738,6 +745,7 @@ fn return_to_lobby_for_rematch(state: &mut HostState) -> Result<()> {
     }
 
     reset_race_from_lobby(state)?;
+    push_event(state, "Returned to lobby".to_string());
     push_network_log(&state.debug_log, "returned to lobby for rematch");
     if let Err(error) = broadcast_race_snapshot(state) {
         server_eprintln!("Failed to broadcast rematch race snapshot: {error:#}");
@@ -2196,8 +2204,9 @@ mod tests {
             .all(|player| player.id != RacePlayerId(2)));
         assert!(matches!(
             decode_server_message(snapshot_line.trim_end()).unwrap(),
-            ServerMessage::LobbySnapshot { ref players, .. }
+            ServerMessage::LobbySnapshot { ref players, ref events, .. }
                 if players.iter().any(|player| player.id == PlayerId(2) && player.ready)
+                    && events.iter().any(|event| event == "alex ready")
         ));
     }
 

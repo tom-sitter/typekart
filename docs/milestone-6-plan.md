@@ -115,6 +115,8 @@ Validation:
 
 ### Slice 4: Event Feed Polish
 
+Status: partially implemented for lobby event wiring and normalized lifecycle events.
+
 Make the event feed useful for racers without overloading it.
 
 Deliverables:
@@ -123,6 +125,7 @@ Deliverables:
 - Keep high-signal events: joins, disconnects, race start, bonus pickup, item hit, item block, miss, finish.
 - Avoid repeated low-signal snapshot or cooldown events in player-facing UI.
 - Keep detailed causal information in debug logs.
+- Include lobby events in `LobbySnapshot` so the lobby Events panel reflects joins, readiness, disconnects, countdown cancellation, and rematch transitions.
 
 Validation:
 

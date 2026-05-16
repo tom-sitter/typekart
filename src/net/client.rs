@@ -146,6 +146,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                     players,
                     host_id,
                     mod_config,
+                    events,
                 }) => {
                     push_network_log(
                         &reader_log,
@@ -159,6 +160,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                     state.lobby_players = players;
                     state.host_id = Some(host_id);
                     state.mod_config = Some(mod_config);
+                    state.lobby_events = events;
                 }
                 Ok(ServerMessage::RaceEvent { message }) => {
                     push_network_log(&reader_log, format!("client received event: {message}"));
@@ -281,6 +283,7 @@ struct NetworkViewState {
     race_snapshot: Option<RaceSnapshot>,
     placements: Vec<PlayerId>,
     result_rows: Vec<RaceResultRow>,
+    lobby_events: Vec<String>,
     messages: VecDeque<String>,
     disconnected: bool,
 }
@@ -296,6 +299,7 @@ impl NetworkViewState {
             race_snapshot: None,
             placements: Vec::new(),
             result_rows: Vec::new(),
+            lobby_events: Vec::new(),
             messages: VecDeque::new(),
             disconnected: false,
         }
@@ -1532,12 +1536,22 @@ fn messages_and_events_view<'a>(
 }
 
 fn messages_view<'a>(state: &'a NetworkViewState) -> Paragraph<'a> {
-    let lines = state
-        .messages
+    let mut lines = state
+        .lobby_events
         .iter()
         .rev()
-        .map(|message| Line::from(message.as_str()))
+        .take(8)
+        .map(|event| Line::from(event.as_str()))
         .collect::<Vec<_>>();
+    lines.extend(
+        state
+            .messages
+            .iter()
+            .rev()
+            .take(4)
+            .map(|message| Line::from(message.as_str())),
+    );
+    let lines = lines;
     Paragraph::new(lines).block(Block::default().title("Events").borders(Borders::ALL))
 }
 

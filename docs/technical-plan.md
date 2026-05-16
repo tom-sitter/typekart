@@ -670,7 +670,7 @@ See `docs/modding-architecture-plan.md` for the shared modding architecture, `do
 - Structured multiplayer results screen.
 - Better disconnect handling for countdown and racing edge cases.
 - Rematch flow that rebuilds race state from connected lobby players after results.
-- Better event feed.
+- Better event feed, including lobby events in lobby snapshots.
 - Item weighting.
 - Star Power.
 - Blue Shell.
