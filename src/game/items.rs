@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rand::Rng;
 use serde::Deserialize;
 
@@ -356,7 +356,9 @@ impl ItemRegistry {
             .iter()
             .any(|item| item.enabled && item.context_weights.has_positive_weight())
         {
-            bail!("item registry must contain at least one enabled item with a positive context weight");
+            bail!(
+                "item registry must contain at least one enabled item with a positive context weight"
+            );
         }
 
         Ok(Self { items })
@@ -857,12 +859,12 @@ pub fn select_nearest_banana_target(
 
 #[cfg(test)]
 mod tests {
-    use rand::{rngs::StdRng, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng};
 
     use super::{
-        roll_item_with_proximity, select_nearest_banana_target, HeldItem, ItemActivation,
-        ItemDefinition, ItemPackConfig, ItemPackItem, ItemPickup, ItemRegistry, ItemRollContext,
-        RacePositionBand, RacerPosition,
+        HeldItem, ItemActivation, ItemDefinition, ItemPackConfig, ItemPackItem, ItemPickup,
+        ItemRegistry, ItemRollContext, RacePositionBand, RacerPosition, roll_item_with_proximity,
+        select_nearest_banana_target,
     };
 
     #[test]

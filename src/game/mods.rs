@@ -5,7 +5,7 @@
 //! pieces of metadata that can later be sent over the network or shown in a
 //! lobby.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::{items::ItemRegistry, words::WordSetDefinition};
@@ -215,7 +215,7 @@ fn stable_hash(parts: impl IntoIterator<Item = impl AsRef<str>>) -> ModHash {
 
 #[cfg(test)]
 mod tests {
-    use super::{stable_hash, ActiveModConfig, ContentId};
+    use super::{ActiveModConfig, ContentId, stable_hash};
     use crate::game::{items::ItemRegistry, words::WordSetDefinition};
 
     #[test]

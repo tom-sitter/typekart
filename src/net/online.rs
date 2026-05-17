@@ -14,8 +14,8 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{bail, Context, Result};
-use tungstenite::{connect, stream::MaybeTlsStream, Error as WebSocketError, Message, WebSocket};
+use anyhow::{Context, Result, bail};
+use tungstenite::{Error as WebSocketError, Message, WebSocket, connect, stream::MaybeTlsStream};
 
 use super::{
     protocol::{ClientMessage, PlayerId, ServerMessage},
@@ -434,8 +434,8 @@ mod tests {
     };
 
     use super::{
-        run_online_host_bridge, run_online_join_proxy, OnlineHostBridgeConfig,
-        OnlineJoinProxyConfig,
+        OnlineHostBridgeConfig, OnlineJoinProxyConfig, run_online_host_bridge,
+        run_online_join_proxy,
     };
     use crate::{
         game::{
@@ -444,8 +444,8 @@ mod tests {
         },
         net::{
             protocol::{ClientMessage, ServerMessage},
-            relay_server::{run_relay, RelayConfig},
-            server::{run_host, HostConfig},
+            relay_server::{RelayConfig, run_relay},
+            server::{HostConfig, run_host},
             transport::{read_server_message, write_client_message},
         },
     };

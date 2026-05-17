@@ -272,11 +272,11 @@ pub fn decode_server_message(line: &str) -> serde_json::Result<ServerMessage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_client_message, decode_server_message, encode_client_message, encode_server_message,
         AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
         ClientMessage, ClientSequence, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
         PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot,
-        ServerMessage, WordOverrideSnapshot,
+        ServerMessage, WordOverrideSnapshot, decode_client_message, decode_server_message,
+        encode_client_message, encode_server_message,
     };
 
     #[test]

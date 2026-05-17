@@ -5,7 +5,7 @@
 
 use std::{fs, path::Path};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rand::{seq::SliceRandom, thread_rng};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -22,14 +22,14 @@ use crate::game::{
     words::{WordSetRegistry, WordSetSelection},
 };
 use crate::net::{
-    client::{run_join, JoinConfig},
-    log::{write_network_log, NetworkLog},
+    client::{JoinConfig, run_join},
+    log::{NetworkLog, write_network_log},
     online::{
-        run_online_host_bridge, run_online_join_proxy, OnlineHostBridgeConfig,
-        OnlineJoinProxyConfig,
+        OnlineHostBridgeConfig, OnlineJoinProxyConfig, run_online_host_bridge,
+        run_online_join_proxy,
     },
     relay::RoomCode,
-    server::{run_host, HostConfig},
+    server::{HostConfig, run_host},
 };
 use crate::ui::{render::IconMode, terminal::run_typing_session};
 

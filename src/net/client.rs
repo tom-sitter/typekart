@@ -17,18 +17,18 @@ use anyhow::{Context, Result};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame, Terminal,
 };
 
-use super::log::{push_network_log, write_network_log, NetworkLog, SharedNetworkLog};
+use super::log::{NetworkLog, SharedNetworkLog, push_network_log, write_network_log};
 use super::protocol::{
     AssignedColor, ClientMessage, ClientSequence, ImpactCueSnapshotKind, ItemCuePlacementSnapshot,
     LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey,
@@ -1152,11 +1152,7 @@ fn overlay_network_local_input(
 }
 
 fn display_network_input_char(ch: char) -> char {
-    if ch == ' ' {
-        '␠'
-    } else {
-        ch
-    }
+    if ch == ' ' { '␠' } else { ch }
 }
 
 fn network_typed_char_style(stream_index: usize, typo_index: Option<usize>) -> Style {
@@ -1757,11 +1753,11 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        display_word_number, enter_sets_ready, lifecycle_command_help, lifecycle_command_message,
-        network_bonus_column, network_minimap_column, network_racer_label, network_track_word_line,
-        phase_accepts_typed_commands, space_starts_countdown, stream_index_for_word_char,
-        visible_network_bonus_point, AssignedColor, NetworkMarkerPosition, NetworkTrackWindow,
-        NetworkViewState, PlayerId, PlayerSnapshot,
+        AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, NetworkViewState, PlayerId,
+        PlayerSnapshot, display_word_number, enter_sets_ready, lifecycle_command_help,
+        lifecycle_command_message, network_bonus_column, network_minimap_column,
+        network_racer_label, network_track_word_line, phase_accepts_typed_commands,
+        space_starts_countdown, stream_index_for_word_char, visible_network_bonus_point,
     };
     use crate::net::protocol::{
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,

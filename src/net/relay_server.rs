@@ -7,15 +7,15 @@ use std::{
     collections::HashMap,
     net::{SocketAddr, TcpListener},
     sync::{
-        mpsc::{self, Receiver, Sender},
         Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
     },
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
-use tungstenite::{accept, error::ProtocolError, Error as WebSocketError, Message};
+use tungstenite::{Error as WebSocketError, Message, accept, error::ProtocolError};
 
 use super::{
     protocol::PlayerId,
@@ -428,9 +428,11 @@ fn spawn_idle_room_sweeper(state: Arc<Mutex<RelayState>>, idle_timeout: Duration
         return;
     }
 
-    thread::spawn(move || loop {
-        thread::sleep(idle_sweep_interval(idle_timeout));
-        cleanup_stale_rooms(&state, idle_timeout);
+    thread::spawn(move || {
+        loop {
+            thread::sleep(idle_sweep_interval(idle_timeout));
+            cleanup_stale_rooms(&state, idle_timeout);
+        }
     });
 }
 
@@ -450,14 +452,14 @@ fn idle_sweep_interval(idle_timeout: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{mpsc, Arc, Mutex},
+        sync::{Arc, Mutex, mpsc},
         thread,
         time::{Duration, Instant},
     };
 
     use super::{
-        cleanup_connection, cleanup_stale_rooms, handle_relay_message, idle_sweep_interval,
-        spawn_idle_room_sweeper, ConnectionRole, RelayLimits, RelayState,
+        ConnectionRole, RelayLimits, RelayState, cleanup_connection, cleanup_stale_rooms,
+        handle_relay_message, idle_sweep_interval, spawn_idle_room_sweeper,
     };
     use crate::net::{
         protocol::{ClientMessage, ClientSequence, PlayerId, ProtocolKey, ServerMessage},

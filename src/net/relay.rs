@@ -3,7 +3,7 @@
 //! The relay protocol wraps the existing TypeKart client/server messages so a
 //! public relay can route them without understanding race rules.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rand::{seq::SliceRandom, thread_rng};
 use serde::{Deserialize, Serialize};
 

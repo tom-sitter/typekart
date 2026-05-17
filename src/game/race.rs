@@ -11,7 +11,7 @@ use std::time::Instant;
 use super::{
     player::PlayerState,
     track::Track,
-    typing::{apply_key, KeyAction, TypingEvent},
+    typing::{KeyAction, TypingEvent, apply_key},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

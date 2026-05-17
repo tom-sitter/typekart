@@ -173,7 +173,7 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
-    use super::{apply_key, apply_key_with_options, KeyAction, TypingEvent};
+    use super::{KeyAction, TypingEvent, apply_key, apply_key_with_options};
     use crate::game::{player::PlayerState, track::Track};
 
     fn track(words: &[&str]) -> Track {

@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use rand::{seq::SliceRandom, thread_rng, Rng};
+use rand::{Rng, seq::SliceRandom, thread_rng};
 
 use super::{
     items::{ItemPickup, ItemRegistry, ItemRollContext},
@@ -241,11 +241,11 @@ fn pick_bonus_word(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use rand::{rngs::StdRng, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng};
 
     use super::{
-        claim_bonus_choice, BonusChoice, BonusChoiceStatus, BonusPoint, BonusState,
-        BONUS_CHOICE_COUNT, BONUS_COOLDOWN,
+        BONUS_CHOICE_COUNT, BONUS_COOLDOWN, BonusChoice, BonusChoiceStatus, BonusPoint, BonusState,
+        claim_bonus_choice,
     };
     use crate::game::{
         items::{ItemRegistry, ItemRollContext, RacePositionBand},

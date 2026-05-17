@@ -9,8 +9,8 @@ use std::io::{BufRead, Write};
 use anyhow::{Context, Result};
 
 use super::protocol::{
-    decode_client_message, decode_server_message, encode_client_message, encode_server_message,
-    ClientMessage, ServerMessage,
+    ClientMessage, ServerMessage, decode_client_message, decode_server_message,
+    encode_client_message, encode_server_message,
 };
 
 pub fn write_client_message(writer: &mut impl Write, message: &ClientMessage) -> Result<()> {

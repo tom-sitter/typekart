@@ -5,11 +5,11 @@
 //! mutating either one.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 use crate::{
@@ -1099,11 +1099,7 @@ fn overlay_player_input(cells: &mut [TrackCell], window: &TrackWindow<'_>, playe
 }
 
 fn display_input_char(ch: char) -> char {
-    if ch == ' ' {
-        '␠'
-    } else {
-        ch
-    }
+    if ch == ' ' { '␠' } else { ch }
 }
 
 fn typed_char_style(stream_index: usize, typo_index: Option<usize>) -> Style {
@@ -1355,9 +1351,9 @@ mod tests {
             track::Track,
         },
         ui::render::{
-            ai_color, bonus_column, build_track_window, is_bonus_point_claimable, minimap_line,
-            player_list_height, racer_lines, result_rows, track_panel_height, track_word_line,
-            visible_bonus_point, IconMode, WordRenderState,
+            IconMode, WordRenderState, ai_color, bonus_column, build_track_window,
+            is_bonus_point_claimable, minimap_line, player_list_height, racer_lines, result_rows,
+            track_panel_height, track_word_line, visible_bonus_point,
         },
         ui::session::{
             AiRacer, AttackDirection, ImpactCue, ImpactCueKind, ItemCue, ItemCueKind, RacePhase,

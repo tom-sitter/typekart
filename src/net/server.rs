@@ -9,32 +9,32 @@ use std::{
     io::{self, BufRead, BufReader},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
-        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Context, Result};
-use rand::{thread_rng, Rng};
+use anyhow::{Context, Result, bail};
+use rand::{Rng, thread_rng};
 
 use crate::game::{
     ai::AiDifficulty,
-    bonus::{claim_bonus_choice, BonusChoiceStatus, BonusState},
+    bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
     effects::ActiveEffect,
     items::{
-        select_nearest_banana_target, BananaDisplayConfig, HeldItem, ItemPickup, ItemRegistry,
-        ItemRollContext, RacePositionBand, RacerPosition,
+        BananaDisplayConfig, HeldItem, ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand,
+        RacerPosition, select_nearest_banana_target,
     },
     mods::ActiveModConfig,
     race::{PlayerColorId, RacePlayerId, RaceState},
     track::{Track, WordList},
-    typing::{first_typo_index, KeyAction, TypingEvent},
+    typing::{KeyAction, TypingEvent, first_typo_index},
 };
 
-use super::log::{push_network_log, SharedNetworkLog};
+use super::log::{SharedNetworkLog, push_network_log};
 use super::protocol::{
     AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshot, BonusChoiceSnapshotStatus,
     BonusPointSnapshot, ClientMessage, ImpactCueSnapshot, ImpactCueSnapshotKind,
@@ -1953,36 +1953,38 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
 }
 
 fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
-    thread::spawn(move || loop {
-        thread::sleep(RACE_SNAPSHOT_INTERVAL);
-        let mut state = state.lock().expect("host state poisoned");
-        if state.phase != NetworkRacePhase::Racing {
-            break;
-        }
-
-        let now = Instant::now();
-        advance_network_mushrooms(&mut state, now);
-        advance_network_ai_racers(&mut state, now);
-        update_race_status(&mut state, now);
-        let expired_choices = expire_bonus_cooldowns(&mut state, now);
-        if expired_choices > 0 {
-            push_network_log(
-                &state.debug_log,
-                format!("bonus refreshed choices={expired_choices}"),
-            );
-        }
-
-        if let Err(error) = broadcast_race_snapshot(&mut state) {
-            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-        }
-
-        if state.phase == NetworkRacePhase::Finished {
-            server_println!("Race finished");
-            push_network_log(&state.debug_log, "race finished on snapshot tick");
-            if let Err(error) = broadcast_race_results_once(&mut state) {
-                server_eprintln!("Failed to broadcast race results: {error:#}");
+    thread::spawn(move || {
+        loop {
+            thread::sleep(RACE_SNAPSHOT_INTERVAL);
+            let mut state = state.lock().expect("host state poisoned");
+            if state.phase != NetworkRacePhase::Racing {
+                break;
             }
-            break;
+
+            let now = Instant::now();
+            advance_network_mushrooms(&mut state, now);
+            advance_network_ai_racers(&mut state, now);
+            update_race_status(&mut state, now);
+            let expired_choices = expire_bonus_cooldowns(&mut state, now);
+            if expired_choices > 0 {
+                push_network_log(
+                    &state.debug_log,
+                    format!("bonus refreshed choices={expired_choices}"),
+                );
+            }
+
+            if let Err(error) = broadcast_race_snapshot(&mut state) {
+                server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+            }
+
+            if state.phase == NetworkRacePhase::Finished {
+                server_println!("Race finished");
+                push_network_log(&state.debug_log, "race finished on snapshot tick");
+                if let Err(error) = broadcast_race_results_once(&mut state) {
+                    server_eprintln!("Failed to broadcast race results: {error:#}");
+                }
+                break;
+            }
         }
     });
 }
@@ -2533,15 +2535,15 @@ mod tests {
     };
 
     use super::{
-        activate_network_pickup, add_network_ai_racers, advance_network_ai_racers,
-        all_connected_players_ready, apply_network_banana_to_player, apply_network_key_input,
-        broadcast_lobby_snapshot, broadcast_race_results_once, build_race_result_rows,
-        build_race_snapshot, cleanup_disconnected_waiting_players, client_is_in_current_race,
-        connected_player_count, first_available_color, handle_client_messages, push_event,
-        read_join_hello, reconcile_phase_after_disconnect, reset_race_from_lobby,
-        return_to_lobby_for_rematch, update_host_ready, update_race_status, validate_host_capacity,
-        welcome_joiner, AssignedColor, ConnectedClient, HostState, NetworkAiRacer,
-        NetworkRacePhase, PlayerId, POST_FIRST_FINISH_TIMEOUT,
+        AssignedColor, ConnectedClient, HostState, NetworkAiRacer, NetworkRacePhase,
+        POST_FIRST_FINISH_TIMEOUT, PlayerId, activate_network_pickup, add_network_ai_racers,
+        advance_network_ai_racers, all_connected_players_ready, apply_network_banana_to_player,
+        apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
+        build_race_result_rows, build_race_snapshot, cleanup_disconnected_waiting_players,
+        client_is_in_current_race, connected_player_count, first_available_color,
+        handle_client_messages, push_event, read_join_hello, reconcile_phase_after_disconnect,
+        reset_race_from_lobby, return_to_lobby_for_rematch, update_host_ready, update_race_status,
+        validate_host_capacity, welcome_joiner,
     };
     use crate::game::{
         ai::AiDifficulty,
@@ -2556,8 +2558,8 @@ mod tests {
         words::WordSetDefinition,
     };
     use crate::net::protocol::{
-        decode_server_message, encode_client_message, ClientMessage, ImpactCueSnapshotKind,
-        LobbyPlayer, PlayerKind, RaceResultStatus, ServerMessage,
+        ClientMessage, ImpactCueSnapshotKind, LobbyPlayer, PlayerKind, RaceResultStatus,
+        ServerMessage, decode_server_message, encode_client_message,
     };
 
     #[test]
@@ -2703,11 +2705,13 @@ mod tests {
         let state = state.lock().unwrap();
 
         assert!(state.players.iter().all(|player| player.id != PlayerId(2)));
-        assert!(state
-            .race
-            .players
-            .iter()
-            .all(|player| player.id != RacePlayerId(2)));
+        assert!(
+            state
+                .race
+                .players
+                .iter()
+                .all(|player| player.id != RacePlayerId(2))
+        );
         assert!(matches!(
             decode_server_message(snapshot_line.trim_end()).unwrap(),
             ServerMessage::LobbySnapshot { ref players, ref events, .. }
@@ -2874,10 +2878,12 @@ mod tests {
 
         let bot = state.race.player(RacePlayerId(2)).unwrap();
         assert!(bot.state.has_active_shield(now));
-        assert!(state.bonuses.points[0]
-            .choices
-            .iter()
-            .any(|choice| matches!(choice.status, BonusChoiceStatus::Cooldown { .. })));
+        assert!(
+            state.bonuses.points[0]
+                .choices
+                .iter()
+                .any(|choice| matches!(choice.status, BonusChoiceStatus::Cooldown { .. }))
+        );
         assert_eq!(state.spent_bonus_gaps.get(&PlayerId(2)), Some(&0));
         assert!(state.events.iter().any(|event| event == "alex got Shield"));
     }
@@ -2901,16 +2907,20 @@ mod tests {
 
         advance_network_ai_racers(&mut state, now);
 
-        assert!(state
-            .player_effects
-            .get(&PlayerId(1))
-            .and_then(|effects| effects.stunned_until)
-            .is_some_and(|until| until > now));
-        assert!(state
-            .player_effects
-            .get(&PlayerId(2))
-            .and_then(|effects| effects.item_cue.as_ref())
-            .is_some_and(|cue| cue.until > now));
+        assert!(
+            state
+                .player_effects
+                .get(&PlayerId(1))
+                .and_then(|effects| effects.stunned_until)
+                .is_some_and(|until| until > now)
+        );
+        assert!(
+            state
+                .player_effects
+                .get(&PlayerId(2))
+                .and_then(|effects| effects.item_cue.as_ref())
+                .is_some_and(|cue| cue.until > now)
+        );
         assert!(state.events.iter().any(|event| event == "alex hit host"));
     }
 
@@ -2932,11 +2942,13 @@ mod tests {
 
         assert_eq!(result, Some(super::BananaResolution::SpunOut));
         assert_eq!(state.ai_racers.get(&PlayerId(2)).unwrap().char_budget, 0.0);
-        assert!(state
-            .player_effects
-            .get(&PlayerId(2))
-            .and_then(|effects| effects.stunned_until)
-            .is_some_and(|until| until > now));
+        assert!(
+            state
+                .player_effects
+                .get(&PlayerId(2))
+                .and_then(|effects| effects.stunned_until)
+                .is_some_and(|until| until > now)
+        );
     }
 
     #[test]
@@ -2950,11 +2962,13 @@ mod tests {
         assert_eq!(state.players.len(), 1);
         assert_eq!(state.race.players.len(), 1);
         assert!(state.players.iter().all(|player| player.id != PlayerId(2)));
-        assert!(state
-            .race
-            .players
-            .iter()
-            .all(|player| player.id != RacePlayerId(2)));
+        assert!(
+            state
+                .race
+                .players
+                .iter()
+                .all(|player| player.id != RacePlayerId(2))
+        );
     }
 
     #[test]
@@ -2987,11 +3001,13 @@ mod tests {
 
         assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
         assert_eq!(state.race.players.len(), 3);
-        assert!(state
-            .race
-            .players
-            .iter()
-            .any(|player| player.id == RacePlayerId(3)));
+        assert!(
+            state
+                .race
+                .players
+                .iter()
+                .any(|player| player.id == RacePlayerId(3))
+        );
         assert!(state.placements.is_empty());
         assert!(!state.race_results_sent);
         assert!(state.events.is_empty());
@@ -3231,10 +3247,12 @@ mod tests {
             state.bonuses.points[0].choices[0].status,
             BonusChoiceStatus::Cooldown { .. }
         ));
-        assert!(state
-            .events
-            .iter()
-            .any(|event| event.starts_with("alex got ")));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.starts_with("alex got "))
+        );
     }
 
     #[test]
@@ -3313,16 +3331,20 @@ mod tests {
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.input, "");
-        assert!(state
-            .player_effects
-            .get(&PlayerId(2))
-            .and_then(|effects| effects.stunned_until)
-            .is_some_and(|until| until > now));
-        assert!(state
-            .player_effects
-            .get(&PlayerId(1))
-            .and_then(|effects| effects.item_cue.clone())
-            .is_some());
+        assert!(
+            state
+                .player_effects
+                .get(&PlayerId(2))
+                .and_then(|effects| effects.stunned_until)
+                .is_some_and(|until| until > now)
+        );
+        assert!(
+            state
+                .player_effects
+                .get(&PlayerId(1))
+                .and_then(|effects| effects.item_cue.clone())
+                .is_some()
+        );
     }
 
     #[test]
@@ -3379,10 +3401,12 @@ mod tests {
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.word_override(1), Some("owt"));
-        assert!(state
-            .events
-            .iter()
-            .any(|event| event == "host hit alex with Blue Shell"));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event == "host hit alex with Blue Shell")
+        );
     }
 
     #[test]
@@ -3407,10 +3431,12 @@ mod tests {
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.word_override(1), None);
         assert!(!alex.state.has_active_shield(now));
-        assert!(state
-            .events
-            .iter()
-            .any(|event| event == "alex blocked Blue Shell"));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event == "alex blocked Blue Shell")
+        );
     }
 
     #[test]
@@ -3517,10 +3543,12 @@ mod tests {
         reconcile_phase_after_disconnect(&mut state, now);
 
         assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
-        assert!(state
-            .events
-            .iter()
-            .any(|event| event == "Countdown cancelled"));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event == "Countdown cancelled")
+        );
     }
 
     #[test]

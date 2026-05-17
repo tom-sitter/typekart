@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::game::{
     ai::AiDifficulty,
-    words::{WordSetSelection, DEFAULT_WORD_SET_ID},
+    words::{DEFAULT_WORD_SET_ID, WordSetSelection},
 };
 use crate::ui::render::IconMode;
 

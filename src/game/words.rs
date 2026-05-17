@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rand::{seq::SliceRandom, thread_rng};
 
 use super::{
@@ -218,7 +218,7 @@ fn is_playable_word(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_word_set, WordSetCollection, WordSetDefinition, WordSetRegistry, WordSetSelection,
+        WordSetCollection, WordSetDefinition, WordSetRegistry, WordSetSelection, validate_word_set,
     };
     use crate::game::track::WordList;
 

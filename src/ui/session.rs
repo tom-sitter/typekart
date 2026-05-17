@@ -9,20 +9,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 
 use crate::game::{
     ai::AiDifficulty,
-    bonus::{claim_bonus_choice, BonusState},
+    bonus::{BonusState, claim_bonus_choice},
     effects::{ActiveEffect, AttackWarning, PendingAttack},
     items::{
-        select_nearest_banana_target, HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse,
-        RacePositionBand, RacerPosition,
+        HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse, RacePositionBand,
+        RacerPosition, select_nearest_banana_target,
     },
     mods::ActiveModConfig,
     player::PlayerState,
     track::{Track, WordList},
-    typing::{apply_key, first_typo_index, KeyAction, TypingEvent},
+    typing::{KeyAction, TypingEvent, apply_key, first_typo_index},
 };
 
 const PLAYER_ATTACK_WARNING: Duration = Duration::from_millis(900);
@@ -2019,10 +2019,12 @@ mod tests {
 
         assert!(session.ai_racers[0].is_stunned(now));
         assert!(session.ai_racers[1].is_stunned(now));
-        assert!(session
-            .run_log
-            .entries()
-            .any(|entry| entry.contains("player banana target=ai-2")));
+        assert!(
+            session
+                .run_log
+                .entries()
+                .any(|entry| entry.contains("player banana target=ai-2"))
+        );
     }
 
     #[test]
@@ -2045,10 +2047,12 @@ mod tests {
                 direction: AttackDirection::Overlap
             }
         );
-        assert!(session
-            .run_log
-            .entries()
-            .any(|entry| entry.contains("direction=Overlap cue_placement=after-overlap")));
+        assert!(
+            session
+                .run_log
+                .entries()
+                .any(|entry| entry.contains("direction=Overlap cue_placement=after-overlap"))
+        );
     }
 
     #[test]
@@ -2073,10 +2077,12 @@ mod tests {
         assert!(!entries.contains(&"Hit ai-1"));
         assert!(!session.ai_racers[0].is_stunned(now));
         assert!(session.ai_racers[0].player.active_effects.is_empty());
-        assert!(session
-            .run_log
-            .entries()
-            .any(|entry| entry.contains("ai-1 blocked Banana")));
+        assert!(
+            session
+                .run_log
+                .entries()
+                .any(|entry| entry.contains("ai-1 blocked Banana"))
+        );
     }
 
     #[test]
@@ -2097,9 +2103,11 @@ mod tests {
 
         assert!(session.player.input.is_empty());
         assert!(session.attack_warning.is_none());
-        assert!(session
-            .player_impact_cue
-            .is_some_and(|cue| cue.kind == ImpactCueKind::Banana && cue.until > now));
+        assert!(
+            session
+                .player_impact_cue
+                .is_some_and(|cue| cue.kind == ImpactCueKind::Banana && cue.until > now)
+        );
     }
 
     #[test]
@@ -2150,10 +2158,12 @@ mod tests {
 
         assert!(session.ai_racers[1].is_stunned(now));
         assert!(session.ai_racers[2].is_stunned(now));
-        assert!(session
-            .run_log
-            .entries()
-            .any(|entry| entry.contains("ai-1 banana target=ai-3")));
+        assert!(
+            session
+                .run_log
+                .entries()
+                .any(|entry| entry.contains("ai-1 banana target=ai-3"))
+        );
     }
 
     #[test]
@@ -2333,22 +2343,26 @@ mod tests {
         assert_eq!(session.player.word_index, 1);
         assert_eq!(session.player.stats.completed_words, 1);
         assert_eq!(session.player.held_item, None);
-        assert!(session
-            .player
-            .active_effects
-            .iter()
-            .any(|effect| matches!(effect, ActiveEffect::Mushroom { .. })));
+        assert!(
+            session
+                .player
+                .active_effects
+                .iter()
+                .any(|effect| matches!(effect, ActiveEffect::Mushroom { .. }))
+        );
 
         session.tick(now + std::time::Duration::from_secs_f64(0.4));
         assert_eq!(session.player.word_index, 2);
 
         session.tick(now + std::time::Duration::from_secs_f64(0.8));
         assert_eq!(session.player.word_index, 3);
-        assert!(!session
-            .player
-            .active_effects
-            .iter()
-            .any(|effect| matches!(effect, ActiveEffect::Mushroom { .. })));
+        assert!(
+            !session
+                .player
+                .active_effects
+                .iter()
+                .any(|effect| matches!(effect, ActiveEffect::Mushroom { .. }))
+        );
     }
 
     #[test]
@@ -2493,10 +2507,12 @@ mod tests {
 
         assert_eq!(session.player.held_item, None);
         assert_eq!(session.ai_racers[0].player.word_override(1), Some("owt"));
-        assert!(session
-            .events
-            .entries()
-            .any(|entry| entry == "Hit ai-1 with Blue Shell"));
+        assert!(
+            session
+                .events
+                .entries()
+                .any(|entry| entry == "Hit ai-1 with Blue Shell")
+        );
     }
 
     #[test]
@@ -2518,10 +2534,12 @@ mod tests {
 
         assert_eq!(session.ai_racers[0].player.word_override(1), None);
         assert!(!session.ai_racers[0].player.has_active_shield(now));
-        assert!(session
-            .events
-            .entries()
-            .any(|entry| entry == "ai-1 blocked Blue Shell"));
+        assert!(
+            session
+                .events
+                .entries()
+                .any(|entry| entry == "ai-1 blocked Blue Shell")
+        );
     }
 
     #[test]
@@ -2535,9 +2553,11 @@ mod tests {
         session.apply_action(LocalAction::ActivateItem, Instant::now());
 
         assert_eq!(session.player.held_item, None);
-        assert!(session
-            .events
-            .entries()
-            .any(|entry| entry == "Missed Banana"));
+        assert!(
+            session
+                .events
+                .entries()
+                .any(|entry| entry == "Missed Banana")
+        );
     }
 }
