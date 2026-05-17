@@ -52,7 +52,6 @@ brew install typekart
 
 Before publishing the tap, replace:
 
-- `REPLACE_WITH_LICENSE`
 - `REPLACE_WITH_ARM64_SHA256`
 - `REPLACE_WITH_X86_64_SHA256`
 
@@ -77,7 +76,6 @@ scoop install typekart
 
 Before publishing the bucket, replace:
 
-- `REPLACE_WITH_LICENSE`
 - `REPLACE_WITH_WINDOWS_SHA256`
 
 ## WinGet

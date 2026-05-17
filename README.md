@@ -101,6 +101,10 @@ scripts/release.sh 0.1.0
 
 Release notes are generated under `docs/releases/`, and the GitHub release workflow publishes macOS and Windows archives from pushed `v*.*.*` tags.
 
+## License
+
+TypeKart is open source under the GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
 ## Requirements
 
 - Rust installed locally for development builds.

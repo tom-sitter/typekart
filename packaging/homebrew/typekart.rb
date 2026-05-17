@@ -2,7 +2,7 @@ class Typekart < Formula
   desc "Terminal typing racer with kart-style item effects"
   homepage "https://github.com/tom-sitter/typekart"
   version "0.1.0"
-  license "REPLACE_WITH_LICENSE"
+  license "GPL-3.0-or-later"
 
   on_macos do
     if Hardware::CPU.arm?

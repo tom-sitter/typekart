@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "description": "Terminal typing racer with kart-style item effects",
   "homepage": "https://github.com/tom-sitter/typekart",
-  "license": "REPLACE_WITH_LICENSE",
+  "license": "GPL-3.0-or-later",
   "architecture": {
     "64bit": {
       "url": "https://github.com/tom-sitter/typekart/releases/download/v0.1.0/typekart-x86_64-pc-windows-msvc.zip",

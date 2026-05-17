@@ -4,5 +4,7 @@ PackageLocale: en-US
 Publisher: tom-sitter
 PackageName: TypeKart
 ShortDescription: Terminal typing racer with kart-style item effects
+License: GPL-3.0-or-later
+LicenseUrl: https://github.com/tom-sitter/typekart/blob/main/LICENSE
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

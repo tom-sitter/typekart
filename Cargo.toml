@@ -4,11 +4,15 @@ version = "0.1.0"
 edition = "2024"
 description = "A terminal typing racer with kart-style item effects"
 readme = "README.md"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/tom-sitter/typekart"
+homepage = "https://github.com/tom-sitter/typekart"
 keywords = ["typing", "game", "terminal", "tui"]
 categories = ["command-line-utilities", "games"]
 include = [
     "Cargo.toml",
     "Cargo.lock",
+    "LICENSE",
     "README.md",
     "src/**",
     "words_alpha.txt",
