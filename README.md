@@ -42,6 +42,16 @@ The built-in word set is embedded in the binary, so the release archive contains
 
 Maintainer release and package-manager notes are in [docs/install/distribution.md](docs/install/distribution.md).
 
+## Releases
+
+Create release commits and tags with:
+
+```sh
+scripts/release.sh 0.1.0
+```
+
+The GitHub release workflow publishes macOS and Windows archives from pushed `v*.*.*` tags.
+
 ## Requirements
 
 - Rust installed locally for development builds.

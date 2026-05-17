@@ -12,19 +12,23 @@ The release workflow builds these archives whenever a `v*.*.*` tag is pushed and
 
 ## Create A Release
 
-Update the Cargo package version first:
+Use the release script from a clean release tree:
 
 ```sh
-cargo set-version 0.1.0
+scripts/release.sh 0.1.0
 ```
 
-If `cargo-edit` is not installed, update `version` in `Cargo.toml` manually.
-
-Commit the version change, then tag and push:
+The script updates `Cargo.toml`, validates the build, commits the version bump, and creates an annotated `v0.1.0` tag. Push the release when ready:
 
 ```sh
-git tag v0.1.0
+git push origin main
 git push origin main --tags
+```
+
+To push automatically after the local release commit and tag are created:
+
+```sh
+scripts/release.sh 0.1.0 --push
 ```
 
 After the GitHub release finishes, copy the SHA-256 values from `typekart-checksums.txt` into the package manifests under `packaging/`.
