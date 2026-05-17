@@ -80,25 +80,25 @@ typekart play --ai-racers 3 --ai-difficulty easy
 Host an internet race:
 
 ```sh
-typekart host-online --name host
+typekart host --name host
 ```
 
 The host prints a room code and join command. Other racers can join with:
 
 ```sh
-typekart join-online --name player2 --room rocket-salad-tiger
+typekart join --name player2 --room rocket-salad-tiger
 ```
 
 Host a local multiplayer race:
 
 ```sh
-typekart host --name host --bind 0.0.0.0:4000
+typekart host-lan --name host --bind 0.0.0.0:4000
 ```
 
 Join that race from another terminal or computer:
 
 ```sh
-typekart join --name player2 --server HOST_IP:4000
+typekart join-lan --name player2 --server HOST_IP:4000
 ```
 
 Joiners press `Enter` to ready up. The host presses `Space` to start.
@@ -161,19 +161,19 @@ cargo run -- play --ascii
 Terminal 1, host the race:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000
+cargo run -- host-lan --name host --bind 127.0.0.1:4000
 ```
 
 Terminal 2, join the race:
 
 ```sh
-cargo run -- join --name player2 --server 127.0.0.1:4000
+cargo run -- join-lan --name player2 --server 127.0.0.1:4000
 ```
 
 Additional local players can join from more terminals with unique names:
 
 ```sh
-cargo run -- join --name player3 --server 127.0.0.1:4000
+cargo run -- join-lan --name player3 --server 127.0.0.1:4000
 ```
 
 ## Multiplayer On A Local Network
@@ -183,19 +183,19 @@ All racers must run the same TypeKart version as the host. If versions differ, t
 The host should bind to all local interfaces:
 
 ```sh
-cargo run -- host --name host --bind 0.0.0.0:4000
+cargo run -- host-lan --name host --bind 0.0.0.0:4000
 ```
 
 Other computers join using the host computer's local IP address:
 
 ```sh
-cargo run -- join --name player2 --server HOST_IP:4000
+cargo run -- join-lan --name player2 --server HOST_IP:4000
 ```
 
 Example:
 
 ```sh
-cargo run -- join --name player2 --server 192.168.1.25:4000
+cargo run -- join-lan --name player2 --server 192.168.1.25:4000
 ```
 
 ## Multiplayer Through A Relay
@@ -205,20 +205,20 @@ All racers must run the same TypeKart version as the host. Relay-backed joins ar
 To host through the public TypeKart relay:
 
 ```sh
-typekart host-online --name host
+typekart host --name host
 ```
 
 The host prints a room code. Other racers join with:
 
 ```sh
-typekart join-online --name player2 --room rocket-salad-tiger
+typekart join --name player2 --room rocket-salad-tiger
 ```
 
 Use `--relay` only when you want to use a custom relay:
 
 ```sh
-typekart host-online --name host --relay wss://relay.example.com
-typekart join-online --name player2 --relay wss://relay.example.com --room rocket-salad-tiger
+typekart host --name host --relay wss://relay.example.com
+typekart join --name player2 --relay wss://relay.example.com --room rocket-salad-tiger
 ```
 
 ### Local Relay Development
@@ -232,13 +232,13 @@ cargo run -- relay --bind 127.0.0.1:8080
 Terminal 2, host an online room through the relay:
 
 ```sh
-cargo run -- host-online --name host --relay ws://127.0.0.1:8080
+cargo run -- host --name host --relay ws://127.0.0.1:8080
 ```
 
 The host prints a room code. Terminal 3 can join with that room code:
 
 ```sh
-cargo run -- join-online --name player2 --relay ws://127.0.0.1:8080 --room rocket-salad-tiger
+cargo run -- join --name player2 --relay ws://127.0.0.1:8080 --room rocket-salad-tiger
 ```
 
 For public internet play, run the relay behind a TLS reverse proxy and use a `wss://` relay URL. Deployment notes are in [docs/relay-deployment.md](docs/relay-deployment.md).
@@ -257,33 +257,33 @@ Deployment configs are included for Fly.io (`fly.toml`) and Render (`render.yaml
 Set the track length:
 
 ```sh
-cargo run -- host --name host --words 20 --bind 127.0.0.1:4000
+cargo run -- host-lan --name host --words 20 --bind 127.0.0.1:4000
 ```
 
 Set the lobby size, including the host:
 
 ```sh
-cargo run -- host --name host --max-players 6 --bind 127.0.0.1:4000
+cargo run -- host-lan --name host --max-players 6 --bind 127.0.0.1:4000
 ```
 
 Add network AI racers for multiplayer testing:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 --ai-racers 4 --ai-difficulty easy
+cargo run -- host-lan --name host --bind 127.0.0.1:4000 --ai-racers 4 --ai-difficulty easy
 ```
 
 Use ASCII-safe item markers for host and joiners:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 --ascii
-cargo run -- join --name player2 --server 127.0.0.1:4000 --ascii
+cargo run -- host-lan --name host --bind 127.0.0.1:4000 --ascii
+cargo run -- join-lan --name player2 --server 127.0.0.1:4000 --ascii
 ```
 
 Write debug logs:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 --debug-log host-debug.log
-cargo run -- join --name player2 --server 127.0.0.1:4000 --debug-log player2-debug.log
+cargo run -- host-lan --name host --bind 127.0.0.1:4000 --debug-log host-debug.log
+cargo run -- join-lan --name player2 --server 127.0.0.1:4000 --debug-log player2-debug.log
 ```
 
 ## Word Sets And Item Packs
@@ -309,7 +309,7 @@ cargo run -- play --item-pack-file ./mods/items/classic-plus.json
 Use mods while hosting:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 \
+cargo run -- host-lan --name host --bind 127.0.0.1:4000 \
   --word-set-dir ./mods/words \
   --item-pack-file ./mods/items/classic-plus.json
 ```
@@ -327,6 +327,8 @@ cargo run -- --help
 cargo run -- play --help
 cargo run -- host --help
 cargo run -- join --help
+cargo run -- host-lan --help
+cargo run -- join-lan --help
 ```
 
 For structured multiplayer validation, see [docs/lan-validation-checklist.md](docs/lan-validation-checklist.md).

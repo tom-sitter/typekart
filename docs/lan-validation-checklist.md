@@ -7,21 +7,21 @@ Use this checklist when validating local-network multiplayer behavior on loopbac
 Same computer:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 --debug-log host-debug.log
-cargo run -- join --name player2 --server 127.0.0.1:4000 --debug-log player2-debug.log
+cargo run -- host-lan --name host --bind 127.0.0.1:4000 --debug-log host-debug.log
+cargo run -- join-lan --name player2 --server 127.0.0.1:4000 --debug-log player2-debug.log
 ```
 
 Local network:
 
 ```sh
-cargo run -- host --name host --bind 0.0.0.0:4000 --debug-log host-debug.log
-cargo run -- join --name player2 --server HOST_IP:4000 --debug-log player2-debug.log
+cargo run -- host-lan --name host --bind 0.0.0.0:4000 --debug-log host-debug.log
+cargo run -- join-lan --name player2 --server HOST_IP:4000 --debug-log player2-debug.log
 ```
 
 Useful shorter race:
 
 ```sh
-cargo run -- host --name host --bind 0.0.0.0:4000 --words 20 --debug-log host-debug.log
+cargo run -- host-lan --name host --bind 0.0.0.0:4000 --words 20 --debug-log host-debug.log
 ```
 
 Use the same `--ascii` setting on host and joiners when validating ASCII fallback rendering.

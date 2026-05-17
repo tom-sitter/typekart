@@ -110,13 +110,13 @@ cargo run -- play
 New host command:
 
 ```sh
-cargo run -- host --name tom --bind 0.0.0.0:4000 --words 40 --max-players 6
+cargo run -- host-lan --name tom --bind 0.0.0.0:4000 --words 40 --max-players 6
 ```
 
 New join command:
 
 ```sh
-cargo run -- join --name alex --server 192.168.1.20:4000
+cargo run -- join-lan --name alex --server 192.168.1.20:4000
 ```
 
 Useful debug option on both:
@@ -282,7 +282,7 @@ For Milestone 4, every client can receive the same snapshot. Later, if bonus vis
 
 ## Host Flow
 
-1. Host runs `typekart host`.
+1. Host runs `typekart host-lan`.
 2. App starts a TCP server bound to the requested address.
 3. The `host` command starts a local client that connects to the server.
 4. Host appears in the lobby as a normal player.
@@ -307,8 +307,8 @@ The host uses the same protocol and raw racing input path as other clients. The 
 Current manual test shape:
 
 ```sh
-cargo run -- host --name host --words 20 --bind 127.0.0.1:4000 --max-players 2
-cargo run -- join --name alex --server 127.0.0.1:4000
+cargo run -- host-lan --name host --words 20 --bind 127.0.0.1:4000 --max-players 2
+cargo run -- join-lan --name alex --server 127.0.0.1:4000
 ```
 
 Then:

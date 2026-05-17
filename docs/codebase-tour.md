@@ -634,13 +634,13 @@ cargo run -- play --ai-racers 6 --debug-log typekart-debug.log
 Host a local-network lobby:
 
 ```sh
-cargo run -- host --name host --words 20 --bind 127.0.0.1:4000 --max-players 2
+cargo run -- host-lan --name host --words 20 --bind 127.0.0.1:4000 --max-players 2
 ```
 
 Join from another terminal:
 
 ```sh
-cargo run -- join --name alex --server 127.0.0.1:4000
+cargo run -- join-lan --name alex --server 127.0.0.1:4000
 ```
 
 Unicode icons are enabled by default. Add `--ascii` to either network command when validating terminals that do not handle emoji widths correctly.

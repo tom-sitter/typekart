@@ -24,13 +24,13 @@ cargo run -- relay \
 Host through that relay:
 
 ```sh
-cargo run -- host-online --name host --relay ws://127.0.0.1:8080
+cargo run -- host --name host --relay ws://127.0.0.1:8080
 ```
 
 Join using the room code printed by the host:
 
 ```sh
-cargo run -- join-online --name player2 --relay ws://127.0.0.1:8080 --room rocket-salad-tiger
+cargo run -- join --name player2 --relay ws://127.0.0.1:8080 --room rocket-salad-tiger
 ```
 
 ## Local Network Relay
@@ -44,8 +44,8 @@ cargo run -- relay --bind 0.0.0.0:8080
 Then host and join using the relay machine's LAN address:
 
 ```sh
-cargo run -- host-online --name host --relay ws://192.168.1.25:8080
-cargo run -- join-online --name player2 --relay ws://192.168.1.25:8080 --room rocket-salad-tiger
+cargo run -- host --name host --relay ws://192.168.1.25:8080
+cargo run -- join --name player2 --relay ws://192.168.1.25:8080 --room rocket-salad-tiger
 ```
 
 ## Public Relay
@@ -63,8 +63,8 @@ The TypeKart client supports `wss://` relay URLs. The Rust relay binary currentl
 Example public commands:
 
 ```sh
-typekart host-online --name host --relay wss://relay.example.com
-typekart join-online --name player2 --relay wss://relay.example.com --room rocket-salad-tiger
+typekart host --name host --relay wss://relay.example.com
+typekart join --name player2 --relay wss://relay.example.com --room rocket-salad-tiger
 ```
 
 The released CLI defaults to the public TypeKart relay at `wss://typekart-relay.fly.dev`, so `--relay` is only required for custom relay deployments.
@@ -140,8 +140,8 @@ app = "your-typekart-relay-name"
 Then players can use:
 
 ```sh
-cargo run -- host-online --name host --relay wss://your-typekart-relay-name.fly.dev
-cargo run -- join-online --name player2 --relay wss://your-typekart-relay-name.fly.dev --room rocket-salad-tiger
+cargo run -- host --name host --relay wss://your-typekart-relay-name.fly.dev
+cargo run -- join --name player2 --relay wss://your-typekart-relay-name.fly.dev --room rocket-salad-tiger
 ```
 
 The Fly config keeps one machine running because relay rooms are in memory.
@@ -160,8 +160,8 @@ Deployment path:
 Players can use the Render service URL as the relay:
 
 ```sh
-cargo run -- host-online --name host --relay wss://typekart-relay.onrender.com
-cargo run -- join-online --name player2 --relay wss://typekart-relay.onrender.com --room rocket-salad-tiger
+cargo run -- host --name host --relay wss://typekart-relay.onrender.com
+cargo run -- join --name player2 --relay wss://typekart-relay.onrender.com --room rocket-salad-tiger
 ```
 
 Render service URLs vary by account and service name. Use the actual URL shown in the Render dashboard.
@@ -180,8 +180,8 @@ Render service URLs vary by account and service name. Use the actual URL shown i
 ## Validation Checklist
 
 1. Start `typekart relay --bind 127.0.0.1:8080`.
-2. Run `host-online` against `ws://127.0.0.1:8080`.
-3. Run `join-online` against the printed room code.
+2. Run `host` against `ws://127.0.0.1:8080`.
+3. Run `join` against the printed room code.
 4. Ready both players and start a race.
 5. Repeat through a LAN IP from a second machine.
 6. Repeat through `wss://` after configuring the public reverse proxy.

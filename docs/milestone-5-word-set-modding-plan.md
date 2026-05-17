@@ -39,8 +39,8 @@ Possible future commands:
 cargo run -- play --word-set classic --words 40
 cargo run -- play --word-set-file ./mods/animals.txt --words 40
 cargo run -- play --word-set-dir ./mods/word-packs --words 40
-cargo run -- host --word-set-file ./mods/technical.txt --words 60
-cargo run -- host --word-set-dir ./mods/word-packs --words 60
+cargo run -- host-lan --word-set-file ./mods/technical.txt --words 60
+cargo run -- host-lan --word-set-dir ./mods/word-packs --words 60
 ```
 
 For local-network play, the host chooses the word set. Joiners do not need the source file because the server sends generated track words in race snapshots.

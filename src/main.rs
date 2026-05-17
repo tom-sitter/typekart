@@ -61,8 +61,48 @@ enum Command {
         #[arg(long)]
         debug_log: Option<PathBuf>,
     },
-    /// Host a local-network multiplayer lobby.
+    /// Host an online multiplayer lobby through a WebSocket relay.
     Host {
+        /// Display name for the host player.
+        #[arg(long)]
+        name: String,
+        /// WebSocket relay URL.
+        #[arg(long, default_value = DEFAULT_PUBLIC_RELAY_URL)]
+        relay: String,
+        /// Number of words in the generated track.
+        #[arg(short, long, default_value_t = 40)]
+        words: usize,
+        /// Built-in word set id to use.
+        #[arg(long, default_value = DEFAULT_WORD_SET_ID)]
+        word_set: String,
+        /// Load a custom word set from a newline-delimited text file.
+        #[arg(long)]
+        word_set_file: Option<PathBuf>,
+        /// Load a directory of .txt word sets and choose one at random.
+        #[arg(long)]
+        word_set_dir: Option<PathBuf>,
+        /// Load an item pack from a JSON file.
+        #[arg(long)]
+        item_pack_file: Option<PathBuf>,
+        /// Maximum total players, including the host.
+        #[arg(long, default_value_t = 6)]
+        max_players: usize,
+        /// Number of server-owned AI racers to include, capped by max players.
+        #[arg(long, default_value_t = 0)]
+        ai_racers: usize,
+        /// Difficulty used by all network AI racers.
+        #[arg(long, value_enum, default_value_t = CliAiDifficulty::Easy)]
+        ai_difficulty: CliAiDifficulty,
+        /// Write detailed network diagnostics to this file after the session exits.
+        #[arg(long)]
+        debug_log: Option<PathBuf>,
+        /// Use ASCII-safe markers instead of Unicode item icons.
+        #[arg(long = "ascii")]
+        ascii_icons: bool,
+    },
+    /// Host a local-network multiplayer lobby.
+    #[command(name = "host-lan")]
+    HostLan {
         /// Display name for the host player.
         #[arg(long)]
         name: String,
@@ -100,62 +140,8 @@ enum Command {
         #[arg(long = "ascii")]
         ascii_icons: bool,
     },
-    /// Join a local-network multiplayer lobby.
-    Join {
-        /// Display name for this player.
-        #[arg(long)]
-        name: String,
-        /// Host address and port to connect to.
-        #[arg(long)]
-        server: SocketAddr,
-        /// Write detailed network diagnostics to this file after the session exits.
-        #[arg(long)]
-        debug_log: Option<PathBuf>,
-        /// Use ASCII-safe markers instead of Unicode item icons.
-        #[arg(long = "ascii")]
-        ascii_icons: bool,
-    },
-    /// Host an online multiplayer lobby through a WebSocket relay.
-    HostOnline {
-        /// Display name for the host player.
-        #[arg(long)]
-        name: String,
-        /// WebSocket relay URL.
-        #[arg(long, default_value = DEFAULT_PUBLIC_RELAY_URL)]
-        relay: String,
-        /// Number of words in the generated track.
-        #[arg(short, long, default_value_t = 40)]
-        words: usize,
-        /// Built-in word set id to use.
-        #[arg(long, default_value = DEFAULT_WORD_SET_ID)]
-        word_set: String,
-        /// Load a custom word set from a newline-delimited text file.
-        #[arg(long)]
-        word_set_file: Option<PathBuf>,
-        /// Load a directory of .txt word sets and choose one at random.
-        #[arg(long)]
-        word_set_dir: Option<PathBuf>,
-        /// Load an item pack from a JSON file.
-        #[arg(long)]
-        item_pack_file: Option<PathBuf>,
-        /// Maximum total players, including the host.
-        #[arg(long, default_value_t = 6)]
-        max_players: usize,
-        /// Number of server-owned AI racers to include, capped by max players.
-        #[arg(long, default_value_t = 0)]
-        ai_racers: usize,
-        /// Difficulty used by all network AI racers.
-        #[arg(long, value_enum, default_value_t = CliAiDifficulty::Easy)]
-        ai_difficulty: CliAiDifficulty,
-        /// Write detailed network diagnostics to this file after the session exits.
-        #[arg(long)]
-        debug_log: Option<PathBuf>,
-        /// Use ASCII-safe markers instead of Unicode item icons.
-        #[arg(long = "ascii")]
-        ascii_icons: bool,
-    },
     /// Join an online multiplayer lobby through a WebSocket relay.
-    JoinOnline {
+    Join {
         /// Display name for this player.
         #[arg(long)]
         name: String,
@@ -165,6 +151,22 @@ enum Command {
         /// Relay room code shown by the host.
         #[arg(long)]
         room: String,
+        /// Write detailed network diagnostics to this file after the session exits.
+        #[arg(long)]
+        debug_log: Option<PathBuf>,
+        /// Use ASCII-safe markers instead of Unicode item icons.
+        #[arg(long = "ascii")]
+        ascii_icons: bool,
+    },
+    /// Join a local-network multiplayer lobby.
+    #[command(name = "join-lan")]
+    JoinLan {
+        /// Display name for this player.
+        #[arg(long)]
+        name: String,
+        /// Host address and port to connect to.
+        #[arg(long)]
+        server: SocketAddr,
         /// Write detailed network diagnostics to this file after the session exits.
         #[arg(long)]
         debug_log: Option<PathBuf>,
@@ -236,6 +238,35 @@ fn main() -> Result<()> {
         ),
         Command::Host {
             name,
+            relay,
+            words,
+            word_set,
+            word_set_file,
+            word_set_dir,
+            item_pack_file,
+            max_players,
+            ai_racers,
+            ai_difficulty,
+            debug_log,
+            ascii_icons,
+        } => app::host_online(
+            relay,
+            name,
+            words,
+            word_set_selection(word_set, word_set_file, word_set_dir)?,
+            item_pack_file,
+            max_players,
+            ai_racers,
+            ai_difficulty.into(),
+            if ascii_icons {
+                IconMode::Ascii
+            } else {
+                IconMode::Unicode
+            },
+            debug_log,
+        ),
+        Command::HostLan {
+            name,
             words,
             word_set,
             word_set_file,
@@ -265,50 +296,6 @@ fn main() -> Result<()> {
         ),
         Command::Join {
             name,
-            server,
-            debug_log,
-            ascii_icons,
-        } => app::join(
-            server,
-            name,
-            if ascii_icons {
-                IconMode::Ascii
-            } else {
-                IconMode::Unicode
-            },
-            debug_log,
-        ),
-        Command::HostOnline {
-            name,
-            relay,
-            words,
-            word_set,
-            word_set_file,
-            word_set_dir,
-            item_pack_file,
-            max_players,
-            ai_racers,
-            ai_difficulty,
-            debug_log,
-            ascii_icons,
-        } => app::host_online(
-            relay,
-            name,
-            words,
-            word_set_selection(word_set, word_set_file, word_set_dir)?,
-            item_pack_file,
-            max_players,
-            ai_racers,
-            ai_difficulty.into(),
-            if ascii_icons {
-                IconMode::Ascii
-            } else {
-                IconMode::Unicode
-            },
-            debug_log,
-        ),
-        Command::JoinOnline {
-            name,
             relay,
             room,
             debug_log,
@@ -316,6 +303,21 @@ fn main() -> Result<()> {
         } => app::join_online(
             relay,
             crate::net::relay::RoomCode::parse(room)?,
+            name,
+            if ascii_icons {
+                IconMode::Ascii
+            } else {
+                IconMode::Unicode
+            },
+            debug_log,
+        ),
+        Command::JoinLan {
+            name,
+            server,
+            debug_log,
+            ascii_icons,
+        } => app::join(
+            server,
             name,
             if ascii_icons {
                 IconMode::Ascii

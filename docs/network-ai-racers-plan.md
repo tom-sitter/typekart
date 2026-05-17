@@ -32,19 +32,19 @@ The protocol should still identify racer kind explicitly. Do not rely on name pr
 Host-only flags:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 --ai-racers 4 --ai-difficulty easy
+cargo run -- host-lan --name host --bind 127.0.0.1:4000 --ai-racers 4 --ai-difficulty easy
 ```
 
 Harder bots:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 --ai-racers 4 --ai-difficulty hard
+cargo run -- host-lan --name host --bind 127.0.0.1:4000 --ai-racers 4 --ai-difficulty hard
 ```
 
 Validation-friendly short race:
 
 ```sh
-cargo run -- host --name host --bind 127.0.0.1:4000 --words 20 --ai-racers 4
+cargo run -- host-lan --name host --bind 127.0.0.1:4000 --words 20 --ai-racers 4
 ```
 
 ## Racer Capacity

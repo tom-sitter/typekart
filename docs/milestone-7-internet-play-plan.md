@@ -44,14 +44,14 @@ This gives the best balance between user experience and engineering scope:
 - Clients make outbound connections, so home NAT is not a blocker.
 - The current JSON protocol can be carried inside WebSocket text frames with limited reshaping.
 
-Direct port forwarding can remain available through the existing `host --bind 0.0.0.0:4000` and `join --server HOST:4000` commands for technical users, but it should not be the primary internet-play path.
+Direct port forwarding can remain available through the `host-lan --bind 0.0.0.0:4000` and `join-lan --server HOST:4000` commands for technical users, but it should not be the primary internet-play path.
 
 ## Target User Flow
 
 Host:
 
 ```sh
-cargo run -- host-online --name tom
+cargo run -- host --name tom
 ```
 
 Expected behavior:
@@ -64,7 +64,7 @@ Expected behavior:
 Joiner:
 
 ```sh
-cargo run -- join-online --name alex --room rocket-salad-tiger
+cargo run -- join --name alex --room rocket-salad-tiger
 ```
 
 Expected behavior:
@@ -222,15 +222,15 @@ Potential later improvements:
 Keep existing LAN commands:
 
 ```sh
-cargo run -- host --name tom --bind 0.0.0.0:4000
-cargo run -- join --name alex --server 192.168.1.20:4000
+cargo run -- host-lan --name tom --bind 0.0.0.0:4000
+cargo run -- join-lan --name alex --server 192.168.1.20:4000
 ```
 
 Add internet commands:
 
 ```sh
-cargo run -- host-online --name tom --relay wss://relay.typekart.example
-cargo run -- join-online --name alex --relay wss://relay.typekart.example --room rocket-salad-tiger
+cargo run -- host --name tom --relay wss://relay.typekart.example
+cargo run -- join --name alex --relay wss://relay.typekart.example --room rocket-salad-tiger
 ```
 
 Useful development relay command:
@@ -303,7 +303,7 @@ Implementation notes:
 - `src/net/relay_server.rs` runs a local WebSocket relay with room-scoped host and participant connections.
 - `cargo run -- relay --bind 127.0.0.1:8080` starts the development relay.
 - The relay creates room codes, forwards join requests to the host, routes participant input to the host, broadcasts host snapshots to participants, and closes rooms when the host disconnects.
-- The relay can now be reached by the `host-online` and `join-online` loopback adapters from Slice 4.
+- The relay can now be reached by the `host` and `join` loopback adapters from Slice 4.
 
 Validation:
 
@@ -317,23 +317,23 @@ Status: implemented for local `ws://` relay usage through loopback adapters.
 
 Deliverables:
 
-- Add `host-online`.
-- Add `join-online`.
+- Add `host`.
+- Add `join`.
 - Reuse current network UI.
 - Add clearer connection and room rejection errors.
 
 Implementation notes:
 
 - `src/net/online.rs` bridges the existing TCP game protocol over the WebSocket relay.
-- `host-online` starts the normal authoritative host on loopback, starts an online bridge, creates a relay room, then opens the usual host UI.
-- `join-online` starts a loopback proxy, connects that proxy to the relay room, then opens the usual join UI against the proxy.
+- `host` starts the normal authoritative host on loopback, starts an online bridge, creates a relay room, then opens the usual host UI.
+- `join` starts a loopback proxy, connects that proxy to the relay room, then opens the usual join UI against the proxy.
 - This intentionally avoids forking the game rules or renderer while proving the relay path end to end.
 - Online adapters support plain `ws://` and TLS-backed `wss://` relay URLs.
 - The Rust relay binary remains a plain WebSocket service; public TLS should terminate at a reverse proxy.
 
 Validation:
 
-- `host-online --help` and `join-online --help` expose the new commands.
+- `host --help` and `join --help` expose the new commands.
 - Existing TCP and game tests pass.
 - Automated same-machine relay smoke test verifies a joiner receives the real host welcome through relay-backed adapters.
 - Manual same-machine relay smoke test.
@@ -362,7 +362,7 @@ Implementation notes:
 
 Validation:
 
-- A clean checkout can run relay, host-online, and join-online using documented commands.
+- A clean checkout can run relay, host, and join using documented commands.
 - Relay hardening unit tests cover room limits, joiner limits, and idle cleanup.
 - Docker build should be verified before public deployment.
 - Public deployment validation still requires a real domain and TLS reverse proxy.
