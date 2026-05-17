@@ -85,6 +85,7 @@ pub fn run_relay(config: RelayConfig) -> Result<()> {
     }
 
     let state = Arc::new(Mutex::new(RelayState::default()));
+    spawn_idle_room_sweeper(Arc::clone(&state), config.limits.room_idle_timeout);
     for stream in listener.incoming() {
         let stream = stream.context("failed to accept relay connection")?;
         let state = Arc::clone(&state);
@@ -399,6 +400,10 @@ fn close_room(state: &mut RelayState, room: &RoomCode, reason: &str) {
 }
 
 fn cleanup_stale_rooms(state: &Arc<Mutex<RelayState>>, idle_timeout: Duration) {
+    if idle_timeout.is_zero() {
+        return;
+    }
+
     let mut state = state.lock().expect("relay state poisoned");
     let now = Instant::now();
     let stale_rooms = state
@@ -418,16 +423,41 @@ fn cleanup_stale_rooms(state: &Arc<Mutex<RelayState>>, idle_timeout: Duration) {
     }
 }
 
+fn spawn_idle_room_sweeper(state: Arc<Mutex<RelayState>>, idle_timeout: Duration) {
+    if idle_timeout.is_zero() {
+        return;
+    }
+
+    thread::spawn(move || loop {
+        thread::sleep(idle_sweep_interval(idle_timeout));
+        cleanup_stale_rooms(&state, idle_timeout);
+    });
+}
+
+fn idle_sweep_interval(idle_timeout: Duration) -> Duration {
+    #[cfg(test)]
+    if idle_timeout < Duration::from_secs(5) {
+        return idle_timeout;
+    }
+
+    const MIN_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
+    const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+    let interval = idle_timeout / 4;
+    interval.clamp(MIN_SWEEP_INTERVAL, MAX_SWEEP_INTERVAL)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         sync::{mpsc, Arc, Mutex},
+        thread,
         time::{Duration, Instant},
     };
 
     use super::{
-        cleanup_connection, cleanup_stale_rooms, handle_relay_message, ConnectionRole, RelayLimits,
-        RelayState,
+        cleanup_connection, cleanup_stale_rooms, handle_relay_message, idle_sweep_interval,
+        spawn_idle_room_sweeper, ConnectionRole, RelayLimits, RelayState,
     };
     use crate::net::{
         protocol::{ClientMessage, ClientSequence, PlayerId, ProtocolKey, ServerMessage},
@@ -752,5 +782,59 @@ mod tests {
         cleanup_stale_rooms(&state, Duration::from_secs(1));
 
         assert!(state.lock().unwrap().rooms.get(&room).is_none());
+    }
+
+    #[test]
+    fn idle_sweep_interval_is_bounded() {
+        assert_eq!(
+            idle_sweep_interval(Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            idle_sweep_interval(Duration::from_secs(80)),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            idle_sweep_interval(Duration::from_secs(1000)),
+            Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn idle_room_sweeper_removes_stale_rooms_without_new_messages() {
+        let state = Arc::new(Mutex::new(RelayState::default()));
+        let (host_tx, host_rx) = mpsc::channel();
+        let limits = RelayLimits::default();
+        let Some((room, _)) = handle_relay_message(
+            RelayClientMessage::CreateRoom {
+                host_version: "test".to_string(),
+            },
+            &state,
+            &host_tx,
+            &limits,
+        )
+        .unwrap() else {
+            panic!("host should create a room");
+        };
+        let _ = host_rx.recv().unwrap();
+
+        state
+            .lock()
+            .unwrap()
+            .rooms
+            .get_mut(&room)
+            .unwrap()
+            .last_activity = Instant::now() - Duration::from_secs(10);
+
+        spawn_idle_room_sweeper(Arc::clone(&state), Duration::from_millis(1));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if state.lock().unwrap().rooms.get(&room).is_none() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        panic!("idle sweeper did not remove stale room");
     }
 }
