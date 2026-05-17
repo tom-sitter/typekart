@@ -31,6 +31,7 @@ type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
 pub struct OnlineHostBridgeConfig {
     pub relay: String,
     pub local_server: SocketAddr,
+    pub ready_signal: Option<Sender<RoomCode>>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +57,9 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
         config.relay,
         room.display()
     );
+    if let Some(ready_signal) = config.ready_signal {
+        let _ = ready_signal.send(room.clone());
+    }
     set_plain_nonblocking(&mut websocket)?;
 
     let (outbound_tx, outbound_rx) = mpsc::channel();
@@ -414,4 +418,131 @@ fn send_relay_message(websocket: &mut RelaySocket, message: &RelayClientMessage)
 
 fn decode_relay_message(text: &str) -> Result<RelayServerMessage> {
     serde_json::from_str(text).context("failed to decode relay message")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{SocketAddr, TcpStream},
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    use super::{
+        run_online_host_bridge, run_online_join_proxy, OnlineHostBridgeConfig,
+        OnlineJoinProxyConfig,
+    };
+    use crate::{
+        game::{
+            ai::AiDifficulty, items::ItemRegistry, mods::ActiveModConfig, track::Track,
+            words::WordSetDefinition,
+        },
+        net::{
+            protocol::{ClientMessage, ServerMessage},
+            relay_server::{run_relay, RelayConfig},
+            server::{run_host, HostConfig},
+            transport::{read_server_message, write_client_message},
+        },
+    };
+
+    #[test]
+    fn online_bridge_allows_joiner_to_receive_host_welcome_through_relay() {
+        let relay_addr = spawn_test_relay();
+        let local_host = spawn_test_host();
+        let (room_tx, room_rx) = mpsc::channel();
+        let relay_url = format!("ws://{relay_addr}");
+
+        {
+            let relay_url = relay_url.clone();
+            thread::spawn(move || {
+                let _ = run_online_host_bridge(OnlineHostBridgeConfig {
+                    relay: relay_url,
+                    local_server: local_host,
+                    ready_signal: Some(room_tx),
+                });
+            });
+        }
+        let room = room_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("online host bridge should create a room");
+
+        let (proxy_tx, proxy_rx) = mpsc::channel();
+        {
+            let relay_url = relay_url.clone();
+            thread::spawn(move || {
+                let _ = run_online_join_proxy(OnlineJoinProxyConfig {
+                    relay: relay_url,
+                    room,
+                    name: "alex".to_string(),
+                    ready_signal: proxy_tx,
+                });
+            });
+        }
+        let proxy_addr = proxy_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("online join proxy should start");
+
+        let mut client =
+            TcpStream::connect(proxy_addr).expect("test client should connect to join proxy");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout should be configurable");
+        write_client_message(
+            &mut client,
+            &ClientMessage::Hello {
+                name: "alex".to_string(),
+                client_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        )
+        .expect("hello should be forwarded to relay");
+
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        let welcome = read_server_message(&mut reader)
+            .expect("welcome should decode")
+            .expect("welcome should arrive");
+        assert!(matches!(welcome, ServerMessage::Welcome { .. }));
+
+        write_client_message(&mut client, &ClientMessage::Leave).unwrap();
+    }
+
+    fn spawn_test_relay() -> SocketAddr {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = run_relay(RelayConfig {
+                bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ready_signal: Some(tx),
+            });
+        });
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("relay should start")
+    }
+
+    fn spawn_test_host() -> SocketAddr {
+        let word_set = WordSetDefinition::load_builtin_default().unwrap();
+        let item_registry = ItemRegistry::builtin();
+        let active_mod_config = ActiveModConfig::new(&word_set, &item_registry, None);
+        let track = Track::generate(&word_set.words, 6).unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let _ = run_host(HostConfig {
+                bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+                host_name: None,
+                track,
+                word_list: word_set.words,
+                item_registry,
+                active_mod_config,
+                max_players: 6,
+                ai_racer_count: 0,
+                ai_difficulty: AiDifficulty::Easy,
+                ready_signal: Some(tx),
+                console_logging: false,
+                debug_log: None,
+            });
+        });
+
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("host should start")
+    }
 }

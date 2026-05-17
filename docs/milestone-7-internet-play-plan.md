@@ -332,7 +332,8 @@ Validation:
 
 - `host-online --help` and `join-online --help` expose the new commands.
 - Existing TCP and game tests pass.
-- Same-machine relay smoke test.
+- Automated same-machine relay smoke test verifies a joiner receives the real host welcome through relay-backed adapters.
+- Manual same-machine relay smoke test.
 - Two-machine same-LAN relay test.
 - Public relay test when hosting infrastructure exists.
 

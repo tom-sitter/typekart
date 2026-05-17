@@ -190,6 +190,7 @@ pub fn host_online(
         if let Err(error) = run_online_host_bridge(OnlineHostBridgeConfig {
             relay: bridge_relay,
             local_server,
+            ready_signal: None,
         }) {
             eprintln!("Online host bridge stopped: {error:#}");
         }

@@ -25,6 +25,7 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct RelayConfig {
     pub bind: SocketAddr,
+    pub ready_signal: Option<Sender<SocketAddr>>,
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +53,9 @@ pub fn run_relay(config: RelayConfig) -> Result<()> {
         .local_addr()
         .context("failed to read relay address")?;
     println!("TypeKart relay listening on ws://{local_addr}");
+    if let Some(ready_signal) = config.ready_signal {
+        let _ = ready_signal.send(local_addr);
+    }
 
     let state = Arc::new(Mutex::new(RelayState::default()));
     for stream in listener.incoming() {

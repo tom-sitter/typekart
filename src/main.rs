@@ -310,9 +310,10 @@ fn main() -> Result<()> {
             },
             debug_log,
         ),
-        Command::Relay { bind } => {
-            net::relay_server::run_relay(net::relay_server::RelayConfig { bind })
-        }
+        Command::Relay { bind } => net::relay_server::run_relay(net::relay_server::RelayConfig {
+            bind,
+            ready_signal: None,
+        }),
     }
 }
 
