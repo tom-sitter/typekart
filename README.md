@@ -4,35 +4,56 @@ TypeKart is a terminal typing racer with kart-style item effects.
 
 ## Install
 
-### macOS With Homebrew
+The easiest beta install path is the GitHub release archive for your computer.
 
-After the Homebrew tap is published:
+### macOS
 
 ```sh
-brew tap OWNER/tap
+curl -LO https://github.com/tom-sitter/typekart/releases/latest/download/typekart-aarch64-apple-darwin.tar.gz
+tar -xzf typekart-aarch64-apple-darwin.tar.gz
+sudo install typekart /usr/local/bin/typekart
+typekart --help
+```
+
+On Intel Macs, use `typekart-x86_64-apple-darwin.tar.gz` instead.
+
+### Windows
+
+```powershell
+iwr https://github.com/tom-sitter/typekart/releases/latest/download/typekart-x86_64-pc-windows-msvc.zip -OutFile typekart.zip
+Expand-Archive typekart.zip -DestinationPath typekart
+.\typekart\typekart.exe --help
+```
+
+You can move `typekart.exe` somewhere on your `PATH` if you want to run `typekart` from any terminal.
+
+### Package Managers
+
+Package-manager manifests are included under `packaging/`, but they need release checksums before they can be published.
+
+Homebrew, after the tap is published:
+
+```sh
+brew tap tom-sitter/tap
 brew install typekart
 ```
 
-### Windows With Scoop
-
-After the Scoop bucket is published:
+Scoop, after the bucket is published:
 
 ```powershell
-scoop bucket add typekart https://github.com/OWNER/scoop-bucket
+scoop bucket add typekart https://github.com/tom-sitter/scoop-bucket
 scoop install typekart
 ```
 
-### Windows With WinGet
-
-After the WinGet package is accepted:
+WinGet, after the package is accepted:
 
 ```powershell
-winget install OWNER.TypeKart
+winget install tom-sitter.TypeKart
 ```
 
 ### Direct Downloads
 
-Download the archive for your system from the GitHub releases page:
+The release page contains:
 
 - `typekart-aarch64-apple-darwin.tar.gz` for Apple Silicon Macs
 - `typekart-x86_64-apple-darwin.tar.gz` for Intel Macs
@@ -42,6 +63,34 @@ The built-in word set is embedded in the binary, so the release archive contains
 
 Maintainer release and package-manager notes are in [docs/install/distribution.md](docs/install/distribution.md).
 
+## Quick Start
+
+After installing, start a solo race:
+
+```sh
+typekart play
+```
+
+Race against AI players:
+
+```sh
+typekart play --ai-racers 3 --ai-difficulty easy
+```
+
+Host a local multiplayer race:
+
+```sh
+typekart host --name host --bind 0.0.0.0:4000
+```
+
+Join that race from another terminal or computer:
+
+```sh
+typekart join --name player2 --server HOST_IP:4000
+```
+
+Joiners press `Enter` to ready up. The host presses `Space` to start.
+
 ## Releases
 
 Create release commits and tags with:
@@ -50,7 +99,7 @@ Create release commits and tags with:
 scripts/release.sh 0.1.0
 ```
 
-The GitHub release workflow publishes macOS and Windows archives from pushed `v*.*.*` tags.
+Release notes are generated under `docs/releases/`, and the GitHub release workflow publishes macOS and Windows archives from pushed `v*.*.*` tags.
 
 ## Requirements
 

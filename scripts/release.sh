@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/release.sh VERSION [--push] [--skip-checks]
 
-Creates a TypeKart release commit and annotated git tag.
+Creates release notes, a release commit when needed, and an annotated git tag.
 
 Arguments:
   VERSION        SemVer version without a leading "v", for example 0.2.0
@@ -80,37 +80,76 @@ tag="v$version"
 
 git rev-parse --verify "$tag" >/dev/null 2>&1 && die "tag already exists: $tag"
 
-dirty_release_files=$(git status --short -- Cargo.toml Cargo.lock packaging docs/install README.md .github scripts)
+dirty_release_files=$(git status --short -- Cargo.toml Cargo.lock packaging docs README.md CHANGELOG.md .github scripts)
 if [ -n "$dirty_release_files" ]; then
   printf '%s\n' "$dirty_release_files" >&2
   die "release files are dirty; commit or stash them before releasing"
 fi
 
 current_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-[ "$current_version" != "$version" ] || die "Cargo.toml is already at version $version"
 
-printf 'Updating Cargo package version: %s -> %s\n' "$current_version" "$version"
 cargo metadata --no-deps --format-version 1 >/dev/null
 
-if command -v cargo-set-version >/dev/null 2>&1; then
-  cargo set-version "$version"
+if [ "$current_version" != "$version" ]; then
+  printf 'Updating Cargo package version: %s -> %s\n' "$current_version" "$version"
+  if command -v cargo-set-version >/dev/null 2>&1; then
+    cargo set-version "$version"
+  else
+    command -v awk >/dev/null 2>&1 || die "awk is required when cargo-edit is not installed"
+    tmp_file=$(mktemp)
+    awk -v version="$version" '
+      !updated && /^version = "/ {
+        print "version = \"" version "\""
+        updated = 1
+        next
+      }
+      { print }
+    ' Cargo.toml > "$tmp_file"
+    cat "$tmp_file" > Cargo.toml
+    rm "$tmp_file"
+  fi
 else
-  command -v awk >/dev/null 2>&1 || die "awk is required when cargo-edit is not installed"
-  tmp_file=$(mktemp)
-  awk -v version="$version" '
-    !updated && /^version = "/ {
-      print "version = \"" version "\""
-      updated = 1
-      next
-    }
-    { print }
-  ' Cargo.toml > "$tmp_file"
-  cat "$tmp_file" > Cargo.toml
-  rm "$tmp_file"
+  printf 'Cargo package version is already %s; creating release notes and tag only.\n' "$version"
 fi
 
 cargo metadata --format-version 1 >/dev/null
 cargo metadata --locked --format-version 1 >/dev/null
+
+mkdir -p docs/releases
+notes_file="docs/releases/$tag.md"
+if [ ! -f "$notes_file" ]; then
+  scripts/generate-release-notes.sh "$version" > "$notes_file"
+fi
+
+if [ ! -f CHANGELOG.md ]; then
+  cat > CHANGELOG.md <<EOF
+# Changelog
+
+Release notes are kept under \`docs/releases/\`.
+
+- [$tag](docs/releases/$tag.md)
+EOF
+elif ! grep -q "docs/releases/$tag.md" CHANGELOG.md; then
+  tmp_file=$(mktemp)
+  awk -v tag="$tag" '
+    NR == 1 {
+      print
+      next
+    }
+    !inserted && /^-/ {
+      print "- [" tag "](docs/releases/" tag ".md)"
+      inserted = 1
+    }
+    { print }
+    END {
+      if (!inserted) {
+        print "- [" tag "](docs/releases/" tag ".md)"
+      }
+    }
+  ' CHANGELOG.md > "$tmp_file"
+  cat "$tmp_file" > CHANGELOG.md
+  rm "$tmp_file"
+fi
 
 if [ "$skip_checks" -eq 0 ]; then
   cargo fmt --all -- --check
@@ -119,11 +158,15 @@ if [ "$skip_checks" -eq 0 ]; then
   cargo build --locked --release
 fi
 
-git add Cargo.toml Cargo.lock
-git diff --cached --quiet && die "no version changes staged"
+git add Cargo.toml Cargo.lock CHANGELOG.md "$notes_file"
 
-git commit -m "Release $tag"
-git tag -a "$tag" -m "Release $tag"
+if ! git diff --cached --quiet; then
+  git commit -m "Release $tag"
+else
+  printf 'No release commit needed; tagging current HEAD.\n'
+fi
+
+git tag -a "$tag" -F "$notes_file"
 
 if [ "$push_release" -eq 1 ]; then
   git push origin HEAD

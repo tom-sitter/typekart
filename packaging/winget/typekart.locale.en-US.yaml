@@ -1,7 +1,7 @@
-PackageIdentifier: OWNER.TypeKart
+PackageIdentifier: tom-sitter.TypeKart
 PackageVersion: 0.1.0
 PackageLocale: en-US
-Publisher: OWNER
+Publisher: tom-sitter
 PackageName: TypeKart
 ShortDescription: Terminal typing racer with kart-style item effects
 ManifestType: defaultLocale

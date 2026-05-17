@@ -18,7 +18,7 @@ Use the release script from a clean release tree:
 scripts/release.sh 0.1.0
 ```
 
-The script updates `Cargo.toml`, validates the build, commits the version bump, and creates an annotated `v0.1.0` tag. Push the release when ready:
+The script updates `Cargo.toml` when needed, creates release notes under `docs/releases/`, updates `CHANGELOG.md`, validates the build, commits release file changes, and creates an annotated `v0.1.0` tag. Push the release when ready:
 
 ```sh
 git push origin main
@@ -33,6 +33,12 @@ scripts/release.sh 0.1.0 --push
 
 After the GitHub release finishes, copy the SHA-256 values from `typekart-checksums.txt` into the package manifests under `packaging/`.
 
+To regenerate notes without cutting a release:
+
+```sh
+scripts/generate-release-notes.sh 0.1.0 > docs/releases/v0.1.0.md
+```
+
 ## Homebrew
 
 Create a tap repository named `homebrew-tap`, then add `packaging/homebrew/typekart.rb` as `Formula/typekart.rb`.
@@ -40,13 +46,12 @@ Create a tap repository named `homebrew-tap`, then add `packaging/homebrew/typek
 Users will install with:
 
 ```sh
-brew tap OWNER/tap
+brew tap tom-sitter/tap
 brew install typekart
 ```
 
 Before publishing the tap, replace:
 
-- `OWNER`
 - `REPLACE_WITH_LICENSE`
 - `REPLACE_WITH_ARM64_SHA256`
 - `REPLACE_WITH_X86_64_SHA256`
@@ -66,13 +71,12 @@ Create a Scoop bucket repository, then add `packaging/scoop/typekart.json` as `b
 Users will install with:
 
 ```powershell
-scoop bucket add typekart https://github.com/OWNER/scoop-bucket
+scoop bucket add typekart https://github.com/tom-sitter/scoop-bucket
 scoop install typekart
 ```
 
 Before publishing the bucket, replace:
 
-- `OWNER`
 - `REPLACE_WITH_LICENSE`
 - `REPLACE_WITH_WINDOWS_SHA256`
 
@@ -82,7 +86,6 @@ Use the manifests under `packaging/winget/` as the starting point for a pull req
 
 Before submitting, replace:
 
-- `OWNER`
 - `REPLACE_WITH_WINDOWS_SHA256_UPPERCASE`
 - publisher details if the package should use an organization or personal name
 
@@ -97,7 +100,7 @@ winget validate .\packaging\winget
 macOS:
 
 ```sh
-curl -LO https://github.com/OWNER/typekart/releases/download/v0.1.0/typekart-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/tom-sitter/typekart/releases/download/v0.1.0/typekart-aarch64-apple-darwin.tar.gz
 tar -xzf typekart-aarch64-apple-darwin.tar.gz
 sudo install typekart /usr/local/bin/typekart
 typekart --help
@@ -106,7 +109,7 @@ typekart --help
 Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest https://github.com/OWNER/typekart/releases/download/v0.1.0/typekart-x86_64-pc-windows-msvc.zip -OutFile typekart.zip
+Invoke-WebRequest https://github.com/tom-sitter/typekart/releases/download/v0.1.0/typekart-x86_64-pc-windows-msvc.zip -OutFile typekart.zip
 Expand-Archive typekart.zip -DestinationPath typekart
 .\typekart\typekart.exe --help
 ```
