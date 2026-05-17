@@ -63,9 +63,11 @@ The TypeKart client supports `wss://` relay URLs. The Rust relay binary currentl
 Example public commands:
 
 ```sh
-cargo run -- host-online --name host --relay wss://relay.example.com
-cargo run -- join-online --name player2 --relay wss://relay.example.com --room rocket-salad-tiger
+typekart host-online --name host --relay wss://relay.example.com
+typekart join-online --name player2 --relay wss://relay.example.com --room rocket-salad-tiger
 ```
+
+The released CLI defaults to the public TypeKart relay at `wss://typekart-relay.fly.dev`, so `--relay` is only required for custom relay deployments.
 
 ## Reverse Proxy
 

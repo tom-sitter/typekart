@@ -77,6 +77,18 @@ Race against AI players:
 typekart play --ai-racers 3 --ai-difficulty easy
 ```
 
+Host an internet race:
+
+```sh
+typekart host-online --name host
+```
+
+The host prints a room code and join command. Other racers can join with:
+
+```sh
+typekart join-online --name player2 --room rocket-salad-tiger
+```
+
 Host a local multiplayer race:
 
 ```sh
@@ -189,6 +201,27 @@ cargo run -- join --name player2 --server 192.168.1.25:4000
 ## Multiplayer Through A Relay
 
 All racers must run the same TypeKart version as the host. Relay-backed joins are rejected early when the client and host versions differ.
+
+To host through the public TypeKart relay:
+
+```sh
+typekart host-online --name host
+```
+
+The host prints a room code. Other racers join with:
+
+```sh
+typekart join-online --name player2 --room rocket-salad-tiger
+```
+
+Use `--relay` only when you want to use a custom relay:
+
+```sh
+typekart host-online --name host --relay wss://relay.example.com
+typekart join-online --name player2 --relay wss://relay.example.com --room rocket-salad-tiger
+```
+
+### Local Relay Development
 
 Terminal 1, start a local development relay:
 

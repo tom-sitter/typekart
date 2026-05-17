@@ -53,7 +53,7 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
     let room = wait_for_created_room(&mut websocket)?;
     println!("Online room: {}", room.display());
     println!(
-        "Join command: cargo run -- join-online --name PLAYER --relay {} --room {}",
+        "Join command: typekart join-online --name PLAYER --relay {} --room {}",
         config.relay,
         room.display()
     );

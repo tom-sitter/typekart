@@ -19,6 +19,8 @@ use crate::game::{
 };
 use crate::ui::render::IconMode;
 
+const DEFAULT_PUBLIC_RELAY_URL: &str = "wss://typekart-relay.fly.dev";
+
 #[derive(Debug, Parser)]
 #[command(name = "typekart")]
 #[command(about = "A terminal typing racer")]
@@ -119,7 +121,7 @@ enum Command {
         #[arg(long)]
         name: String,
         /// WebSocket relay URL.
-        #[arg(long)]
+        #[arg(long, default_value = DEFAULT_PUBLIC_RELAY_URL)]
         relay: String,
         /// Number of words in the generated track.
         #[arg(short, long, default_value_t = 40)]
@@ -158,7 +160,7 @@ enum Command {
         #[arg(long)]
         name: String,
         /// WebSocket relay URL.
-        #[arg(long)]
+        #[arg(long, default_value = DEFAULT_PUBLIC_RELAY_URL)]
         relay: String,
         /// Relay room code shown by the host.
         #[arg(long)]
