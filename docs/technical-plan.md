@@ -421,7 +421,7 @@ Rules to support:
 - Bonus intent is inferred from typed input.
 - Bonus pickup is unavailable while holding an item.
 - Bonus pickup is unavailable while typo state is active.
-- Star Power can loosen typo rules without changing raw accuracy tracking.
+- Star Power can discard incorrect keys without adding typo input or changing raw accuracy tracking.
 
 This should be heavily unit tested before networking exists.
 
@@ -472,7 +472,7 @@ Current modding injection:
 
 - Item definitions now flow through `ItemRegistry`.
 - Built-in item roll weights can be tuned by JSON item packs, including full first/middle/trailing context tables.
-- Built-in item parameters can be tuned for Mushroom boost words/WPM, Banana range/stun/blink/cue timing, Shield duration, and Banana attack cue labels.
+- Built-in item parameters can be tuned for Mushroom boost words/WPM, Banana range/stun/blink/cue timing, Shield duration, Star Power duration, Blue Shell affected word count, and Banana attack cue labels.
 - Bonus claiming uses the selected item registry in local and network play.
 - New item effects still require the planned shared item engine.
 
@@ -575,7 +575,7 @@ High-value tests:
 - Shield activation and expiry.
 - Attack warning followed by block.
 - Banana target selection.
-- Blue Shell capitalization generation.
+- Blue Shell word override generation.
 - Finish order.
 - Custom word-set file and directory loading.
 - Item-pack parsing and registry overrides.

@@ -38,7 +38,7 @@ pub struct LocalSession {
     pub bonuses: BonusState,
     pub bonus_attempt: Option<BonusAttempt>,
     pub attack_warning: Option<AttackWarning>,
-    pub player_impact_until: Option<Instant>,
+    pub player_impact_cue: Option<ImpactCue>,
     pub player_item_cue: Option<ItemCue>,
     pub race_status: RaceStatus,
     pub race_phase: RacePhase,
@@ -98,8 +98,27 @@ pub struct AiRacer {
     char_budget: f64,
     last_update: Instant,
     stunned_until: Option<Instant>,
-    pub(crate) impact_until: Option<Instant>,
+    pub(crate) impact_cue: Option<ImpactCue>,
     pub item_cue: Option<ItemCue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImpactCue {
+    pub kind: ImpactCueKind,
+    pub until: Instant,
+}
+
+impl ImpactCue {
+    pub fn is_visible(self, now: Instant) -> bool {
+        self.until > now
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImpactCueKind {
+    Banana,
+    BlueShell,
+    ShieldBlock,
 }
 
 impl AiRacer {
@@ -118,7 +137,7 @@ impl AiRacer {
             char_budget: 0.0,
             last_update: now,
             stunned_until: None,
-            impact_until: None,
+            impact_cue: None,
             item_cue: None,
         }
     }
@@ -129,7 +148,7 @@ impl AiRacer {
 
     #[cfg(test)]
     pub fn is_impacted(&self, now: Instant) -> bool {
-        self.impact_until.is_some_and(|until| until > now)
+        self.impact_cue.is_some_and(|cue| cue.is_visible(now))
     }
 }
 
@@ -148,6 +167,7 @@ impl ItemCue {
             ItemCueKind::Banana { direction } => {
                 Self::banana(direction, now, &ItemRegistry::builtin())
             }
+            ItemCueKind::BlueShell { direction } => Self::blue_shell(direction, now),
         }
     }
 
@@ -168,6 +188,21 @@ impl ItemCue {
         }
     }
 
+    fn blue_shell(direction: AttackDirection, now: Instant) -> Self {
+        let (ascii_label, unicode_label) = match direction {
+            AttackDirection::Ahead => (" sh>>".to_string(), " 🐢 >>".to_string()),
+            AttackDirection::Behind => ("<<sh ".to_string(), "<< 🐢 ".to_string()),
+            AttackDirection::Overlap => (" sh<>".to_string(), " 🐢 <>".to_string()),
+        };
+
+        Self {
+            kind: ItemCueKind::BlueShell { direction },
+            until: now + Duration::from_millis(1_500),
+            ascii_label,
+            unicode_label,
+        }
+    }
+
     pub fn is_visible(&self, now: Instant) -> bool {
         self.until > now
     }
@@ -176,6 +211,7 @@ impl ItemCue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemCueKind {
     Banana { direction: AttackDirection },
+    BlueShell { direction: AttackDirection },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,7 +287,7 @@ impl LocalSession {
             bonuses,
             bonus_attempt: None,
             attack_warning: None,
-            player_impact_until: None,
+            player_impact_cue: None,
             player_item_cue: None,
             race_status: RaceStatus::default(),
             race_phase: RacePhase::WaitingForHost,
@@ -294,7 +330,7 @@ impl LocalSession {
             bonuses,
             bonus_attempt: None,
             attack_warning: None,
-            player_impact_until: None,
+            player_impact_cue: None,
             player_item_cue: None,
             race_status: RaceStatus::default(),
             race_phase: RacePhase::Racing,
@@ -381,7 +417,7 @@ impl LocalSession {
         self.bonuses = bonuses;
         self.bonus_attempt = None;
         self.attack_warning = None;
-        self.player_impact_until = None;
+        self.player_impact_cue = None;
         self.player_item_cue = None;
         self.race_status = RaceStatus::default();
         self.race_phase = RacePhase::WaitingForHost;
@@ -457,6 +493,10 @@ impl LocalSession {
     fn apply_banana_to_player(&mut self, now: Instant) {
         if self.player.has_active_shield(now) {
             self.player.active_effects.clear();
+            self.player_impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::ShieldBlock,
+                until: now + Duration::from_millis(700),
+            });
             self.events.push("Attack blocked");
             return;
         }
@@ -464,8 +504,10 @@ impl LocalSession {
         self.player.input.clear();
         self.player.typo_index = None;
         self.bonus_attempt = None;
-        self.player_impact_until =
-            Some(now + Duration::from_millis(self.item_registry.banana_effect().impact_blink_ms));
+        self.player_impact_cue = Some(ImpactCue {
+            kind: ImpactCueKind::Banana,
+            until: now + Duration::from_millis(self.item_registry.banana_effect().impact_blink_ms),
+        });
         self.events.push("Banana spun you out");
     }
 
@@ -545,6 +587,7 @@ impl LocalSession {
         };
         if ai.player.held_item.is_some()
             || ai.player.has_active_shield(now)
+            || ai.player.has_active_star(now)
             || player_has_active_mushroom(&ai.player)
             || ai.item_cue.as_ref().is_some_and(|cue| cue.is_visible(now))
             || ai.player.is_finished()
@@ -663,6 +706,8 @@ impl LocalSession {
         match item {
             HeldItem::Mushroom => self.activate_ai_mushroom(ai_index, now),
             HeldItem::Banana => self.ai_use_banana(ai_index, now),
+            HeldItem::Star => self.activate_ai_star(ai_index, now),
+            HeldItem::BlueShell => self.use_blue_shell(Some(ai_index), now),
         }
     }
 
@@ -671,16 +716,8 @@ impl LocalSession {
             return;
         };
 
-        match item {
-            HeldItem::Mushroom => {
-                self.ai_racers[ai_index].player.held_item = None;
-                self.activate_ai_held_item(ai_index, item, now);
-            }
-            HeldItem::Banana => {
-                self.ai_racers[ai_index].player.held_item = None;
-                self.activate_ai_held_item(ai_index, item, now);
-            }
-        }
+        self.ai_racers[ai_index].player.held_item = None;
+        self.activate_ai_held_item(ai_index, item, now);
     }
 
     fn ai_use_banana(&mut self, ai_index: usize, now: Instant) {
@@ -735,6 +772,151 @@ impl LocalSession {
                 self.events.push(format!("{ai_name} hit ai-{}", target.id));
             }
         }
+    }
+
+    fn activate_ai_star(&mut self, ai_index: usize, now: Instant) {
+        let Some(ai) = self.ai_racers.get_mut(ai_index) else {
+            return;
+        };
+        ai.player.active_effects.push(ActiveEffect::Star {
+            until: now + Duration::from_millis(self.item_registry.star_effect().duration_ms),
+        });
+    }
+
+    fn use_blue_shell(&mut self, attacker_ai_index: Option<usize>, now: Instant) {
+        let Some(target) = self.first_place_target(attacker_ai_index) else {
+            self.events.push("Missed Blue Shell");
+            return;
+        };
+
+        match target {
+            BlueShellTarget::Player => {
+                if attacker_ai_index.is_none() {
+                    self.events.push("Missed Blue Shell");
+                    return;
+                }
+                if let Some(ai_index) = attacker_ai_index {
+                    let attacker_word_index = self.ai_racers[ai_index].player.word_index;
+                    let direction = attack_direction(attacker_word_index, self.player.word_index);
+                    self.ai_racers[ai_index].item_cue = Some(ItemCue::blue_shell(direction, now));
+                }
+                if self.apply_blue_shell_to_player(now) {
+                    if let Some(ai_index) = attacker_ai_index {
+                        let ai_name = self.ai_racers[ai_index].name.clone();
+                        self.events
+                            .push(format!("{ai_name} hit you with Blue Shell"));
+                    }
+                }
+            }
+            BlueShellTarget::Ai(ai_id) => {
+                let target_word_index = self
+                    .ai_racers
+                    .iter()
+                    .find(|ai| ai.id == ai_id)
+                    .map(|ai| ai.player.word_index);
+                if let Some(target_word_index) = target_word_index {
+                    let attacker_word_index = attacker_ai_index
+                        .and_then(|index| self.ai_racers.get(index))
+                        .map(|ai| ai.player.word_index)
+                        .unwrap_or(self.player.word_index);
+                    let direction = attack_direction(attacker_word_index, target_word_index);
+                    if let Some(ai_index) = attacker_ai_index {
+                        self.ai_racers[ai_index].item_cue =
+                            Some(ItemCue::blue_shell(direction, now));
+                    } else {
+                        self.player_item_cue = Some(ItemCue::blue_shell(direction, now));
+                    }
+                }
+                if self.apply_blue_shell_to_ai(ai_id, now) {
+                    self.events.push(format!("Hit ai-{ai_id} with Blue Shell"));
+                }
+            }
+        }
+    }
+
+    fn first_place_target(&self, attacker_ai_index: Option<usize>) -> Option<BlueShellTarget> {
+        let mut racers = Vec::new();
+        if !self.player.is_finished() {
+            racers.push((
+                self.player.word_index,
+                self.player.input.chars().count(),
+                BlueShellTarget::Player,
+            ));
+        }
+        racers.extend(
+            self.ai_racers
+                .iter()
+                .enumerate()
+                .filter(|(_, ai)| !ai.player.is_finished())
+                .filter(|(index, _)| Some(*index) != attacker_ai_index)
+                .map(|(_, ai)| {
+                    (
+                        ai.player.word_index,
+                        ai.player.input.chars().count(),
+                        BlueShellTarget::Ai(ai.id),
+                    )
+                }),
+        );
+
+        racers
+            .into_iter()
+            .max_by_key(|(word_index, input_len, _)| (*word_index, *input_len))
+            .map(|(_, _, target)| target)
+    }
+
+    fn apply_blue_shell_to_player(&mut self, now: Instant) -> bool {
+        if self.player.has_active_shield(now) {
+            self.player
+                .active_effects
+                .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
+            self.player_impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::ShieldBlock,
+                until: now + Duration::from_millis(700),
+            });
+            self.events.push("Blocked Blue Shell");
+            return false;
+        }
+        let applied = apply_blue_shell_overrides(
+            &self.track,
+            &mut self.player,
+            self.item_registry.blue_shell_effect().affected_words,
+        );
+        if applied {
+            self.player_impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::BlueShell,
+                until: now + Duration::from_millis(1_200),
+            });
+        }
+        applied
+    }
+
+    fn apply_blue_shell_to_ai(&mut self, ai_id: usize, now: Instant) -> bool {
+        let Some(ai) = self.ai_racers.iter_mut().find(|ai| ai.id == ai_id) else {
+            return false;
+        };
+        if ai.player.has_active_shield(now) {
+            ai.player
+                .active_effects
+                .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
+            ai.impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::ShieldBlock,
+                until: now + Duration::from_millis(700),
+            });
+            self.events.push(format!("{} blocked Blue Shell", ai.name));
+            return false;
+        }
+        let applied = apply_blue_shell_overrides(
+            &self.track,
+            &mut ai.player,
+            self.item_registry.blue_shell_effect().affected_words,
+        );
+        if applied {
+            ai.impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::BlueShell,
+                until: now + Duration::from_millis(1_200),
+            });
+        }
+        applied
     }
 
     fn racer_positions_excluding_ai(&self, ai_index: usize, now: Instant) -> Vec<RacerPosition> {
@@ -805,6 +987,10 @@ impl LocalSession {
 
         if ai.player.has_active_shield(now) {
             ai.player.active_effects.clear();
+            ai.impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::ShieldBlock,
+                until: now + Duration::from_millis(700),
+            });
             self.events.push(format!("{} blocked Banana", ai_name));
             self.run_log.push(
                 now,
@@ -814,7 +1000,10 @@ impl LocalSession {
         } else {
             let banana = self.item_registry.banana_effect();
             ai.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
-            ai.impact_until = Some(now + Duration::from_millis(banana.impact_blink_ms));
+            ai.impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::Banana,
+                until: now + Duration::from_millis(banana.impact_blink_ms),
+            });
             ai.char_budget = 0.0;
             self.run_log.push(
                 now,
@@ -1111,6 +1300,7 @@ impl LocalSession {
     fn can_start_bonus_attempt(&self, now: Instant) -> bool {
         self.player.held_item.is_none()
             && !self.player.has_active_shield(now)
+            && !self.player.has_active_star(now)
             && !player_has_active_mushroom(&self.player)
             && !self
                 .player_item_cue
@@ -1177,6 +1367,8 @@ impl LocalSession {
     fn activate_held_item(&mut self, item: HeldItem, _item_use: ItemUse, now: Instant) {
         match item {
             HeldItem::Mushroom => self.activate_mushroom(now),
+            HeldItem::Star => self.activate_star(now),
+            HeldItem::BlueShell => self.use_blue_shell(None, now),
             HeldItem::Banana => {
                 let racers = self
                     .ai_racers
@@ -1224,6 +1416,12 @@ impl LocalSession {
                 }
             }
         }
+    }
+
+    fn activate_star(&mut self, now: Instant) {
+        self.player.active_effects.push(ActiveEffect::Star {
+            until: now + Duration::from_millis(self.item_registry.star_effect().duration_ms),
+        });
     }
 
     fn activate_mushroom(&mut self, now: Instant) {
@@ -1367,7 +1565,9 @@ fn player_has_active_mushroom(player: &PlayerState) -> bool {
 }
 
 fn next_ai_key(player: &PlayerState, track: &Track) -> Option<KeyAction> {
-    let target = track.current_word(player.word_index)?;
+    let target = player
+        .word_override(player.word_index)
+        .or_else(|| track.current_word(player.word_index))?;
     if player.input == target {
         return Some(KeyAction::Space);
     }
@@ -1376,6 +1576,34 @@ fn next_ai_key(player: &PlayerState, track: &Track) -> Option<KeyAction> {
         .chars()
         .nth(player.input.chars().count())
         .map(KeyAction::Char)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlueShellTarget {
+    Player,
+    Ai(usize),
+}
+
+fn apply_blue_shell_overrides(
+    track: &Track,
+    player: &mut PlayerState,
+    affected_words: usize,
+) -> bool {
+    let mut applied = false;
+    for word_index in player.word_index..player.word_index.saturating_add(affected_words) {
+        let Some(word) = track.current_word(word_index) else {
+            break;
+        };
+        player
+            .word_overrides
+            .insert(word_index, word.chars().rev().collect());
+        applied = true;
+    }
+    if applied {
+        player.input.clear();
+        player.typo_index = None;
+    }
+    applied
 }
 
 fn event_message(event: TypingEvent, previous_word: Option<&str>) -> Option<String> {
@@ -1472,8 +1700,8 @@ mod tests {
             words::WordSetDefinition,
         },
         ui::session::{
-            AiRacer, AttackDirection, EventLog, ItemCue, ItemCueKind, LocalAction, LocalSession,
-            RacePhase,
+            AiRacer, AttackDirection, EventLog, ImpactCueKind, ItemCue, ItemCueKind, LocalAction,
+            LocalSession, RacePhase,
         },
     };
 
@@ -1875,7 +2103,9 @@ mod tests {
 
         assert!(session.player.input.is_empty());
         assert!(session.attack_warning.is_none());
-        assert!(session.player_impact_until.is_some_and(|until| until > now));
+        assert!(session
+            .player_impact_cue
+            .is_some_and(|cue| cue.kind == ImpactCueKind::Banana && cue.is_visible(now)));
     }
 
     #[test]
@@ -1898,7 +2128,9 @@ mod tests {
         session.tick(now);
 
         assert!(session.attack_warning.is_none());
-        assert!(!session.player_impact_until.is_some_and(|until| until > now));
+        assert!(!session
+            .player_impact_cue
+            .is_some_and(|cue| cue.is_visible(now)));
         assert!(session.ai_racers[1].is_stunned(now));
     }
 
@@ -2234,6 +2466,70 @@ mod tests {
 
         assert!(session.bonus_attempt.is_none());
         assert!(session.player.input.is_empty());
+    }
+
+    #[test]
+    fn star_pickup_activates_and_forgives_wrong_keys() {
+        let now = Instant::now();
+        let track = track(&["one", "two"]);
+        let player = PlayerState::new(now);
+        let mut session =
+            LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
+
+        session.receive_pickup(ItemPickup::Held(HeldItem::Star), now);
+        session.apply_action(LocalAction::Typing(KeyAction::Char('x')), now);
+
+        assert!(session.player.has_active_star(now));
+        assert_eq!(session.player.input, "");
+        assert_eq!(session.player.typo_index, None);
+        assert_eq!(session.player.stats.typo_chars, 1);
+    }
+
+    #[test]
+    fn player_blue_shell_reverses_first_place_ai_word() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let player = PlayerState::new(now);
+        let mut session =
+            LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 80.0, now);
+        ai.player.word_index = 1;
+        session.ai_racers.push(ai);
+        session.player.held_item = Some(HeldItem::BlueShell);
+
+        session.apply_action(LocalAction::ActivateItem, now);
+
+        assert_eq!(session.player.held_item, None);
+        assert_eq!(session.ai_racers[0].player.word_override(1), Some("owt"));
+        assert!(session
+            .events
+            .entries()
+            .any(|entry| entry == "Hit ai-1 with Blue Shell"));
+    }
+
+    #[test]
+    fn blue_shell_is_blocked_by_shield_and_consumes_shield() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let player = PlayerState::new(now);
+        let mut session =
+            LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 80.0, now);
+        ai.player.word_index = 1;
+        ai.player.active_effects.push(ActiveEffect::Shield {
+            until: now + std::time::Duration::from_secs(5),
+        });
+        session.ai_racers.push(ai);
+        session.player.held_item = Some(HeldItem::BlueShell);
+
+        session.apply_action(LocalAction::ActivateItem, now);
+
+        assert_eq!(session.ai_racers[0].player.word_override(1), None);
+        assert!(!session.ai_racers[0].player.has_active_shield(now));
+        assert!(session
+            .events
+            .entries()
+            .any(|entry| entry == "ai-1 blocked Blue Shell"));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! For Milestone 1 there is only one local player, but this type is shaped so
 //! it can later become the per-player state stored by a multiplayer server.
 
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 use super::{effects::ActiveEffect, items::HeldItem, stats::TypingStats};
 
@@ -20,6 +20,7 @@ pub struct PlayerState {
     pub stats: TypingStats,
     pub held_item: Option<HeldItem>,
     pub active_effects: Vec<ActiveEffect>,
+    pub word_overrides: HashMap<usize, String>,
 }
 
 impl PlayerState {
@@ -33,6 +34,7 @@ impl PlayerState {
             stats: TypingStats::default(),
             held_item: None,
             active_effects: Vec::new(),
+            word_overrides: HashMap::new(),
         }
     }
 
@@ -46,10 +48,21 @@ impl PlayerState {
             .any(|effect| effect.is_shield_active_at(now))
     }
 
+    pub fn has_active_star(&self, now: Instant) -> bool {
+        self.active_effects
+            .iter()
+            .any(|effect| effect.is_star_active_at(now))
+    }
+
+    pub fn word_override(&self, word_index: usize) -> Option<&str> {
+        self.word_overrides.get(&word_index).map(String::as_str)
+    }
+
     pub fn expire_effects(&mut self, now: Instant) -> usize {
         let before = self.active_effects.len();
         self.active_effects.retain(|effect| match effect {
             ActiveEffect::Shield { until } => *until > now,
+            ActiveEffect::Star { until } => *until > now,
             ActiveEffect::Mushroom {
                 remaining_words, ..
             } => *remaining_words > 0,

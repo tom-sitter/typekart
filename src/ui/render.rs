@@ -19,8 +19,8 @@ use crate::{
         track::Track,
     },
     ui::session::{
-        AiRacer, AttackDirection, BonusAttempt, EventLog, ItemCue, ItemCueKind, RacePhase,
-        RaceStatus,
+        AiRacer, AttackDirection, BonusAttempt, EventLog, ImpactCue, ImpactCueKind, ItemCue,
+        ItemCueKind, RacePhase, RaceStatus,
     },
 };
 
@@ -41,7 +41,7 @@ pub struct TypingScreen<'a> {
     pub player: &'a PlayerState,
     pub bonuses: &'a BonusState,
     pub bonus_attempt: Option<BonusAttempt>,
-    pub player_impact_until: Option<std::time::Instant>,
+    pub player_impact_cue: Option<ImpactCue>,
     pub player_item_cue: Option<ItemCue>,
     pub race_status: RaceStatus,
     pub race_phase: RacePhase,
@@ -229,7 +229,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonuses,
         screen.bonus_attempt,
         screen.ai_racers,
-        screen.player_impact_until,
+        screen.player_impact_cue,
         screen.player_item_cue.clone(),
         screen.race_phase,
         screen.icon_mode,
@@ -267,7 +267,7 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.bonuses,
         screen.bonus_attempt,
         screen.ai_racers,
-        screen.player_impact_until,
+        screen.player_impact_cue,
         screen.player_item_cue.clone(),
         screen.race_phase,
         screen.icon_mode,
@@ -342,7 +342,7 @@ fn render_track(
     bonuses: &BonusState,
     bonus_attempt: Option<BonusAttempt>,
     ai_racers: &[AiRacer],
-    player_impact_until: Option<std::time::Instant>,
+    player_impact_cue: Option<ImpactCue>,
     player_item_cue: Option<ItemCue>,
     race_phase: RacePhase,
     icon_mode: IconMode,
@@ -357,7 +357,7 @@ fn render_track(
             bonuses,
             bonus_attempt,
             ai_racers,
-            player_impact_until,
+            player_impact_cue,
             player_item_cue,
             race_phase,
             icon_mode,
@@ -373,7 +373,7 @@ fn track_view<'a>(
     bonuses: &'a BonusState,
     bonus_attempt: Option<BonusAttempt>,
     ai_racers: &[AiRacer],
-    player_impact_until: Option<std::time::Instant>,
+    player_impact_cue: Option<ImpactCue>,
     player_item_cue: Option<ItemCue>,
     race_phase: RacePhase,
     icon_mode: IconMode,
@@ -384,7 +384,7 @@ fn track_view<'a>(
         window,
         player,
         ai_racers,
-        player_impact_until,
+        player_impact_cue,
         player_item_cue,
         race_phase,
         icon_mode,
@@ -452,7 +452,7 @@ fn racer_lines(
     window: &TrackWindow<'_>,
     player: &PlayerState,
     ai_racers: &[AiRacer],
-    player_impact_until: Option<std::time::Instant>,
+    player_impact_cue: Option<ImpactCue>,
     player_item_cue: Option<ItemCue>,
     race_phase: RacePhase,
     icon_mode: IconMode,
@@ -465,7 +465,7 @@ fn racer_lines(
         player,
         now,
         Color::Cyan,
-        player_impact_until,
+        player_impact_cue,
         RacerVisibility::Always,
         local_status_label.as_deref(),
         local_item_cue.as_ref(),
@@ -478,7 +478,7 @@ fn racer_lines(
             &ai.player,
             now,
             ai_color(ai.id),
-            ai.impact_until,
+            ai.impact_cue,
             RacerVisibility::OnlyWhenCurrentWordVisible,
             None,
             item_cue.as_ref(),
@@ -505,7 +505,8 @@ fn visible_item_cue(
 ) -> Option<VisibleItemCue> {
     let cue = item_cue.filter(|cue| cue.is_visible(now))?;
     let placement = match cue.kind {
-        ItemCueKind::Banana { direction } => match direction {
+        ItemCueKind::Banana { direction } | ItemCueKind::BlueShell { direction } => match direction
+        {
             AttackDirection::Ahead | AttackDirection::Overlap => ItemCuePlacement::After,
             AttackDirection::Behind => ItemCuePlacement::Before,
         },
@@ -647,7 +648,7 @@ fn racer_line_for_player(
     player: &PlayerState,
     now: std::time::Instant,
     color: Color,
-    impact_until: Option<std::time::Instant>,
+    impact_cue: Option<ImpactCue>,
     visibility: RacerVisibility,
     status_label: Option<&str>,
     item_cue: Option<&VisibleItemCue>,
@@ -689,7 +690,7 @@ fn racer_line_for_player(
                 FINISHED_EDGE_MARKER.len(),
             ),
         };
-        let style = marker_style(color, impact_until, now);
+        let style = marker_style(color, impact_cue, now);
         if let Some(item_cue) = item_cue {
             match item_cue.placement {
                 ItemCuePlacement::Before => {
@@ -723,17 +724,29 @@ fn edge_racer_marker(
     now: std::time::Instant,
     icon_mode: IconMode,
 ) -> String {
-    let marker = match (player.has_active_shield(now), icon_mode) {
-        (true, IconMode::Unicode) => format!("{direction}🛡"),
-        (true, IconMode::Ascii) => format!("[{direction}]"),
-        (false, _) => direction.to_string(),
+    let mut marker = if player.has_active_shield(now) {
+        match icon_mode {
+            IconMode::Unicode => format!("{direction}🛡"),
+            IconMode::Ascii => format!("[{direction}]"),
+        }
+    } else if player.has_active_star(now) {
+        match icon_mode {
+            IconMode::Unicode => format!("{direction}★"),
+            IconMode::Ascii => format!("*{direction}*"),
+        }
+    } else {
+        direction.to_string()
     };
 
-    if has_active_mushroom(player) {
-        format!("{}{}", boost_marker_prefix(icon_mode), marker)
-    } else {
-        marker
+    if player.has_active_star(now) && player.has_active_shield(now) {
+        marker = format!("{}{}", star_marker_prefix(icon_mode), marker);
     }
+
+    if has_active_mushroom(player) {
+        marker = format!("{}{}", boost_marker_prefix(icon_mode), marker);
+    }
+
+    marker
 }
 
 fn racer_marker(
@@ -742,21 +755,33 @@ fn racer_marker(
     status_label: Option<&str>,
     icon_mode: IconMode,
 ) -> String {
-    let mut marker = match (player.has_active_shield(now), icon_mode) {
-        (true, IconMode::Unicode) => "█🛡".to_string(),
-        (true, IconMode::Ascii) => SHIELDED_RACER_MARKER.to_string(),
-        (false, _) => LOCAL_RACER_MARKER.to_string(),
+    let mut marker = if player.has_active_shield(now) {
+        match icon_mode {
+            IconMode::Unicode => "█🛡".to_string(),
+            IconMode::Ascii => SHIELDED_RACER_MARKER.to_string(),
+        }
+    } else if player.has_active_star(now) {
+        match icon_mode {
+            IconMode::Unicode => "█★█".to_string(),
+            IconMode::Ascii => "[*]".to_string(),
+        }
+    } else {
+        LOCAL_RACER_MARKER.to_string()
     };
 
     if let Some(status_label) = status_label {
         marker.push_str(status_label);
     }
 
-    if has_active_mushroom(player) {
-        format!("{}{}", boost_marker_prefix(icon_mode), marker)
-    } else {
-        marker
+    if player.has_active_star(now) && player.has_active_shield(now) {
+        marker = format!("{}{}", star_marker_prefix(icon_mode), marker);
     }
+
+    if has_active_mushroom(player) {
+        marker = format!("{}{}", boost_marker_prefix(icon_mode), marker);
+    }
+
+    marker
 }
 
 fn racer_marker_layout_width(
@@ -765,14 +790,19 @@ fn racer_marker_layout_width(
     status_label: Option<&str>,
     icon_mode: IconMode,
 ) -> usize {
-    let base_width = match (player.has_active_shield(now), icon_mode) {
+    let base_width = match (
+        player.has_active_shield(now),
+        player.has_active_star(now),
+        icon_mode,
+    ) {
         // The shield emoji commonly occupies two terminal columns. The marker
         // intentionally omits the right block, but layout still reserves the
         // normal three-column kart footprint so centering and item cues stay
         // aligned with unshielded racers.
-        (true, IconMode::Unicode) => LOCAL_RACER_MARKER.chars().count(),
-        (true, IconMode::Ascii) => SHIELDED_RACER_MARKER.chars().count(),
-        (false, _) => LOCAL_RACER_MARKER.chars().count(),
+        (true, _, IconMode::Unicode) => LOCAL_RACER_MARKER.chars().count(),
+        (true, _, IconMode::Ascii) => SHIELDED_RACER_MARKER.chars().count(),
+        (false, true, IconMode::Ascii) => "[*]".chars().count(),
+        (false, _, _) => LOCAL_RACER_MARKER.chars().count(),
     };
     let status_width = status_label
         .map(str::chars)
@@ -783,14 +813,26 @@ fn racer_marker_layout_width(
     } else {
         0
     };
+    let star_width = if player.has_active_star(now) && player.has_active_shield(now) {
+        star_marker_prefix(icon_mode).chars().count()
+    } else {
+        0
+    };
 
-    boost_width + base_width + status_width
+    boost_width + star_width + base_width + status_width
 }
 
 fn boost_marker_prefix(icon_mode: IconMode) -> &'static str {
     match icon_mode {
         IconMode::Ascii => BOOST_MARKER_PREFIX,
         IconMode::Unicode => ">>🍄",
+    }
+}
+
+fn star_marker_prefix(icon_mode: IconMode) -> &'static str {
+    match icon_mode {
+        IconMode::Ascii => "*",
+        IconMode::Unicode => "★",
     }
 }
 
@@ -814,23 +856,25 @@ fn write_marker(cells: &mut [TrackCell], start: usize, marker: &str, style: Styl
     }
 }
 
-fn marker_style(
-    color: Color,
-    impact_until: Option<std::time::Instant>,
-    now: std::time::Instant,
-) -> Style {
+fn marker_style(color: Color, impact_cue: Option<ImpactCue>, now: std::time::Instant) -> Style {
     let base = Style::default().fg(color).add_modifier(Modifier::BOLD);
-    if impact_blink_visible(impact_until, now) {
-        base.bg(Color::Yellow).fg(Color::Black)
+    if impact_blink_visible(impact_cue, now) {
+        match impact_cue.map(|cue| cue.kind) {
+            Some(ImpactCueKind::Banana) => base.bg(Color::Yellow).fg(Color::Black),
+            Some(ImpactCueKind::BlueShell) => base.bg(Color::Blue).fg(Color::White),
+            Some(ImpactCueKind::ShieldBlock) => base.bg(Color::Cyan).fg(Color::Black),
+            None => base,
+        }
     } else {
         base
     }
 }
 
-fn impact_blink_visible(impact_until: Option<std::time::Instant>, now: std::time::Instant) -> bool {
-    let Some(until) = impact_until else {
+fn impact_blink_visible(impact_cue: Option<ImpactCue>, now: std::time::Instant) -> bool {
+    let Some(cue) = impact_cue else {
         return false;
     };
+    let until = cue.until;
     if until <= now {
         return false;
     }
@@ -988,7 +1032,8 @@ fn track_word_line(
     let mut cells = vec![TrackCell::default(); window.width];
 
     for visible in &window.words {
-        for (offset, ch) in visible.word.chars().enumerate() {
+        let word = player.word_override(visible.index).unwrap_or(visible.word);
+        for (offset, ch) in word.chars().enumerate() {
             let column = visible.start_col + offset;
             if let Some(cell) = cells.get_mut(column) {
                 *cell = TrackCell {
@@ -1314,7 +1359,10 @@ mod tests {
             player_list_height, racer_lines, result_rows, track_panel_height, track_word_line,
             visible_bonus_point, IconMode, WordRenderState,
         },
-        ui::session::{AiRacer, AttackDirection, ItemCue, ItemCueKind, RacePhase, RaceStatus},
+        ui::session::{
+            AiRacer, AttackDirection, ImpactCue, ImpactCueKind, ItemCue, ItemCueKind, RacePhase,
+            RaceStatus,
+        },
     };
 
     fn track(words: &[&str]) -> Track {
@@ -1756,6 +1804,32 @@ mod tests {
     }
 
     #[test]
+    fn racer_line_uses_unicode_star_marker_when_enabled() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let mut player = PlayerState::new(now);
+        player.active_effects.push(ActiveEffect::Star {
+            until: now + std::time::Duration::from_secs(1),
+        });
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            None,
+            RacePhase::Racing,
+            IconMode::Unicode,
+            now,
+        );
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), "█");
+        assert_eq!(lines[0].spans[1].content.as_ref(), "★");
+        assert_eq!(lines[0].spans[2].content.as_ref(), "█");
+    }
+
+    #[test]
     fn racer_line_shows_unicode_banana_attack_direction_cue() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
@@ -1781,6 +1855,36 @@ mod tests {
 
         assert_eq!(lines[0].spans[3].content.as_ref(), " ");
         assert_eq!(lines[0].spans[4].content.as_ref(), "🍌");
+        assert_eq!(lines[0].spans[6].content.as_ref(), ">");
+        assert_eq!(lines[0].spans[7].content.as_ref(), ">");
+    }
+
+    #[test]
+    fn racer_line_shows_unicode_blue_shell_attack_direction_cue() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let player = PlayerState::new(now);
+        let cue = ItemCue::new(
+            ItemCueKind::BlueShell {
+                direction: AttackDirection::Ahead,
+            },
+            now,
+        );
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            None,
+            Some(cue),
+            RacePhase::Racing,
+            IconMode::Unicode,
+            now,
+        );
+
+        assert_eq!(lines[0].spans[3].content.as_ref(), " ");
+        assert_eq!(lines[0].spans[4].content.as_ref(), "🐢");
         assert_eq!(lines[0].spans[6].content.as_ref(), ">");
         assert_eq!(lines[0].spans[7].content.as_ref(), ">");
     }
@@ -1859,7 +1963,10 @@ mod tests {
             &window,
             &player,
             &[],
-            Some(now + std::time::Duration::from_millis(300)),
+            Some(ImpactCue {
+                kind: ImpactCueKind::Banana,
+                until: now + std::time::Duration::from_millis(300),
+            }),
             None,
             RacePhase::Racing,
             IconMode::Ascii,
@@ -1867,6 +1974,30 @@ mod tests {
         );
 
         assert_eq!(lines[0].spans[0].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn racer_line_blinks_blue_when_hit_by_blue_shell() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let window = build_track_window(&track, 0, 40);
+        let player = PlayerState::new(now);
+
+        let lines = racer_lines(
+            &window,
+            &player,
+            &[],
+            Some(ImpactCue {
+                kind: ImpactCueKind::BlueShell,
+                until: now + std::time::Duration::from_millis(300),
+            }),
+            None,
+            RacePhase::Racing,
+            IconMode::Ascii,
+            now,
+        );
+
+        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Blue));
     }
 
     #[test]

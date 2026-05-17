@@ -12,6 +12,8 @@ use super::mods::ContentId;
 pub enum HeldItem {
     Mushroom,
     Banana,
+    Star,
+    BlueShell,
 }
 
 impl HeldItem {
@@ -19,6 +21,8 @@ impl HeldItem {
         match self {
             Self::Mushroom => "Mushroom",
             Self::Banana => "Banana",
+            Self::Star => "Star Power",
+            Self::BlueShell => "Blue Shell",
         }
     }
 }
@@ -54,6 +58,8 @@ pub struct ItemEffectConfig {
     pub mushroom: Option<MushroomEffectConfig>,
     pub banana: Option<BananaEffectConfig>,
     pub shield: Option<ShieldEffectConfig>,
+    pub star: Option<StarEffectConfig>,
+    pub blue_shell: Option<BlueShellEffectConfig>,
 }
 
 impl ItemEffectConfig {
@@ -63,16 +69,36 @@ impl ItemEffectConfig {
                 mushroom: Some(MushroomEffectConfig::default()),
                 banana: None,
                 shield: None,
+                star: None,
+                blue_shell: None,
             },
             ItemPickup::Held(HeldItem::Banana) => Self {
                 mushroom: None,
                 banana: Some(BananaEffectConfig::default()),
                 shield: None,
+                star: None,
+                blue_shell: None,
+            },
+            ItemPickup::Held(HeldItem::Star) => Self {
+                mushroom: None,
+                banana: None,
+                shield: None,
+                star: Some(StarEffectConfig::default()),
+                blue_shell: None,
+            },
+            ItemPickup::Held(HeldItem::BlueShell) => Self {
+                mushroom: None,
+                banana: None,
+                shield: None,
+                star: None,
+                blue_shell: Some(BlueShellEffectConfig::default()),
             },
             ItemPickup::Shield => Self {
                 mushroom: None,
                 banana: None,
                 shield: Some(ShieldEffectConfig::default()),
+                star: None,
+                blue_shell: None,
             },
         }
     }
@@ -123,6 +149,30 @@ impl Default for ShieldEffectConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct StarEffectConfig {
+    pub duration_ms: u64,
+}
+
+impl Default for StarEffectConfig {
+    fn default() -> Self {
+        Self {
+            duration_ms: 10_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct BlueShellEffectConfig {
+    pub affected_words: usize,
+}
+
+impl Default for BlueShellEffectConfig {
+    fn default() -> Self {
+        Self { affected_words: 1 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemDisplayConfig {
     pub banana: Option<BananaDisplayConfig>,
@@ -134,7 +184,10 @@ impl ItemDisplayConfig {
             ItemPickup::Held(HeldItem::Banana) => Self {
                 banana: Some(BananaDisplayConfig::default()),
             },
-            ItemPickup::Held(HeldItem::Mushroom) | ItemPickup::Shield => Self { banana: None },
+            ItemPickup::Held(HeldItem::Mushroom)
+            | ItemPickup::Held(HeldItem::Star)
+            | ItemPickup::Held(HeldItem::BlueShell)
+            | ItemPickup::Shield => Self { banana: None },
         }
     }
 }
@@ -371,6 +424,46 @@ impl ItemRegistry {
                     },
                 },
             ),
+            ItemDefinition::built_in_with_context(
+                "star",
+                "Star Power",
+                ItemPickup::Held(HeldItem::Star),
+                ItemActivation::Held,
+                1,
+                2,
+                ItemContextWeights {
+                    standard: PositionWeights {
+                        first: 1,
+                        middle: 2,
+                        trailing: 3,
+                    },
+                    nearby_racer: PositionWeights {
+                        first: 1,
+                        middle: 2,
+                        trailing: 4,
+                    },
+                },
+            ),
+            ItemDefinition::built_in_with_context(
+                "blue_shell",
+                "Blue Shell",
+                ItemPickup::Held(HeldItem::BlueShell),
+                ItemActivation::Held,
+                1,
+                2,
+                ItemContextWeights {
+                    standard: PositionWeights {
+                        first: 0,
+                        middle: 1,
+                        trailing: 3,
+                    },
+                    nearby_racer: PositionWeights {
+                        first: 0,
+                        middle: 2,
+                        trailing: 4,
+                    },
+                },
+            ),
         ])
         .expect("built-in item registry is valid")
     }
@@ -381,7 +474,7 @@ impl ItemRegistry {
     /// enabled flags, roll weights, selected effect parameters, and display
     /// labels. Adding entirely new item effects needs the shared item engine
     /// first, because the current game still resolves Mushroom, Banana, and
-    /// Shield through concrete Rust handlers.
+    /// Shield, Star, and Blue Shell through concrete Rust handlers.
     pub fn load_json_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path)?;
@@ -517,8 +610,39 @@ impl ItemRegistry {
                     }
                     target.effect.shield = Some(shield);
                 } else if effect.duration_ms.is_some() {
+                    if target.effect.star.is_some() {
+                        let mut star = target.effect.star.unwrap_or_default();
+                        star.duration_ms = effect.duration_ms.unwrap();
+                        if star.duration_ms == 0 {
+                            bail!(
+                                "item '{}' star duration_ms must be greater than zero",
+                                override_item.id
+                            );
+                        }
+                        target.effect.star = Some(star);
+                    } else {
+                        bail!(
+                            "item '{}' does not support duration_ms effect config",
+                            override_item.id
+                        );
+                    }
+                }
+
+                if target.effect.blue_shell.is_some() && effect.affected_words.is_some() {
+                    let mut blue_shell = target.effect.blue_shell.unwrap_or_default();
+                    if let Some(affected_words) = effect.affected_words {
+                        blue_shell.affected_words = affected_words;
+                    }
+                    if blue_shell.affected_words == 0 {
+                        bail!(
+                            "item '{}' blue shell affected_words must be greater than zero",
+                            override_item.id
+                        );
+                    }
+                    target.effect.blue_shell = Some(blue_shell);
+                } else if effect.affected_words.is_some() {
                     bail!(
-                        "item '{}' does not support shield effect config",
+                        "item '{}' does not support blue shell effect config",
                         override_item.id
                     );
                 }
@@ -603,6 +727,22 @@ impl ItemRegistry {
             .unwrap_or_default()
     }
 
+    pub fn star_effect(&self) -> StarEffectConfig {
+        self.items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Star))
+            .and_then(|item| item.effect.star)
+            .unwrap_or_default()
+    }
+
+    pub fn blue_shell_effect(&self) -> BlueShellEffectConfig {
+        self.items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::BlueShell))
+            .and_then(|item| item.effect.blue_shell)
+            .unwrap_or_default()
+    }
+
     pub fn roll_pickup(&self, rng: &mut impl Rng, context: ItemRollContext) -> Option<ItemPickup> {
         let candidates = self
             .items
@@ -676,6 +816,7 @@ struct ItemPackEffectConfig {
     impact_blink_ms: Option<u64>,
     cue_ms: Option<u64>,
     duration_ms: Option<u64>,
+    affected_words: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -802,7 +943,7 @@ mod tests {
             .sum::<u32>();
 
         assert_eq!(shield.standard_weight, 1);
-        assert_eq!(total_weight, 6);
+        assert_eq!(total_weight, 8);
     }
 
     #[test]
@@ -820,7 +961,7 @@ mod tests {
             .sum::<u32>();
 
         assert_eq!(shield.nearby_racer_weight, 3);
-        assert_eq!(total_weight, 10);
+        assert_eq!(total_weight, 14);
     }
 
     #[test]
@@ -1110,6 +1251,14 @@ mod tests {
                     {
                         "id": "shield",
                         "effect": { "duration_ms": 3000 }
+                    },
+                    {
+                        "id": "star",
+                        "effect": { "duration_ms": 7500 }
+                    },
+                    {
+                        "id": "blue_shell",
+                        "effect": { "affected_words": 2 }
                     }
                 ]
             }"#,
@@ -1125,6 +1274,8 @@ mod tests {
         assert_eq!(registry.banana_effect().impact_blink_ms, 900);
         assert_eq!(registry.banana_effect().cue_ms, 700);
         assert_eq!(registry.shield_effect().duration_ms, 3000);
+        assert_eq!(registry.star_effect().duration_ms, 7500);
+        assert_eq!(registry.blue_shell_effect().affected_words, 2);
 
         let _ = std::fs::remove_file(path);
     }

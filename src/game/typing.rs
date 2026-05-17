@@ -30,19 +30,34 @@ pub fn apply_key(
     action: KeyAction,
     now: Instant,
 ) -> Vec<TypingEvent> {
+    let star_power = player.has_active_star(now);
+    apply_key_with_options(player, track, action, now, star_power)
+}
+
+pub fn apply_key_with_options(
+    player: &mut PlayerState,
+    track: &Track,
+    action: KeyAction,
+    now: Instant,
+    star_power: bool,
+) -> Vec<TypingEvent> {
     if player.is_finished() {
         return Vec::new();
     }
 
-    let Some(target) = track.current_word(player.word_index) else {
+    let Some(base_target) = track.current_word(player.word_index) else {
         player.finished_at = Some(now);
         return vec![TypingEvent::RaceFinished];
     };
+    let target = player
+        .word_override(player.word_index)
+        .unwrap_or(base_target)
+        .to_string();
 
     match action {
-        KeyAction::Char(ch) => apply_char(player, track, target, ch, now),
-        KeyAction::Space => apply_space(player, track, target, now),
-        KeyAction::Backspace => apply_backspace(player, target),
+        KeyAction::Char(ch) => apply_char(player, track, &target, ch, now, star_power),
+        KeyAction::Space => apply_space(player, track, &target, now, star_power),
+        KeyAction::Backspace => apply_backspace(player, &target),
     }
 }
 
@@ -52,6 +67,7 @@ fn apply_char(
     target: &str,
     ch: char,
     now: Instant,
+    star_power: bool,
 ) -> Vec<TypingEvent> {
     let previous_typo = player.typo_index;
     let input_index = player.input.chars().count();
@@ -64,6 +80,10 @@ fn apply_char(
         player.stats.correct_chars += 1;
     } else {
         player.stats.typo_chars += 1;
+    }
+
+    if star_power && !is_correct {
+        return vec![TypingEvent::InputChanged];
     }
 
     player.input.push(ch);
@@ -85,6 +105,7 @@ fn apply_space(
     track: &Track,
     target: &str,
     now: Instant,
+    star_power: bool,
 ) -> Vec<TypingEvent> {
     if player.input == target {
         player.word_index += 1;
@@ -100,7 +121,7 @@ fn apply_space(
         return vec![TypingEvent::WordCompleted];
     }
 
-    apply_char(player, track, target, ' ', now)
+    apply_char(player, track, target, ' ', now, star_power)
 }
 
 fn finish_current_word(player: &mut PlayerState, now: Instant) {
@@ -152,7 +173,7 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
-    use super::{apply_key, KeyAction, TypingEvent};
+    use super::{apply_key, apply_key_with_options, KeyAction, TypingEvent};
     use crate::game::{player::PlayerState, track::Track};
 
     fn track(words: &[&str]) -> Track {
@@ -338,5 +359,37 @@ mod tests {
 
         assert!(events.is_empty());
         assert_eq!(player.input, "");
+    }
+
+    #[test]
+    fn star_power_counts_wrong_keys_without_adding_typo_input() {
+        let track = track(&["fox"]);
+        let mut player = player();
+        let now = Instant::now();
+
+        let events = apply_key_with_options(&mut player, &track, KeyAction::Char('x'), now, true);
+
+        assert_eq!(events, vec![TypingEvent::InputChanged]);
+        assert_eq!(player.input, "");
+        assert_eq!(player.typo_index, None);
+        assert_eq!(player.stats.typed_chars, 1);
+        assert_eq!(player.stats.typo_chars, 1);
+
+        apply_key_with_options(&mut player, &track, KeyAction::Char('f'), now, true);
+
+        assert_eq!(player.input, "f");
+        assert_eq!(player.stats.correct_chars, 1);
+    }
+
+    #[test]
+    fn word_override_becomes_target_word() {
+        let track = track(&["drawer", "next"]);
+        let mut player = player();
+        player.word_overrides.insert(0, "reward".to_string());
+
+        type_chars(&mut player, &track, "reward");
+
+        assert_eq!(player.input, "reward");
+        assert_eq!(player.typo_index, None);
     }
 }

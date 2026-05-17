@@ -38,9 +38,10 @@ use super::log::{push_network_log, SharedNetworkLog};
 use super::protocol::{
     decode_client_message, encode_server_message, AssignedColor, AttackDirectionSnapshot,
     BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
-    ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase,
-    PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus,
-    RaceSnapshot, ServerMessage,
+    ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot, ItemCueSnapshot,
+    ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot,
+    ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
+    WordOverrideSnapshot,
 };
 
 const COLOR_ROTATION: [AssignedColor; 6] = [
@@ -129,8 +130,14 @@ struct NetworkBonusAttempt {
 #[derive(Debug, Clone, Default)]
 struct NetworkPlayerEffects {
     stunned_until: Option<Instant>,
-    impact_until: Option<Instant>,
+    impact_cue: Option<NetworkImpactCue>,
     item_cue: Option<NetworkItemCue>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NetworkImpactCue {
+    kind: ImpactCueSnapshotKind,
+    until: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +152,7 @@ struct NetworkItemCue {
 #[derive(Debug, Clone, Copy)]
 enum NetworkItemCueKind {
     Banana { direction: AttackDirectionSnapshot },
+    BlueShell { direction: AttackDirectionSnapshot },
 }
 
 pub fn run_host(config: HostConfig) -> Result<()> {
@@ -977,6 +985,7 @@ fn network_bonus_start(
     let player = state.race.player(RacePlayerId(player_id.0))?;
     if player.state.held_item.is_some()
         || player.state.has_active_shield(now)
+        || player.state.has_active_star(now)
         || player.state.typo_index.is_some()
         || !player.state.input.is_empty()
         || player.state.is_finished()
@@ -1231,6 +1240,8 @@ fn activate_network_pickup(
     match item {
         ItemPickup::Held(HeldItem::Mushroom) => activate_network_mushroom(state, player_id, now),
         ItemPickup::Held(HeldItem::Banana) => activate_network_banana(state, player_id, now),
+        ItemPickup::Held(HeldItem::Star) => activate_network_star(state, player_id, now),
+        ItemPickup::Held(HeldItem::BlueShell) => activate_network_blue_shell(state, player_id, now),
         ItemPickup::Shield => activate_network_shield(state, player_id, now),
     }
 }
@@ -1270,6 +1281,56 @@ fn activate_network_mushroom(state: &mut HostState, player_id: PlayerId, now: In
         step_interval: mushroom_step_interval(mushroom.wpm),
     });
     advance_network_mushrooms(state, now);
+}
+
+fn activate_network_star(state: &mut HostState, player_id: PlayerId, now: Instant) {
+    let Some(player) = state
+        .race
+        .players
+        .iter_mut()
+        .find(|player| player.id == RacePlayerId(player_id.0))
+    else {
+        return;
+    };
+
+    player.state.active_effects.push(ActiveEffect::Star {
+        until: now + Duration::from_millis(state.item_registry.star_effect().duration_ms),
+    });
+}
+
+fn activate_network_blue_shell(state: &mut HostState, player_id: PlayerId, now: Instant) {
+    let attacker_name = player_label(state, player_id);
+    let Some(target_id) = first_place_network_target(state, Some(player_id)) else {
+        push_event(state, format!("{attacker_name} missed Blue Shell"));
+        return;
+    };
+
+    let attacker_word_index = state
+        .race
+        .player(RacePlayerId(player_id.0))
+        .map(|player| player.state.word_index)
+        .unwrap_or_default();
+    let target_word_index = state
+        .race
+        .player(RacePlayerId(target_id.0))
+        .map(|player| player.state.word_index)
+        .unwrap_or_default();
+    let direction = attack_direction(attacker_word_index, target_word_index);
+    state.player_effects.entry(player_id).or_default().item_cue = Some(NetworkItemCue {
+        kind: NetworkItemCueKind::BlueShell { direction },
+        ascii_label: network_blue_shell_cue_label(direction, false),
+        unicode_label: network_blue_shell_cue_label(direction, true),
+        placement: network_item_cue_placement(direction),
+        until: now + Duration::from_millis(1_500),
+    });
+
+    let target_name = player_label(state, target_id);
+    if apply_network_blue_shell_to_player(state, target_id, now) {
+        push_event(
+            state,
+            format!("{attacker_name} hit {target_name} with Blue Shell"),
+        );
+    }
 }
 
 fn activate_network_banana(state: &mut HostState, player_id: PlayerId, now: Instant) {
@@ -1326,7 +1387,7 @@ fn activate_network_banana(state: &mut HostState, player_id: PlayerId, now: Inst
         kind: NetworkItemCueKind::Banana { direction },
         ascii_label,
         unicode_label,
-        placement: network_banana_cue_placement(direction),
+        placement: network_item_cue_placement(direction),
         until: now + Duration::from_millis(banana.cue_ms),
     });
 
@@ -1367,6 +1428,14 @@ fn apply_network_banana_to_player(
             .state
             .active_effects
             .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
+        state
+            .player_effects
+            .entry(target_id)
+            .or_default()
+            .impact_cue = Some(NetworkImpactCue {
+            kind: ImpactCueSnapshotKind::ShieldBlock,
+            until: now + Duration::from_millis(700),
+        });
         push_event(state, format!("{target_name} blocked Banana"));
         push_network_log(
             &state.debug_log,
@@ -1385,7 +1454,10 @@ fn apply_network_banana_to_player(
     let effects = state.player_effects.entry(target_id).or_default();
     let banana = state.item_registry.banana_effect();
     effects.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
-    effects.impact_until = Some(now + Duration::from_millis(banana.impact_blink_ms));
+    effects.impact_cue = Some(NetworkImpactCue {
+        kind: ImpactCueSnapshotKind::Banana,
+        until: now + Duration::from_millis(banana.impact_blink_ms),
+    });
     push_network_log(
         &state.debug_log,
         format!(
@@ -1394,6 +1466,85 @@ fn apply_network_banana_to_player(
         ),
     );
     Some(BananaResolution::SpunOut)
+}
+
+fn first_place_network_target(state: &HostState, exclude: Option<PlayerId>) -> Option<PlayerId> {
+    state
+        .race
+        .players
+        .iter()
+        .filter(|player| Some(PlayerId(player.id.0)) != exclude)
+        .filter(|player| player.connected)
+        .filter(|player| !player.state.is_finished())
+        .max_by_key(|player| (player.state.word_index, player.state.input.chars().count()))
+        .map(|player| PlayerId(player.id.0))
+}
+
+fn apply_network_blue_shell_to_player(
+    state: &mut HostState,
+    target_id: PlayerId,
+    now: Instant,
+) -> bool {
+    let Some(target_index) = state
+        .race
+        .players
+        .iter()
+        .position(|player| player.id == RacePlayerId(target_id.0))
+    else {
+        return false;
+    };
+    let target_name = state.race.players[target_index].name.clone();
+
+    if state.race.players[target_index]
+        .state
+        .has_active_shield(now)
+    {
+        state.race.players[target_index]
+            .state
+            .active_effects
+            .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
+        state
+            .player_effects
+            .entry(target_id)
+            .or_default()
+            .impact_cue = Some(NetworkImpactCue {
+            kind: ImpactCueSnapshotKind::ShieldBlock,
+            until: now + Duration::from_millis(700),
+        });
+        push_event(state, format!("{target_name} blocked Blue Shell"));
+        push_network_log(
+            &state.debug_log,
+            format!("{target_name} blocked Blue Shell; shield consumed"),
+        );
+        return false;
+    }
+
+    let affected_words = state.item_registry.blue_shell_effect().affected_words;
+    let target = &mut state.race.players[target_index].state;
+    let mut applied = false;
+    for word_index in target.word_index..target.word_index.saturating_add(affected_words) {
+        let Some(word) = state.race.track.current_word(word_index) else {
+            break;
+        };
+        target
+            .word_overrides
+            .insert(word_index, word.chars().rev().collect());
+        applied = true;
+    }
+    if applied {
+        target.input.clear();
+        target.typo_index = None;
+        state.bonus_attempts.remove(&target_id);
+        state
+            .player_effects
+            .entry(target_id)
+            .or_default()
+            .impact_cue = Some(NetworkImpactCue {
+            kind: ImpactCueSnapshotKind::BlueShell,
+            until: now + Duration::from_millis(1_200),
+        });
+    }
+    applied
 }
 
 fn advance_network_mushrooms(state: &mut HostState, now: Instant) {
@@ -1520,6 +1671,7 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
     };
     if player.state.held_item.is_some()
         || player.state.has_active_shield(now)
+        || player.state.has_active_star(now)
         || player_has_active_mushroom_effect(player, now)
         || player_is_stunned(state, player_id, now)
         || state
@@ -1617,7 +1769,10 @@ fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: In
 
 fn next_network_ai_key(state: &HostState, player_id: PlayerId) -> Option<KeyAction> {
     let player = state.race.player(RacePlayerId(player_id.0))?;
-    let target = state.race.track.current_word(player.state.word_index)?;
+    let target = player
+        .state
+        .word_override(player.state.word_index)
+        .or_else(|| state.race.track.current_word(player.state.word_index))?;
     if player.state.input == target {
         return Some(KeyAction::Space);
     }
@@ -1681,7 +1836,18 @@ fn network_banana_cue_labels(
     }
 }
 
-fn network_banana_cue_placement(direction: AttackDirectionSnapshot) -> ItemCuePlacementSnapshot {
+fn network_blue_shell_cue_label(direction: AttackDirectionSnapshot, unicode: bool) -> String {
+    match (direction, unicode) {
+        (AttackDirectionSnapshot::Ahead, false) => " sh>>".to_string(),
+        (AttackDirectionSnapshot::Behind, false) => "<<sh ".to_string(),
+        (AttackDirectionSnapshot::Overlap, false) => " sh<>".to_string(),
+        (AttackDirectionSnapshot::Ahead, true) => " 🐢 >>".to_string(),
+        (AttackDirectionSnapshot::Behind, true) => "<< 🐢 ".to_string(),
+        (AttackDirectionSnapshot::Overlap, true) => " 🐢 <>".to_string(),
+    }
+}
+
+fn network_item_cue_placement(direction: AttackDirectionSnapshot) -> ItemCuePlacementSnapshot {
     match direction {
         AttackDirectionSnapshot::Ahead | AttackDirectionSnapshot::Overlap => {
             ItemCuePlacementSnapshot::After
@@ -2222,12 +2388,23 @@ fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
                     word_index: player.state.word_index,
                     input: player.state.input.clone(),
                     typo_index: player.state.typo_index,
+                    word_overrides: player
+                        .state
+                        .word_overrides
+                        .iter()
+                        .map(|(word_index, word)| WordOverrideSnapshot {
+                            word_index: *word_index,
+                            word: word.clone(),
+                        })
+                        .collect(),
                     finished: player.state.is_finished(),
                     connected: player.connected,
                     shielded: player.state.has_active_shield(now),
+                    starred: player.state.has_active_star(now),
                     boosted: player_has_active_mushroom_effect(player, now),
                     stunned: effects.stunned_until.is_some_and(|until| until > now),
-                    impact_remaining_ms: remaining_ms(effects.impact_until, now),
+                    impact_remaining_ms: remaining_ms(effects.impact_cue.map(|cue| cue.until), now),
+                    impact_cue: build_impact_cue_snapshot(effects.impact_cue, now),
                     item_cue: build_item_cue_snapshot(effects.item_cue.clone(), now),
                 }
             })
@@ -2248,10 +2425,24 @@ fn build_item_cue_snapshot(cue: Option<NetworkItemCue>, now: Instant) -> Option<
     Some(ItemCueSnapshot {
         kind: match cue.kind {
             NetworkItemCueKind::Banana { direction } => ItemCueSnapshotKind::Banana { direction },
+            NetworkItemCueKind::BlueShell { direction } => {
+                ItemCueSnapshotKind::BlueShell { direction }
+            }
         },
         ascii_label: cue.ascii_label,
         unicode_label: cue.unicode_label,
         placement: cue.placement,
+        remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
+    })
+}
+
+fn build_impact_cue_snapshot(
+    cue: Option<NetworkImpactCue>,
+    now: Instant,
+) -> Option<ImpactCueSnapshot> {
+    let cue = cue.filter(|cue| cue.until > now)?;
+    Some(ImpactCueSnapshot {
+        kind: cue.kind,
         remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
     })
 }
@@ -2373,8 +2564,8 @@ mod tests {
         words::WordSetDefinition,
     };
     use crate::net::protocol::{
-        decode_server_message, encode_client_message, ClientMessage, LobbyPlayer, PlayerKind,
-        RaceResultStatus, ServerMessage,
+        decode_server_message, encode_client_message, ClientMessage, ImpactCueSnapshotKind,
+        LobbyPlayer, PlayerKind, RaceResultStatus, ServerMessage,
     };
 
     #[test]
@@ -3155,7 +3346,79 @@ mod tests {
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(result, Some(super::BananaResolution::Blocked));
         assert!(!alex.state.has_active_shield(now));
-        assert!(!state.player_effects.contains_key(&PlayerId(2)));
+        assert_eq!(
+            state
+                .player_effects
+                .get(&PlayerId(2))
+                .and_then(|effects| effects.impact_cue)
+                .map(|cue| cue.kind),
+            Some(ImpactCueSnapshotKind::ShieldBlock)
+        );
+    }
+
+    #[test]
+    fn network_star_pickup_marks_snapshot_as_starred() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::Star),
+            now,
+        );
+        let snapshot = build_race_snapshot(&mut state);
+
+        assert!(snapshot.players[0].starred);
+    }
+
+    #[test]
+    fn network_blue_shell_reverses_first_place_target_word() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.race.players[1].state.word_index = 1;
+
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::BlueShell),
+            now,
+        );
+
+        let alex = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(alex.state.word_override(1), Some("owt"));
+        assert!(state
+            .events
+            .iter()
+            .any(|event| event == "host hit alex with Blue Shell"));
+    }
+
+    #[test]
+    fn network_blue_shell_is_blocked_by_shield_and_consumes_shield() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.race.players[1].state.word_index = 1;
+        state.race.players[1]
+            .state
+            .active_effects
+            .push(ActiveEffect::Shield {
+                until: now + Duration::from_secs(5),
+            });
+
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::BlueShell),
+            now,
+        );
+
+        let alex = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(alex.state.word_override(1), None);
+        assert!(!alex.state.has_active_shield(now));
+        assert!(state
+            .events
+            .iter()
+            .any(|event| event == "alex blocked Blue Shell"));
     }
 
     #[test]
@@ -3431,6 +3694,10 @@ mod tests {
         let (id, name, activation) = match pickup {
             ItemPickup::Held(HeldItem::Mushroom) => ("mushroom", "Mushroom", ItemActivation::Held),
             ItemPickup::Held(HeldItem::Banana) => ("banana", "Banana", ItemActivation::Held),
+            ItemPickup::Held(HeldItem::Star) => ("star", "Star Power", ItemActivation::Held),
+            ItemPickup::Held(HeldItem::BlueShell) => {
+                ("blue_shell", "Blue Shell", ItemActivation::Held)
+            }
             ItemPickup::Shield => ("shield", "Shield", ItemActivation::Immediate),
         };
         ItemRegistry::new(vec![ItemDefinition::built_in(

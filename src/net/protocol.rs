@@ -88,13 +88,36 @@ pub struct PlayerSnapshot {
     pub word_index: usize,
     pub input: String,
     pub typo_index: Option<usize>,
+    pub word_overrides: Vec<WordOverrideSnapshot>,
     pub finished: bool,
     pub connected: bool,
     pub shielded: bool,
+    pub starred: bool,
     pub boosted: bool,
     pub stunned: bool,
     pub impact_remaining_ms: u64,
+    pub impact_cue: Option<ImpactCueSnapshot>,
     pub item_cue: Option<ItemCueSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordOverrideSnapshot {
+    pub word_index: usize,
+    pub word: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImpactCueSnapshot {
+    pub kind: ImpactCueSnapshotKind,
+    pub remaining_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImpactCueSnapshotKind {
+    Banana,
+    BlueShell,
+    ShieldBlock,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +216,7 @@ pub enum ItemCuePlacementSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ItemCueSnapshotKind {
     Banana { direction: AttackDirectionSnapshot },
+    BlueShell { direction: AttackDirectionSnapshot },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,7 +276,7 @@ mod tests {
         AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
         ClientMessage, ClientSequence, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
         PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot,
-        ServerMessage,
+        ServerMessage, WordOverrideSnapshot,
     };
 
     #[test]
@@ -332,12 +356,18 @@ mod tests {
                 word_index: 0,
                 input: "o".to_string(),
                 typo_index: None,
+                word_overrides: vec![WordOverrideSnapshot {
+                    word_index: 1,
+                    word: "owt".to_string(),
+                }],
                 finished: false,
                 connected: true,
                 shielded: false,
+                starred: true,
                 boosted: false,
                 stunned: false,
                 impact_remaining_ms: 0,
+                impact_cue: None,
                 item_cue: None,
             }],
             events: vec!["Go".to_string()],

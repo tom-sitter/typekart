@@ -176,18 +176,18 @@ Initial examples:
 
 - Star Power lasts 10 seconds.
 - Shield lasts 5 seconds.
-- Blue Shell affects the target's next 3 words.
+- Blue Shell affects the target's next word by default.
 - Mushroom advances 3 words one at a time at a tunable speedboost pace.
 
 ### Item Concepts
 
 | Item | Target | Effect |
 | --- | --- | --- |
-| Star Power | Self | Temporarily lets the player ignore typos without backspacing. |
+| Star Power | Self | Temporarily ignores incorrect keys without adding typo input or requiring backspace. |
 | Mushroom | Self | Rapidly advances the player by three main-track words, one word at a time. |
 | Triple Mushroom | Self | Gives multiple smaller boosts, activated one at a time. |
 | Banana | Nearby opponent | Swaps a nearby opponent's current word with a different word while they are typing it. |
-| Blue Shell | First place | Randomizes capitalization in the first-place player's next three words. |
+| Blue Shell | First place | Reverses the first-place player's next word. |
 | Lightning | All opponents | Briefly slows all other players or increases their typo penalty. |
 | Shield | Self | Blocks the next negative item effect. |
 | Ink | Nearby opponents | Temporarily obscures upcoming words in the terminal UI. |
@@ -200,14 +200,14 @@ Star Power is a self-targeted boost.
 
 While active:
 
-- Incorrect characters do not block progress.
-- The player can continue typing without backspacing.
-- Word submission may accept the intended target as long as enough characters were typed in sequence.
+- Incorrect keys are counted as typos for stats but are not inserted into the player's input.
+- The player cannot advance from incorrect keys; the next accepted character must still be the correct next character.
+- Because bad keys are discarded immediately, the player does not need to backspace to recover from mistakes during the effect.
 
 Initial recommendation:
 
 - Star Power lasts 10 seconds.
-- Star Power forgives mistakes for the duration rather than permanently changing raw accuracy stats.
+- Star Power forgives mistakes for input recovery, while raw typo stats still record incorrect keys.
 
 ### Blue Shell
 
@@ -215,9 +215,10 @@ Blue Shell targets the player currently in first place.
 
 Effect:
 
-- The target's next three words have randomized capitalization.
-- The target must type the displayed capitalization correctly during the effect.
-- Each affected word should remain recognizable, but the casing pattern should vary enough to force attention.
+- The target's next word is replaced by the reversed spelling of that word.
+- The target must type the displayed reversed word correctly.
+- The number of affected words is item-configurable, but the built-in default is one word.
+- Shield can block Blue Shell and is consumed when it does.
 
 Balance:
 

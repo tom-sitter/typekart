@@ -31,8 +31,9 @@ use ratatui::{
 use super::log::{push_network_log, write_network_log, NetworkLog, SharedNetworkLog};
 use super::protocol::{
     decode_server_message, encode_client_message, AssignedColor, ClientMessage, ClientSequence,
-    ItemCuePlacementSnapshot, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
-    PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
+    ImpactCueSnapshotKind, ItemCuePlacementSnapshot, LobbyPlayer, ModConfigSnapshot,
+    NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus,
+    RaceSnapshot, ServerMessage,
 };
 use crate::ui::render::IconMode;
 
@@ -1082,7 +1083,10 @@ fn network_track_word_line<'a>(
 ) -> Line<'a> {
     let mut cells = vec![NetworkTrackCell::default(); window.width];
     for word in &window.words {
-        for (char_index, ch) in word.word.chars().enumerate() {
+        let display_word = local
+            .and_then(|player| network_word_override(player, word.index))
+            .unwrap_or(word.word);
+        for (char_index, ch) in display_word.chars().enumerate() {
             let column = word.start_col + char_index;
             if let Some(cell) = cells.get_mut(column) {
                 *cell = NetworkTrackCell {
@@ -1103,6 +1107,14 @@ fn network_track_word_line<'a>(
             .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
             .collect::<Vec<_>>(),
     )
+}
+
+fn network_word_override(player: &PlayerSnapshot, word_index: usize) -> Option<&str> {
+    player
+        .word_overrides
+        .iter()
+        .find(|override_word| override_word.word_index == word_index)
+        .map(|override_word| override_word.word.as_str())
 }
 
 fn overlay_network_local_input(
@@ -1346,10 +1358,16 @@ fn network_racer_line<'a>(
         ),
     };
 
+    let mut prefix = String::new();
     if player.boosted {
-        let boost = network_boost_prefix(icon_mode);
-        let boost_start = start.saturating_sub(boost.chars().count());
-        write_network_marker(&mut cells, boost_start, boost, style);
+        prefix.push_str(network_boost_prefix(icon_mode));
+    }
+    if player.starred && player.shielded {
+        prefix.push_str(network_star_prefix(icon_mode));
+    }
+    if !prefix.is_empty() {
+        let prefix_start = start.saturating_sub(prefix.chars().count());
+        write_network_marker(&mut cells, prefix_start, &prefix, style);
     }
     let mut after_marker_width = 0;
     if let Some((cue, placement)) = network_item_cue(player, icon_mode) {
@@ -1371,6 +1389,12 @@ fn network_racer_line<'a>(
         network_edge_shield_marker('<', icon_mode)
     } else if player.shielded && marker == ">" {
         network_edge_shield_marker('>', icon_mode)
+    } else if player.starred && matches!(marker, NETWORK_RACER_MARKER) {
+        network_star_marker(icon_mode)
+    } else if player.starred && marker == "<" {
+        network_edge_star_marker('<', icon_mode)
+    } else if player.starred && marker == ">" {
+        network_edge_star_marker('>', icon_mode)
     } else {
         marker
     };
@@ -1436,10 +1460,24 @@ fn network_boost_prefix(icon_mode: IconMode) -> &'static str {
     }
 }
 
+fn network_star_prefix(icon_mode: IconMode) -> &'static str {
+    match icon_mode {
+        IconMode::Ascii => "*",
+        IconMode::Unicode => "★",
+    }
+}
+
 fn network_shield_marker(icon_mode: IconMode) -> &'static str {
     match icon_mode {
         IconMode::Ascii => "[███]",
         IconMode::Unicode => "█🛡",
+    }
+}
+
+fn network_star_marker(icon_mode: IconMode) -> &'static str {
+    match icon_mode {
+        IconMode::Ascii => "[*]",
+        IconMode::Unicode => "█★█",
     }
 }
 
@@ -1453,9 +1491,25 @@ fn network_edge_shield_marker(direction: char, icon_mode: IconMode) -> &'static 
     }
 }
 
+fn network_edge_star_marker(direction: char, icon_mode: IconMode) -> &'static str {
+    match (direction, icon_mode) {
+        ('<', IconMode::Ascii) => "*<*",
+        ('>', IconMode::Ascii) => "*>*",
+        ('<', IconMode::Unicode) => "<★",
+        ('>', IconMode::Unicode) => ">★",
+        _ => "*",
+    }
+}
+
 fn network_marker_style(player: &PlayerSnapshot, color: Color) -> Style {
     let base = Style::default().fg(color).add_modifier(Modifier::BOLD);
-    if player.impact_remaining_ms > 0 {
+    if let Some(cue) = player.impact_cue.filter(|cue| cue.remaining_ms > 0) {
+        match cue.kind {
+            ImpactCueSnapshotKind::Banana => base.bg(Color::Yellow).fg(Color::Black),
+            ImpactCueSnapshotKind::BlueShell => base.bg(Color::Blue).fg(Color::White),
+            ImpactCueSnapshotKind::ShieldBlock => base.bg(Color::Cyan).fg(Color::Black),
+        }
+    } else if player.impact_remaining_ms > 0 {
         base.bg(Color::Yellow).fg(Color::Black)
     } else if player.stunned {
         base.bg(Color::Red).fg(Color::White)
@@ -1901,12 +1955,15 @@ mod tests {
             word_index,
             input: input.to_string(),
             typo_index,
+            word_overrides: Vec::new(),
             finished,
             connected: true,
             shielded: false,
+            starred: false,
             boosted: false,
             stunned: false,
             impact_remaining_ms: 0,
+            impact_cue: None,
             item_cue: None,
         }
     }

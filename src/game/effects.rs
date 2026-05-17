@@ -7,6 +7,9 @@ pub enum ActiveEffect {
     Shield {
         until: Instant,
     },
+    Star {
+        until: Instant,
+    },
     Mushroom {
         remaining_words: usize,
         next_step_at: Instant,
@@ -18,7 +21,15 @@ impl ActiveEffect {
     pub fn is_shield_active_at(self, now: Instant) -> bool {
         match self {
             Self::Shield { until } => until > now,
+            Self::Star { .. } | Self::Mushroom { .. } => false,
+        }
+    }
+
+    pub fn is_star_active_at(self, now: Instant) -> bool {
+        match self {
+            Self::Star { until } => until > now,
             Self::Mushroom { .. } => false,
+            Self::Shield { .. } => false,
         }
     }
 }
