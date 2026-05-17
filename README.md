@@ -31,7 +31,7 @@ You can move `typekart.exe` somewhere on your `PATH` if you want to run `typekar
 
 Package-manager manifests are included under `packaging/`, but they need release checksums before they can be published.
 
-Homebrew, after the tap is published:
+Homebrew:
 
 ```sh
 brew tap tom-sitter/tap
