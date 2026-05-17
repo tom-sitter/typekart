@@ -516,6 +516,7 @@ mod tests {
             let _ = run_relay(RelayConfig {
                 bind: SocketAddr::from(([127, 0, 0, 1], 0)),
                 ready_signal: Some(tx),
+                limits: Default::default(),
             });
         });
         rx.recv_timeout(Duration::from_secs(2))

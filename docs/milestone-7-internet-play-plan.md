@@ -340,13 +340,14 @@ Validation:
 
 ### Slice 5: Deployment Notes
 
-Status: implemented for reverse-proxy deployment guidance.
+Status: implemented for relay hardening, reverse-proxy deployment guidance, and Docker deployment.
 
 Deliverables:
 
 - Document relay deployment options.
 - Document expected ports and `ws://` vs `wss://`.
 - Document operational limits and logging.
+- Add an easy cloud deployment path.
 
 Implementation notes:
 
@@ -354,10 +355,14 @@ Implementation notes:
 - Public clients can use `wss://` relay URLs.
 - The relay process should be run as a stateful in-memory service behind a supervisor.
 - TLS termination is intentionally delegated to a reverse proxy such as Caddy.
+- Relay runtime hardening includes configurable room limits, participants-per-room limits, message size limits, and idle room cleanup.
+- `Dockerfile` builds a small relay runtime image for cloud infrastructure.
 
 Validation:
 
 - A clean checkout can run relay, host-online, and join-online using documented commands.
+- Relay hardening unit tests cover room limits, joiner limits, and idle cleanup.
+- Docker build should be verified before public deployment.
 - Public deployment validation still requires a real domain and TLS reverse proxy.
 
 ## Testing Strategy

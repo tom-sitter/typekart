@@ -175,6 +175,18 @@ enum Command {
         /// Address and port to listen on.
         #[arg(long, default_value = "127.0.0.1:8080")]
         bind: SocketAddr,
+        /// Maximum active relay rooms.
+        #[arg(long, default_value_t = 256)]
+        max_rooms: usize,
+        /// Maximum joiners per relay room, excluding the host.
+        #[arg(long, default_value_t = 5)]
+        max_participants_per_room: usize,
+        /// Maximum WebSocket text message size in bytes.
+        #[arg(long, default_value_t = 262_144)]
+        max_message_bytes: usize,
+        /// Close rooms after this many idle seconds.
+        #[arg(long, default_value_t = 7200)]
+        room_idle_timeout_secs: u64,
     },
 }
 
@@ -310,9 +322,21 @@ fn main() -> Result<()> {
             },
             debug_log,
         ),
-        Command::Relay { bind } => net::relay_server::run_relay(net::relay_server::RelayConfig {
+        Command::Relay {
+            bind,
+            max_rooms,
+            max_participants_per_room,
+            max_message_bytes,
+            room_idle_timeout_secs,
+        } => net::relay_server::run_relay(net::relay_server::RelayConfig {
             bind,
             ready_signal: None,
+            limits: net::relay_server::RelayLimits {
+                max_rooms,
+                max_participants_per_room,
+                max_message_bytes,
+                room_idle_timeout: std::time::Duration::from_secs(room_idle_timeout_secs),
+            },
         }),
     }
 }

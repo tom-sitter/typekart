@@ -153,6 +153,13 @@ cargo run -- join-online --name player2 --relay ws://127.0.0.1:8080 --room ROOM-
 
 For public internet play, run the relay behind a TLS reverse proxy and use a `wss://` relay URL. Deployment notes are in [docs/relay-deployment.md](docs/relay-deployment.md).
 
+Build and run the relay container:
+
+```sh
+docker build -t typekart-relay .
+docker run --rm -p 8080:8080 typekart-relay
+```
+
 ## Common Multiplayer Options
 
 Set the track length:
