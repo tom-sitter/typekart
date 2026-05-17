@@ -196,7 +196,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
             name: host_name,
             kind: PlayerKind::Human,
             color: COLOR_ROTATION[0],
-            ready: false,
+            ready: true,
             connected: true,
         });
         next_player_id = 2;
@@ -232,7 +232,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
 
     server_println!("TypeKart host listening on {local_addr}");
     if has_embedded_host_player(&state) {
-        server_println!("Host lobby commands: ready, unready, lobby, start");
+        server_println!("Host lobby commands: start, lobby, ready, unready");
         spawn_host_command_loop(Arc::clone(&state));
     }
     server_println!("Waiting for joiners. Press Ctrl-C to stop.");

@@ -416,6 +416,11 @@ fn handle_lobby_key(
     }
 
     if is_enter_key(key_event) {
+        if enter_sets_ready(!is_host, phase, lobby_command) {
+            send_client_message(stream, &ClientMessage::SetReady { ready: true })?;
+            push_network_log(log, "client sent ready from enter");
+            return Ok(false);
+        }
         let should_leave =
             send_lifecycle_command(stream, lobby_command.trim(), is_host, phase, log)?;
         lobby_command.clear();
@@ -496,6 +501,15 @@ fn space_starts_countdown(is_host: bool, phase: NetworkRacePhase) -> bool {
         && matches!(
             phase,
             NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost | NetworkRacePhase::Finished
+        )
+}
+
+fn enter_sets_ready(is_joiner: bool, phase: NetworkRacePhase, lobby_command: &str) -> bool {
+    is_joiner
+        && lobby_command.is_empty()
+        && matches!(
+            phase,
+            NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
         )
 }
 
@@ -1700,9 +1714,9 @@ fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragrap
 fn lifecycle_command_help(is_host: bool, phase: NetworkRacePhase) -> &'static str {
     match phase {
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost if is_host => {
-            "    ready | unready | start | Space | quit"
+            "    Space starts when everyone is ready | quit"
         }
-        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => "    ready | unready | quit",
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => "    Enter ready | quit",
         NetworkRacePhase::Finished if is_host => "    lobby | rematch | start | Space | quit",
         NetworkRacePhase::Finished => "    quit",
         NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => "",
@@ -1743,7 +1757,7 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        display_word_number, lifecycle_command_help, lifecycle_command_message,
+        display_word_number, enter_sets_ready, lifecycle_command_help, lifecycle_command_message,
         network_bonus_column, network_minimap_column, network_racer_label, network_track_word_line,
         phase_accepts_typed_commands, space_starts_countdown, stream_index_for_word_char,
         visible_network_bonus_point, AssignedColor, NetworkMarkerPosition, NetworkTrackWindow,
@@ -1918,7 +1932,8 @@ mod tests {
 
     #[test]
     fn lifecycle_help_hides_irrelevant_commands() {
-        assert!(lifecycle_command_help(true, NetworkRacePhase::WaitingForHost).contains("ready"));
+        assert!(lifecycle_command_help(true, NetworkRacePhase::WaitingForHost).contains("Space"));
+        assert!(lifecycle_command_help(false, NetworkRacePhase::WaitingForHost).contains("Enter"));
         assert!(!lifecycle_command_help(true, NetworkRacePhase::Finished).contains("ready"));
         assert!(lifecycle_command_help(true, NetworkRacePhase::Finished).contains("lobby"));
         assert_eq!(
@@ -1935,6 +1950,17 @@ mod tests {
         assert!(phase_accepts_typed_commands(
             false,
             NetworkRacePhase::Finished
+        ));
+        assert!(enter_sets_ready(true, NetworkRacePhase::WaitingForHost, ""));
+        assert!(!enter_sets_ready(
+            true,
+            NetworkRacePhase::WaitingForHost,
+            "quit"
+        ));
+        assert!(!enter_sets_ready(
+            false,
+            NetworkRacePhase::WaitingForHost,
+            ""
         ));
     }
 

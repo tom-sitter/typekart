@@ -184,13 +184,13 @@ Deliverables:
 Validation:
 
 - Host can start countdown by `Space` and `start`.
-- Joiners can ready/unready/quit.
+- Joiners can press `Enter` to ready, with typed `ready` / `unready` still available as fallback commands.
 - Racing input ignores non-game keys without producing confusing behavior.
 
 Implementation notes:
 
 - The network footer now changes by phase.
-- Lobby/waiting phases show only ready/start/quit commands that apply to that player role.
+- Lobby/waiting phases show role-specific setup actions: host uses `Space` to start, joiners use `Enter` to ready, and typed commands remain as fallbacks.
 - Countdown and racing phases do not accept typed lifecycle commands; `Esc` or `Ctrl-C` leaves.
 - Finished phase lets the host return to lobby, start a rematch, or quit; joiners can quit while waiting for the host.
 

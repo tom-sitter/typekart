@@ -32,7 +32,8 @@ Use the same `--ascii` setting on host and joiners when validating ASCII fallbac
 - Joiners appear with unique colors.
 - Duplicate names are rejected.
 - Full lobby join attempts show a clear rejection.
-- `ready` and `unready` work only in lobby/waiting phases.
+- Joiners can press `Enter` to ready up in lobby/waiting phases.
+- Typed `ready` and `unready` remain supported as fallback lobby commands.
 - Host can start with `Space` or `start` once connected players are ready.
 - Footer commands change by phase and do not show irrelevant race/result commands.
 - Lobby Events show joins, ready changes, disconnects, countdown start/cancel, and rematch transitions.

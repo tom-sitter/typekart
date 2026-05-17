@@ -634,7 +634,7 @@ For a first version, the client can avoid prediction and wait for server confirm
 | Phase | Description |
 | --- | --- |
 | Main Menu | Player chooses host, join, settings, or quit. |
-| Lobby | Players connect and ready up. |
+| Lobby | Players connect. The host starts ready; joiners press `Enter` to ready up. |
 | Waiting for Host | Race is visible but locked until the host presses Space. |
 | Countdown | Race is locked and starts after a countdown. |
 | Racing | Players type, collect items, and finish. |

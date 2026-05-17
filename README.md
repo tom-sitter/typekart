@@ -227,7 +227,7 @@ cargo run -- host --name host --bind 127.0.0.1:4000 \
 ## In-Game Flow
 
 - In single player, press `Space` to start the countdown.
-- In multiplayer, players ready up in the lobby, then the host starts the race.
+- In multiplayer, joiners press `Enter` to ready up, then the host presses `Space` to start.
 - After a multiplayer race, the host can return to the lobby or start another race from the results screen.
 
 For the full CLI reference:
