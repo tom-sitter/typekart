@@ -4,12 +4,20 @@
 //! public relay can route them without understanding race rules.
 
 use anyhow::{bail, Result};
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use rand::{seq::SliceRandom, thread_rng};
 use serde::{Deserialize, Serialize};
 
 use super::protocol::{ClientMessage, PlayerId, ServerMessage};
 
-const ROOM_CODE_LEN: usize = 8;
+const ROOM_CODE_WORDS: &[&str] = &[
+    "apple", "beach", "brave", "candy", "cedar", "charm", "cloud", "coral", "crisp", "delta",
+    "eagle", "ember", "fancy", "field", "flame", "frost", "giant", "glide", "grape", "happy",
+    "harbor", "honey", "jolly", "laser", "lemon", "lucky", "maple", "melon", "mint", "music",
+    "noble", "ocean", "olive", "orbit", "panda", "pearl", "pilot", "pixel", "quiet", "racer",
+    "river", "rocket", "salad", "shadow", "spark", "sunny", "tango", "tiger", "ultra", "vivid",
+    "water", "whale", "wonder", "yellow", "zebra",
+];
+const ROOM_CODE_WORD_COUNT: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoomCode(String);
@@ -17,30 +25,39 @@ pub struct RoomCode(String);
 impl RoomCode {
     pub fn generate() -> Self {
         let mut rng = thread_rng();
-        let code = (0..ROOM_CODE_LEN)
-            .map(|_| char::from(rng.sample(Alphanumeric)).to_ascii_uppercase())
-            .collect();
-        Self(code)
+        let words = ROOM_CODE_WORDS
+            .choose_multiple(&mut rng, ROOM_CODE_WORD_COUNT)
+            .copied()
+            .collect::<Vec<_>>();
+        Self(words.join("-"))
     }
 
     #[allow(dead_code)]
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
         let normalized = value
             .as_ref()
+            .trim()
             .chars()
-            .filter(|ch| *ch != '-')
-            .map(|ch| ch.to_ascii_uppercase())
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
             .collect::<String>();
-        if normalized.len() != ROOM_CODE_LEN {
-            bail!("room code must be {ROOM_CODE_LEN} characters");
+        let words = normalized
+            .split('-')
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+
+        if words.len() != ROOM_CODE_WORD_COUNT {
+            bail!("room code must be three words separated by hyphens");
         }
-        if !normalized
-            .chars()
-            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
-        {
-            bail!("room code must contain only ASCII letters and digits");
+        if !words.iter().all(|word| ROOM_CODE_WORDS.contains(word)) {
+            bail!("room code contains an unknown word");
         }
-        Ok(Self(normalized))
+        Ok(Self(words.join("-")))
     }
 
     #[allow(dead_code)]
@@ -50,7 +67,7 @@ impl RoomCode {
 
     #[allow(dead_code)]
     pub fn display(&self) -> String {
-        format!("{}-{}", &self.0[..4], &self.0[4..])
+        self.0.clone()
     }
 }
 
@@ -127,16 +144,17 @@ mod tests {
 
     #[test]
     fn room_codes_normalize_display_form() {
-        let code = RoomCode::parse("ab12-cd34").unwrap();
+        let code = RoomCode::parse("Rocket Salad TIGER").unwrap();
 
-        assert_eq!(code.as_str(), "AB12CD34");
-        assert_eq!(code.display(), "AB12-CD34");
+        assert_eq!(code.as_str(), "rocket-salad-tiger");
+        assert_eq!(code.display(), "rocket-salad-tiger");
     }
 
     #[test]
     fn room_codes_reject_invalid_values() {
         assert!(RoomCode::parse("short").is_err());
-        assert!(RoomCode::parse("ABCD_123").is_err());
+        assert!(RoomCode::parse("rocket-salad").is_err());
+        assert!(RoomCode::parse("rocket-salad-turnip").is_err());
     }
 
     #[test]
@@ -149,7 +167,7 @@ mod tests {
     #[test]
     fn client_relay_envelopes_round_trip() {
         let message = RelayClientMessage::ClientToHost {
-            room: RoomCode::parse("ABCD-1234").unwrap(),
+            room: RoomCode::parse("rocket-salad-tiger").unwrap(),
             player_id: PlayerId(2),
             message: ClientMessage::KeyInput {
                 sequence: ClientSequence(9),
@@ -166,7 +184,7 @@ mod tests {
     #[test]
     fn server_relay_envelopes_round_trip() {
         let message = RelayServerMessage::HostToClient {
-            room: RoomCode::parse("ABCD-1234").unwrap(),
+            room: RoomCode::parse("rocket-salad-tiger").unwrap(),
             player_id: PlayerId(2),
             message: ServerMessage::Welcome {
                 player_id: PlayerId(2),

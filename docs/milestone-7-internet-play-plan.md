@@ -58,13 +58,13 @@ Expected behavior:
 
 - Client connects to the public relay.
 - Relay creates a room.
-- Host sees a room code, for example `ABCD-1234`.
+- Host sees a room code, for example `rocket-salad-tiger`.
 - Host terminal behaves like the current host UI.
 
 Joiner:
 
 ```sh
-cargo run -- join-online --name alex --room ABCD-1234
+cargo run -- join-online --name alex --room rocket-salad-tiger
 ```
 
 Expected behavior:
@@ -120,7 +120,7 @@ Relay envelope:
 ```json
 {
   "type": "client_to_host",
-  "room": "ABCD-1234",
+  "room": "rocket-salad-tiger",
   "player_id": 2,
   "message": { "type": "key_input", "sequence": 42, "key": { "type": "char", "value": "a" } }
 }
@@ -131,7 +131,7 @@ Host-to-client envelope:
 ```json
 {
   "type": "host_to_client",
-  "room": "ABCD-1234",
+  "room": "rocket-salad-tiger",
   "player_id": 2,
   "message": { "type": "race_snapshot", "snapshot": {} }
 }
@@ -229,7 +229,7 @@ Add internet commands:
 
 ```sh
 cargo run -- host-online --name tom --relay wss://relay.typekart.example
-cargo run -- join-online --name alex --relay wss://relay.typekart.example --room ABCD-1234
+cargo run -- join-online --name alex --relay wss://relay.typekart.example --room rocket-salad-tiger
 ```
 
 Useful development relay command:
@@ -277,7 +277,8 @@ Deliverables:
 Implementation notes:
 
 - `src/net/relay.rs` defines `RoomCode`, `RelayClientMessage`, and `RelayServerMessage`.
-- Room codes normalize display forms such as `abcd-1234` to `ABCD1234`.
+- Room codes use three easy-to-say words, such as `rocket-salad-tiger`.
+- Room-code parsing is case-insensitive and accepts common separators such as spaces or hyphens.
 - Relay envelopes wrap existing `ClientMessage` and `ServerMessage` values so the relay can route messages without owning race rules.
 
 Validation:

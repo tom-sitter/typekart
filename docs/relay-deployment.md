@@ -30,7 +30,7 @@ cargo run -- host-online --name host --relay ws://127.0.0.1:8080
 Join using the room code printed by the host:
 
 ```sh
-cargo run -- join-online --name player2 --relay ws://127.0.0.1:8080 --room ABCD-1234
+cargo run -- join-online --name player2 --relay ws://127.0.0.1:8080 --room rocket-salad-tiger
 ```
 
 ## Local Network Relay
@@ -45,7 +45,7 @@ Then host and join using the relay machine's LAN address:
 
 ```sh
 cargo run -- host-online --name host --relay ws://192.168.1.25:8080
-cargo run -- join-online --name player2 --relay ws://192.168.1.25:8080 --room ABCD-1234
+cargo run -- join-online --name player2 --relay ws://192.168.1.25:8080 --room rocket-salad-tiger
 ```
 
 ## Public Relay
@@ -64,7 +64,7 @@ Example public commands:
 
 ```sh
 cargo run -- host-online --name host --relay wss://relay.example.com
-cargo run -- join-online --name player2 --relay wss://relay.example.com --room ABCD-1234
+cargo run -- join-online --name player2 --relay wss://relay.example.com --room rocket-salad-tiger
 ```
 
 ## Reverse Proxy
@@ -139,7 +139,7 @@ Then players can use:
 
 ```sh
 cargo run -- host-online --name host --relay wss://your-typekart-relay-name.fly.dev
-cargo run -- join-online --name player2 --relay wss://your-typekart-relay-name.fly.dev --room ABCD-1234
+cargo run -- join-online --name player2 --relay wss://your-typekart-relay-name.fly.dev --room rocket-salad-tiger
 ```
 
 The Fly config keeps one machine running because relay rooms are in memory.
@@ -159,7 +159,7 @@ Players can use the Render service URL as the relay:
 
 ```sh
 cargo run -- host-online --name host --relay wss://typekart-relay.onrender.com
-cargo run -- join-online --name player2 --relay wss://typekart-relay.onrender.com --room ABCD-1234
+cargo run -- join-online --name player2 --relay wss://typekart-relay.onrender.com --room rocket-salad-tiger
 ```
 
 Render service URLs vary by account and service name. Use the actual URL shown in the Render dashboard.
