@@ -151,7 +151,7 @@ The host prints a room code. Terminal 3 can join with that room code:
 cargo run -- join-online --name player2 --relay ws://127.0.0.1:8080 --room ROOM-CODE
 ```
 
-The current development relay path supports `ws://` URLs. Public `wss://` relay support is planned for a later internet-play slice.
+For public internet play, run the relay behind a TLS reverse proxy and use a `wss://` relay URL. Deployment notes are in [docs/relay-deployment.md](docs/relay-deployment.md).
 
 ## Common Multiplayer Options
 

@@ -386,7 +386,11 @@ fn set_plain_nonblocking(websocket: &mut RelaySocket) -> Result<()> {
         MaybeTlsStream::Plain(stream) => stream
             .set_nonblocking(true)
             .context("failed to set relay websocket nonblocking"),
-        _ => bail!("online relay currently requires a plain ws:// relay URL"),
+        MaybeTlsStream::NativeTls(stream) => stream
+            .get_ref()
+            .set_nonblocking(true)
+            .context("failed to set TLS relay websocket nonblocking"),
+        _ => bail!("unsupported relay websocket stream type"),
     }
 }
 

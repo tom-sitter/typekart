@@ -326,7 +326,8 @@ Implementation notes:
 - `host-online` starts the normal authoritative host on loopback, starts an online bridge, creates a relay room, then opens the usual host UI.
 - `join-online` starts a loopback proxy, connects that proxy to the relay room, then opens the usual join UI against the proxy.
 - This intentionally avoids forking the game rules or renderer while proving the relay path end to end.
-- Current adapter support is limited to plain `ws://` relay URLs. Public `wss://` support remains a deployment/TLS slice.
+- Online adapters support plain `ws://` and TLS-backed `wss://` relay URLs.
+- The Rust relay binary remains a plain WebSocket service; public TLS should terminate at a reverse proxy.
 
 Validation:
 
@@ -339,7 +340,7 @@ Validation:
 
 ### Slice 5: Deployment Notes
 
-Status: planned.
+Status: implemented for reverse-proxy deployment guidance.
 
 Deliverables:
 
@@ -347,9 +348,17 @@ Deliverables:
 - Document expected ports and `ws://` vs `wss://`.
 - Document operational limits and logging.
 
+Implementation notes:
+
+- `docs/relay-deployment.md` documents local, LAN, and public reverse-proxy relay deployment.
+- Public clients can use `wss://` relay URLs.
+- The relay process should be run as a stateful in-memory service behind a supervisor.
+- TLS termination is intentionally delegated to a reverse proxy such as Caddy.
+
 Validation:
 
 - A clean checkout can run relay, host-online, and join-online using documented commands.
+- Public deployment validation still requires a real domain and TLS reverse proxy.
 
 ## Testing Strategy
 
