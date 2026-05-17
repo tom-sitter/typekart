@@ -1,15 +1,14 @@
 class Typekart < Formula
   desc "Terminal typing racer with kart-style item effects"
   homepage "https://github.com/tom-sitter/typekart"
-  version "0.1.0"
   license "GPL-3.0-or-later"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/tom-sitter/typekart/releases/download/v#{version}/typekart-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/tom-sitter/typekart/releases/download/v0.1.0/typekart-aarch64-apple-darwin.tar.gz"
       sha256 "REPLACE_WITH_ARM64_SHA256"
     else
-      url "https://github.com/tom-sitter/typekart/releases/download/v#{version}/typekart-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/tom-sitter/typekart/releases/download/v0.1.0/typekart-x86_64-apple-darwin.tar.gz"
       sha256 "REPLACE_WITH_X86_64_SHA256"
     end
   end
