@@ -334,6 +334,7 @@ fn header<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
     .block(Block::default().borders(Borders::BOTTOM))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_track(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -366,6 +367,7 @@ fn render_track(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn track_view<'a>(
     window: &'a TrackWindow<'a>,
     track_len: usize,
@@ -448,6 +450,7 @@ fn bonus_lines<'a>(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn racer_lines(
     window: &TrackWindow<'_>,
     player: &PlayerState,
@@ -571,9 +574,9 @@ fn minimap_line(
         })
         .collect::<Vec<_>>();
 
-    for col in 0..map_width {
+    for (col, cell) in cells.iter_mut().enumerate().take(map_width) {
         if col == local_col {
-            cells[col] = TrackCell {
+            *cell = TrackCell {
                 ch: '@',
                 style: Style::default()
                     .fg(Color::Cyan)
@@ -589,13 +592,13 @@ fn minimap_line(
         match markers_at_col.as_slice() {
             [] => {}
             [(_, marker, color)] => {
-                cells[col] = TrackCell {
+                *cell = TrackCell {
                     ch: *marker,
                     style: Style::default().fg(*color).add_modifier(Modifier::BOLD),
                 };
             }
             _ => {
-                cells[col] = TrackCell {
+                *cell = TrackCell {
                     ch: '*',
                     style: Style::default()
                         .fg(Color::White)
@@ -643,6 +646,7 @@ enum RacerVisibility {
     OnlyWhenCurrentWordVisible,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn racer_line_for_player(
     window: &TrackWindow<'_>,
     player: &PlayerState,
@@ -1090,10 +1094,10 @@ fn overlay_player_input(cells: &mut [TrackCell], window: &TrackWindow<'_>, playe
 
     if player.typo_index.is_none() {
         let cursor_index = player.input.chars().count();
-        if let Some(column) = window.column_for_stream_index(player.word_index, cursor_index) {
-            if let Some(cell) = cells.get_mut(column) {
-                cell.style = cursor_style();
-            }
+        if let Some(column) = window.column_for_stream_index(player.word_index, cursor_index)
+            && let Some(cell) = cells.get_mut(column)
+        {
+            cell.style = cursor_style();
         }
     }
 }

@@ -656,7 +656,7 @@ mod tests {
             joiner_rx.recv().unwrap(),
             RelayServerMessage::RoomClosed { .. }
         ));
-        assert!(state.lock().unwrap().rooms.get(&room).is_none());
+        assert!(!state.lock().unwrap().rooms.contains_key(&room));
     }
 
     #[test]
@@ -783,7 +783,7 @@ mod tests {
 
         cleanup_stale_rooms(&state, Duration::from_secs(1));
 
-        assert!(state.lock().unwrap().rooms.get(&room).is_none());
+        assert!(!state.lock().unwrap().rooms.contains_key(&room));
     }
 
     #[test]
@@ -831,7 +831,7 @@ mod tests {
         spawn_idle_room_sweeper(Arc::clone(&state), Duration::from_millis(1));
         let deadline = Instant::now() + Duration::from_secs(1);
         while Instant::now() < deadline {
-            if state.lock().unwrap().rooms.get(&room).is_none() {
+            if !state.lock().unwrap().rooms.contains_key(&room) {
                 return;
             }
             thread::sleep(Duration::from_millis(10));

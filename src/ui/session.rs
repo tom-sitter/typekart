@@ -431,10 +431,10 @@ impl LocalSession {
             return;
         }
 
-        if let RacePhase::Countdown { starts_at } = self.race_phase {
-            if now >= starts_at {
-                self.start_race(starts_at);
-            }
+        if let RacePhase::Countdown { starts_at } = self.race_phase
+            && now >= starts_at
+        {
+            self.start_race(starts_at);
         }
 
         if !self.race_phase.is_racing() {
@@ -794,12 +794,12 @@ impl LocalSession {
                     let direction = attack_direction(attacker_word_index, self.player.word_index);
                     self.ai_racers[ai_index].item_cue = Some(ItemCue::blue_shell(direction, now));
                 }
-                if self.apply_blue_shell_to_player(now) {
-                    if let Some(ai_index) = attacker_ai_index {
-                        let ai_name = self.ai_racers[ai_index].name.clone();
-                        self.events
-                            .push(format!("{ai_name} hit you with Blue Shell"));
-                    }
+                if self.apply_blue_shell_to_player(now)
+                    && let Some(ai_index) = attacker_ai_index
+                {
+                    let ai_name = self.ai_racers[ai_index].name.clone();
+                    self.events
+                        .push(format!("{ai_name} hit you with Blue Shell"));
                 }
             }
             BlueShellTarget::Ai(ai_id) => {
@@ -1102,17 +1102,16 @@ impl LocalSession {
             return;
         }
 
-        if let KeyAction::Char(ch) = action {
-            if self.can_start_bonus_attempt(now) {
-                if let Some((point_index, choice_index)) = self.match_bonus_start(ch, now) {
-                    self.bonus_attempt = Some(BonusAttempt {
-                        point_index,
-                        choice_index,
-                    });
-                    self.apply_bonus_char(ch);
-                    return;
-                }
-            }
+        if let KeyAction::Char(ch) = action
+            && self.can_start_bonus_attempt(now)
+            && let Some((point_index, choice_index)) = self.match_bonus_start(ch, now)
+        {
+            self.bonus_attempt = Some(BonusAttempt {
+                point_index,
+                choice_index,
+            });
+            self.apply_bonus_char(ch);
+            return;
         }
 
         let previous_word_index = self.player.word_index;
@@ -1242,10 +1241,7 @@ impl LocalSession {
     }
 
     fn player_position_band(&self) -> RacePositionBand {
-        racer_position_band(
-            self.player.word_index,
-            self.active_ai_word_indices().into_iter(),
-        )
+        racer_position_band(self.player.word_index, self.active_ai_word_indices())
     }
 
     fn active_ai_word_indices(&self) -> Vec<usize> {
@@ -1431,20 +1427,16 @@ impl LocalSession {
     }
 
     fn advance_mushroom(&mut self, now: Instant) {
-        loop {
-            let Some(effect_index) = self.player.active_effects.iter().position(|effect| {
-                matches!(
-                    effect,
-                    ActiveEffect::Mushroom {
-                        remaining_words,
-                        next_step_at,
-                        ..
-                    } if *remaining_words > 0 && *next_step_at <= now
-                )
-            }) else {
-                break;
-            };
-
+        while let Some(effect_index) = self.player.active_effects.iter().position(|effect| {
+            matches!(
+                effect,
+                ActiveEffect::Mushroom {
+                    remaining_words,
+                    next_step_at,
+                    ..
+                } if *remaining_words > 0 && *next_step_at <= now
+            )
+        }) {
             self.advance_mushroom_one_word(now, effect_index);
 
             if self.player.is_finished() {
@@ -2130,7 +2122,7 @@ mod tests {
         session.tick(now);
 
         assert!(session.attack_warning.is_none());
-        assert!(!session.player_impact_cue.is_some_and(|cue| cue.until > now));
+        assert!(session.player_impact_cue.is_none_or(|cue| cue.until <= now));
         assert!(session.ai_racers[1].is_stunned(now));
     }
 

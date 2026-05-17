@@ -671,15 +671,13 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
     if let Err(error) = broadcast_lobby_snapshot(&mut state) {
         server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
     }
-    if was_race_screen_phase {
-        if let Err(error) = broadcast_race_snapshot(&mut state) {
-            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-        }
+    if was_race_screen_phase && let Err(error) = broadcast_race_snapshot(&mut state) {
+        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
     }
-    if state.phase == NetworkRacePhase::Finished {
-        if let Err(error) = broadcast_race_results_once(&mut state) {
-            server_eprintln!("Failed to broadcast race results: {error:#}");
-        }
+    if state.phase == NetworkRacePhase::Finished
+        && let Err(error) = broadcast_race_results_once(&mut state)
+    {
+        server_eprintln!("Failed to broadcast race results: {error:#}");
     }
 }
 
@@ -882,12 +880,12 @@ fn apply_network_key_input(
         return true;
     }
 
-    if let KeyAction::Char(ch) = action {
-        if let Some(attempt) = network_bonus_start(state, player_id, ch, now) {
-            state.bonus_attempts.insert(player_id, attempt);
-            apply_network_bonus_char(state, player_id, ch);
-            return true;
-        }
+    if let KeyAction::Char(ch) = action
+        && let Some(attempt) = network_bonus_start(state, player_id, ch, now)
+    {
+        state.bonus_attempts.insert(player_id, attempt);
+        apply_network_bonus_char(state, player_id, ch);
+        return true;
     }
 
     state
@@ -1743,7 +1741,7 @@ fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: In
             break;
         };
         let events =
-            apply_network_track_key_input(state, player_id, action, now).unwrap_or_else(Vec::new);
+            apply_network_track_key_input(state, player_id, action, now).unwrap_or_default();
         if let Some(ai) = state.ai_racers.get_mut(&player_id) {
             ai.char_budget -= 1.0;
         }
@@ -2107,7 +2105,7 @@ fn log_race_snapshot(state: &HostState) {
                 state.snapshot_sequence
             ),
         ),
-        NetworkRacePhase::Racing if state.snapshot_sequence % 20 == 0 => push_network_log(
+        NetworkRacePhase::Racing if state.snapshot_sequence.is_multiple_of(20) => push_network_log(
             &state.debug_log,
             format!(
                 "broadcast snapshot seq={} phase=racing",

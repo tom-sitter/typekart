@@ -101,7 +101,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                 println!("Server rejected join: {message}");
                 push_network_log(&log, format!("client rejected: {message}"));
                 if let (Some(path), Some(log)) = (config.debug_log.as_ref(), log.as_ref()) {
-                    write_network_log(path, &log)?;
+                    write_network_log(path, log)?;
                 }
                 return Ok(());
             }
@@ -112,7 +112,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                     format!("client unexpected welcome response: {other:?}"),
                 );
                 if let (Some(path), Some(log)) = (config.debug_log.as_ref(), log.as_ref()) {
-                    write_network_log(path, &log)?;
+                    write_network_log(path, log)?;
                 }
                 return Ok(());
             }
@@ -120,7 +120,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                 println!("Server closed connection before welcome");
                 push_network_log(&log, "client disconnected before welcome");
                 if let (Some(path), Some(log)) = (config.debug_log.as_ref(), log.as_ref()) {
-                    write_network_log(path, &log)?;
+                    write_network_log(path, log)?;
                 }
                 return Ok(());
             }
@@ -267,7 +267,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
     println!("Left server");
     push_network_log(&log, "client left server");
     if let (Some(path), Some(log)) = (config.debug_log.as_ref(), log.as_ref()) {
-        write_network_log(path, &log)?;
+        write_network_log(path, log)?;
     }
 
     Ok(())
@@ -571,7 +571,7 @@ fn log_client_snapshot(log: &Option<SharedNetworkLog>, snapshot: &RaceSnapshot) 
                 snapshot.sequence
             ),
         ),
-        NetworkRacePhase::Racing if snapshot.sequence % 20 == 0 => push_network_log(
+        NetworkRacePhase::Racing if snapshot.sequence.is_multiple_of(20) => push_network_log(
             log,
             format!(
                 "client received snapshot seq={} phase=racing",

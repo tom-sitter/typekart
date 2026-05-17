@@ -33,6 +33,7 @@ use crate::{
 
 type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_typing_session(
     track: Track,
     player: PlayerState,

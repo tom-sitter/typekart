@@ -67,6 +67,7 @@ pub fn play(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn host(
     bind: SocketAddr,
     name: String,
@@ -135,6 +136,7 @@ pub fn host(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn host_online(
     relay: String,
     name: String,
