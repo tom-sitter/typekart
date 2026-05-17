@@ -31,7 +31,13 @@ To push automatically after the local release commit and tag are created:
 scripts/release.sh 0.1.0 --push
 ```
 
-After the GitHub release finishes, copy the SHA-256 values from `typekart-checksums.txt` into the package manifests under `packaging/`.
+After the GitHub release finishes, publish the Homebrew tap update:
+
+```sh
+scripts/update-homebrew-tap.sh 0.1.0 --push
+```
+
+Then copy the Windows SHA-256 value from `typekart-checksums.txt` into the Scoop and WinGet manifests under `packaging/`.
 
 To regenerate notes without cutting a release:
 
@@ -41,7 +47,11 @@ scripts/generate-release-notes.sh 0.1.0 > docs/releases/v0.1.0.md
 
 ## Homebrew
 
-Create a tap repository named `homebrew-tap`, then add `packaging/homebrew/typekart.rb` as `Formula/typekart.rb`.
+The public tap is published at `tom-sitter/homebrew-tap`. Update it after each GitHub release with:
+
+```sh
+scripts/update-homebrew-tap.sh 0.1.0 --push
+```
 
 Users will install with:
 
@@ -50,17 +60,18 @@ brew tap tom-sitter/tap
 brew install typekart
 ```
 
-Before publishing the tap, replace:
+The update script fills:
 
 - `REPLACE_WITH_ARM64_SHA256`
 - `REPLACE_WITH_X86_64_SHA256`
+- `REPLACE_WITH_VERSION`
 
 Validate locally:
 
 ```sh
-brew install --build-from-source ./Formula/typekart.rb
-brew test typekart
-brew audit --strict typekart
+brew audit --strict --online tom-sitter/tap/typekart
+brew style tom-sitter/tap/typekart
+brew test tom-sitter/tap/typekart
 ```
 
 ## Scoop

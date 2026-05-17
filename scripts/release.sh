@@ -181,5 +181,7 @@ Next steps:
      git push origin HEAD
      git push origin $tag
   2. Wait for the GitHub release workflow to publish archives and checksums.
-  3. Update Homebrew, Scoop, and WinGet manifests from typekart-checksums.txt.
+  3. Publish the Homebrew tap update:
+     scripts/update-homebrew-tap.sh $version --push
+  4. Update Scoop and WinGet manifests from typekart-checksums.txt.
 EOF
