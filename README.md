@@ -160,6 +160,8 @@ docker build -t typekart-relay .
 docker run --rm -p 8080:8080 typekart-relay
 ```
 
+Deployment configs are included for Fly.io (`fly.toml`) and Render (`render.yaml`).
+
 ## Common Multiplayer Options
 
 Set the track length:

@@ -111,6 +111,59 @@ docker run --rm -p 8080:8080 typekart-relay \
 
 For cloud deployment, expose container port `8080` to your platform's HTTP/WebSocket routing layer. Use the platform TLS endpoint or a reverse proxy for public `wss://`.
 
+## Fly.io
+
+The repository includes `fly.toml` for a single-machine relay deployment.
+
+First-time setup:
+
+```sh
+fly launch --no-deploy
+```
+
+If Fly asks whether to overwrite `fly.toml`, keep the checked-in file unless you intentionally want a different app name or region.
+
+Deploy:
+
+```sh
+fly deploy
+```
+
+The default app name in `fly.toml` is `typekart-relay`. Fly app names are globally unique, so you may need to change:
+
+```toml
+app = "your-typekart-relay-name"
+```
+
+Then players can use:
+
+```sh
+cargo run -- host-online --name host --relay wss://your-typekart-relay-name.fly.dev
+cargo run -- join-online --name player2 --relay wss://your-typekart-relay-name.fly.dev --room ABCD-1234
+```
+
+The Fly config keeps one machine running because relay rooms are in memory.
+
+## Render
+
+The repository includes `render.yaml` for Render Blueprint deployment.
+
+Deployment path:
+
+1. Push this repository to GitHub.
+2. In Render, create a new Blueprint from the repository.
+3. Confirm the `typekart-relay` web service.
+4. Render builds the Dockerfile and exposes the service over HTTPS/WSS.
+
+Players can use the Render service URL as the relay:
+
+```sh
+cargo run -- host-online --name host --relay wss://typekart-relay.onrender.com
+cargo run -- join-online --name player2 --relay wss://typekart-relay.onrender.com --room ABCD-1234
+```
+
+Render service URLs vary by account and service name. Use the actual URL shown in the Render dashboard.
+
 ## Operational Limits
 
 - The relay is stateful and in-memory. Restarting it closes all rooms.
