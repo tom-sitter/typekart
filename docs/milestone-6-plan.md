@@ -42,7 +42,7 @@ Implemented before Milestone 6:
 - Lobby readiness and host-started countdown.
 - Server-authoritative typing input.
 - Server-owned bonus choices, bonus claims, cooldowns, and item rolls.
-- Server-owned Mushroom, Banana, and Shield behavior.
+- Server-owned Mushroom, Banana, Shield, Star Power, and Blue Shell behavior.
 - Race snapshots at 20 snapshots per second while racing.
 - Results broadcast with placement order and structured result rows.
 - Network UI with track window, racer lanes, typo coloring, bonus lanes, minimap, events, and mod metadata.
@@ -55,7 +55,7 @@ Known rough edges:
 - Disconnect/rematch behavior has automated coverage for lobby cleanup, capacity/color reuse, countdown cancellation, rematch roster rebuilds, and no-connected-racer race completion, but still needs manual LAN validation.
 - LAN behavior has mainly been tested on loopback.
 - Terminal controls are implicit and not discoverable enough.
-- Item pool is still Mushroom, Banana, and Shield.
+- Terminal controls are phase-aware, but still need a short validation pass in common terminal environments.
 
 ## Proposed Implementation Order
 
@@ -157,7 +157,7 @@ Implementation notes:
 - Item definitions now own full context weight tables for `standard` and `nearby_racer` situations.
 - Each table has separate `first`, `middle`, and `trailing` weights.
 - Item packs can still use `standard_weight` and `nearby_racer_weight` as flat shorthand, but can also provide `context_weights` for full control.
-- Item packs can tune current built-in effect parameters: Mushroom boost words/WPM, Banana range/stun/blink/cue timing, and Shield duration.
+- Item packs can tune current built-in effect parameters: Mushroom boost words/WPM, Banana range/stun/blink/cue timing, Shield duration, Star Power duration, and Blue Shell affected word count.
 - Banana attack cue labels are config-driven and carried through network snapshots so clients render the host-selected pack.
 - Built-in tables currently give first-place racers less Banana weight, trailing racers more Mushroom/Banana weight, and nearby racers more Shield weight.
 
@@ -169,7 +169,7 @@ Validation:
 
 ### Slice 6: Terminal Control Polish
 
-Status: partially implemented for phase-aware network command display and parsing.
+Status: implemented for phase-aware network command display and parsing; still needs manual terminal validation.
 
 Make lobby and race controls easier to discover and less fragile.
 
@@ -187,18 +187,22 @@ Validation:
 - Joiners can ready/unready/quit.
 - Racing input ignores non-game keys without producing confusing behavior.
 
+Implementation notes:
+
+- The network footer now changes by phase.
+- Lobby/waiting phases show only ready/start/quit commands that apply to that player role.
+- Countdown and racing phases do not accept typed lifecycle commands; `Esc` or `Ctrl-C` leaves.
+- Finished phase lets the host return to lobby, start a rematch, or quit; joiners can quit while waiting for the host.
+
 ## Deferred From Milestone 6
 
 These remain useful but should wait unless they become blockers:
 
-- Star Power.
-- Blue Shell.
 - Full shared item engine.
-- Generic item effect/cue snapshots.
 - Manifest-backed word-pack collections.
 - Internet play.
 
-Star Power and Blue Shell are gameplay polish, but both are more expensive than they look because they introduce new typing-rule and display-rule surfaces. They should follow after results, disconnects, and event clarity are solid.
+Star Power and Blue Shell were pulled into Milestone 6 after the item registry and network snapshot surfaces were ready. They are implemented for local and network play, including racer markers, attacker cues, typed impact blink colors, and item-pack tuning for their current built-in effect parameters.
 
 ## Recommended First Slice
 

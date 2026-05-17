@@ -108,12 +108,6 @@ pub struct ImpactCue {
     pub until: Instant,
 }
 
-impl ImpactCue {
-    pub fn is_visible(self, now: Instant) -> bool {
-        self.until > now
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImpactCueKind {
     Banana,
@@ -148,7 +142,7 @@ impl AiRacer {
 
     #[cfg(test)]
     pub fn is_impacted(&self, now: Instant) -> bool {
-        self.impact_cue.is_some_and(|cue| cue.is_visible(now))
+        self.impact_cue.is_some_and(|cue| cue.until > now)
     }
 }
 
@@ -2105,7 +2099,7 @@ mod tests {
         assert!(session.attack_warning.is_none());
         assert!(session
             .player_impact_cue
-            .is_some_and(|cue| cue.kind == ImpactCueKind::Banana && cue.is_visible(now)));
+            .is_some_and(|cue| cue.kind == ImpactCueKind::Banana && cue.until > now));
     }
 
     #[test]
@@ -2128,9 +2122,7 @@ mod tests {
         session.tick(now);
 
         assert!(session.attack_warning.is_none());
-        assert!(!session
-            .player_impact_cue
-            .is_some_and(|cue| cue.is_visible(now)));
+        assert!(!session.player_impact_cue.is_some_and(|cue| cue.until > now));
         assert!(session.ai_racers[1].is_stunned(now));
     }
 

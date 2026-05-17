@@ -66,6 +66,10 @@ impl WordList {
         Ok(Self::from_contents(&contents))
     }
 
+    pub fn from_static(contents: &'static str) -> Self {
+        Self::from_contents(contents)
+    }
+
     pub fn from_contents(contents: &str) -> Self {
         let words = contents
             .lines()

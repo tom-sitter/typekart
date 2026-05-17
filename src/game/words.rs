@@ -18,7 +18,7 @@ use super::{
 };
 
 pub const DEFAULT_WORD_SET_ID: &str = "classic";
-const DEFAULT_WORD_SET_PATH: &str = "words_alpha.txt";
+const DEFAULT_WORD_SET: &str = include_str!("../../words_alpha.txt");
 const MIN_UNIQUE_WORDS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,9 +29,7 @@ pub struct WordSetDefinition {
 
 impl WordSetDefinition {
     pub fn load_builtin_default() -> Result<Self> {
-        let words = WordList::load(DEFAULT_WORD_SET_PATH).with_context(|| {
-            format!("failed to load built-in word set from {DEFAULT_WORD_SET_PATH}")
-        })?;
+        let words = WordList::from_static(DEFAULT_WORD_SET);
 
         Ok(Self {
             metadata: ContentMetadata::built_in(DEFAULT_WORD_SET_ID, "Classic"),

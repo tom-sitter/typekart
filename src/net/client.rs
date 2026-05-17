@@ -124,7 +124,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
             }
         };
 
-    println!("Lobby commands: ready, unready, quit");
+    println!("Use the footer for phase-specific commands. Esc or Ctrl-C leaves.");
     println!("After the race starts, typing is sent one key at a time.");
 
     let phase = Arc::new(Mutex::new(NetworkRacePhase::WaitingForHost));
@@ -499,11 +499,11 @@ fn space_starts_countdown(is_host: bool, phase: NetworkRacePhase) -> bool {
         )
 }
 
-fn phase_accepts_typed_commands(is_host: bool, phase: NetworkRacePhase) -> bool {
+fn phase_accepts_typed_commands(_is_host: bool, phase: NetworkRacePhase) -> bool {
     matches!(
         phase,
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
-    ) || (is_host && phase == NetworkRacePhase::Finished)
+    ) || phase == NetworkRacePhase::Finished
 }
 
 fn send_race_key(
@@ -1702,11 +1702,11 @@ fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragrap
 fn lifecycle_command_help(is_host: bool, phase: NetworkRacePhase) -> &'static str {
     match phase {
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost if is_host => {
-            "    ready | unready | start | Space starts | quit"
+            "    ready | unready | start | Space | quit"
         }
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => "    ready | unready | quit",
-        NetworkRacePhase::Finished if is_host => "    lobby returns | start/Space rematch | quit",
-        NetworkRacePhase::Finished => "    wait for host | quit",
+        NetworkRacePhase::Finished if is_host => "    lobby | rematch | start | Space | quit",
+        NetworkRacePhase::Finished => "    quit",
         NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => "",
     }
 }
@@ -1925,7 +1925,7 @@ mod tests {
         assert!(lifecycle_command_help(true, NetworkRacePhase::Finished).contains("lobby"));
         assert_eq!(
             lifecycle_command_help(false, NetworkRacePhase::Finished),
-            "    wait for host | quit"
+            "    quit"
         );
         assert!(!phase_accepts_typed_commands(
             true,
@@ -1934,6 +1934,10 @@ mod tests {
             }
         ));
         assert!(space_starts_countdown(true, NetworkRacePhase::Finished));
+        assert!(phase_accepts_typed_commands(
+            false,
+            NetworkRacePhase::Finished
+        ));
     }
 
     fn words<const N: usize>(words: [&str; N]) -> Vec<String> {
