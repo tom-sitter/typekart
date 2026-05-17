@@ -687,7 +687,7 @@ After that works, add:
 - Which terminal key or key combination should activate modified item use?
 - What word-pack selection modes should be exposed first: random, rotation, shuffle bag, host pick, or voting?
 - How strict should client compatibility checks be once custom item packs can define new effects?
-- After local network play works, should internet play use direct port forwarding, a relay server, or hosted authoritative servers?
+- For internet play, should the first public relay be self-hosted as a Rust service or deployed on a managed WebSocket platform?
 
 ## Glossary
 

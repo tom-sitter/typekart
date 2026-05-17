@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -36,13 +36,13 @@ use crate::game::{
 
 use super::log::{push_network_log, SharedNetworkLog};
 use super::protocol::{
-    decode_client_message, encode_server_message, AssignedColor, AttackDirectionSnapshot,
-    BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
-    ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot, ItemCueSnapshot,
-    ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot,
-    ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
-    WordOverrideSnapshot,
+    AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshot, BonusChoiceSnapshotStatus,
+    BonusPointSnapshot, ClientMessage, ImpactCueSnapshot, ImpactCueSnapshotKind,
+    ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase,
+    PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus,
+    RaceSnapshot, ServerMessage, WordOverrideSnapshot,
 };
+use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
 const COLOR_ROTATION: [AssignedColor; 6] = [
     AssignedColor::Cyan,
@@ -453,20 +453,15 @@ fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
 }
 
 fn read_join_hello(stream: &TcpStream) -> Result<String> {
-    let mut line = String::new();
-    {
-        let mut reader = BufReader::new(
-            stream
-                .try_clone()
-                .context("failed to clone client stream for reading")?,
-        );
-        reader
-            .read_line(&mut line)
-            .context("failed to read client hello")?;
-    }
-
-    let message =
-        decode_client_message(line.trim_end()).context("failed to decode client hello")?;
+    let mut reader = BufReader::new(
+        stream
+            .try_clone()
+            .context("failed to clone client stream for reading")?,
+    );
+    let Some(message) = read_client_message(&mut reader).context("failed to read client hello")?
+    else {
+        bail!("client disconnected before hello");
+    };
     let ClientMessage::Hello { name, .. } = message else {
         send_server_message(
             stream
@@ -538,13 +533,12 @@ fn first_available_color(players: &[LobbyPlayer]) -> AssignedColor {
 }
 
 fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mutex<HostState>>) {
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let Ok(line) = line else {
-            break;
-        };
-        let Ok(message) = decode_client_message(line.trim_end()) else {
-            continue;
+    let mut reader = BufReader::new(stream);
+    loop {
+        let message = match read_client_message(&mut reader) {
+            Ok(Some(message)) => message,
+            Ok(None) => break,
+            Err(_) => continue,
         };
 
         match message {
@@ -2524,9 +2518,7 @@ fn send_server_message(mut stream: TcpStream, message: &ServerMessage) -> Result
 }
 
 fn write_server_message(stream: &mut TcpStream, message: &ServerMessage) -> Result<()> {
-    let encoded = encode_server_message(message).context("failed to encode server message")?;
-    writeln!(stream, "{encoded}").context("failed to write server message")?;
-    stream.flush().context("failed to flush server message")
+    write_framed_server_message(stream, message)
 }
 
 #[cfg(test)]

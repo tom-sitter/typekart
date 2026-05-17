@@ -131,6 +131,28 @@ Example:
 cargo run -- join --name player2 --server 192.168.1.25:4000
 ```
 
+## Multiplayer Through A Relay
+
+Terminal 1, start a local development relay:
+
+```sh
+cargo run -- relay --bind 127.0.0.1:8080
+```
+
+Terminal 2, host an online room through the relay:
+
+```sh
+cargo run -- host-online --name host --relay ws://127.0.0.1:8080
+```
+
+The host prints a room code. Terminal 3 can join with that room code:
+
+```sh
+cargo run -- join-online --name player2 --relay ws://127.0.0.1:8080 --room ROOM-CODE
+```
+
+The current development relay path supports `ws://` URLs. Public `wss://` relay support is planned for a later internet-play slice.
+
 ## Common Multiplayer Options
 
 Set the track length:

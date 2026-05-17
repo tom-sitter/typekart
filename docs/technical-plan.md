@@ -681,11 +681,15 @@ See `docs/modding-architecture-plan.md` for the shared modding architecture, `do
 
 See `docs/milestone-6-plan.md` for the detailed multiplayer polish plan.
 
-### Milestone 7: Internet Play Decision
+### Milestone 7: Internet Play
 
-- Measure local network behavior.
-- Decide whether to use relay, direct port forwarding, or hosted authoritative servers.
-- Adjust protocol transport if needed.
+- Introduce a transport boundary so game protocol handling is not tied directly to raw TCP streams.
+- Preserve existing LAN host/join commands.
+- Add a WebSocket relay path for internet play.
+- Add online host/join commands using relay room codes.
+- Document relay deployment and validation.
+
+See `docs/milestone-7-internet-play-plan.md` for the detailed internet play design.
 
 ## First Implementation Slice
 
@@ -705,8 +709,8 @@ This creates a stable foundation. The UI and networking can then call into the s
 
 - How much local prediction is needed for typing feel?
 - What snapshot rate feels smooth without overcomplicating networking?
-- Should the host be refactored next into an in-process client, or should we first finish joiner raw input/rendering?
 - Should disconnected racers remain visible through the whole race or disappear after a timeout?
-- After local network play works, should internet play use direct port forwarding, a relay server, or hosted authoritative servers?
+- Should the first public relay be a self-hosted Rust service or a managed WebSocket deployment?
+- Should the relay terminate TLS directly or sit behind a reverse proxy?
 
 Item activation keys are lower priority while item pickup remains automatic. If manual activation returns, we should run the key-inspector spike described above before committing to `Enter`, `Shift+Enter`, or control-key combinations.
