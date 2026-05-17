@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::game::mods::ActiveModConfig;
 
+pub fn version_mismatch_message(host_version: &str, client_version: &str) -> String {
+    format!(
+        "Version mismatch: host is {host_version}, client is {client_version}. Install the same TypeKart version as the host."
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub u64);
 

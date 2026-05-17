@@ -166,6 +166,8 @@ cargo run -- join --name player3 --server 127.0.0.1:4000
 
 ## Multiplayer On A Local Network
 
+All racers must run the same TypeKart version as the host. If versions differ, the host rejects the join before the player enters the lobby.
+
 The host should bind to all local interfaces:
 
 ```sh
@@ -185,6 +187,8 @@ cargo run -- join --name player2 --server 192.168.1.25:4000
 ```
 
 ## Multiplayer Through A Relay
+
+All racers must run the same TypeKart version as the host. Relay-backed joins are rejected early when the client and host versions differ.
 
 Terminal 1, start a local development relay:
 

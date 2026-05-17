@@ -40,7 +40,7 @@ use super::protocol::{
     BonusPointSnapshot, ClientMessage, ImpactCueSnapshot, ImpactCueSnapshotKind,
     ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase,
     PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus,
-    RaceSnapshot, ServerMessage, WordOverrideSnapshot,
+    RaceSnapshot, ServerMessage, WordOverrideSnapshot, version_mismatch_message,
 };
 use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
@@ -91,6 +91,12 @@ pub struct HostConfig {
 struct ConnectedClient {
     player_id: PlayerId,
     stream: TcpStream,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JoinHello {
+    name: String,
+    client_version: String,
 }
 
 struct HostState {
@@ -241,16 +247,39 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         let stream = stream.context("failed to accept client connection")?;
         let peer = stream.peer_addr().ok();
 
-        let player_name = match read_join_hello(&stream) {
-            Ok(name) => name,
+        let join_hello = match read_join_hello(&stream) {
+            Ok(join_hello) => join_hello,
             Err(error) => {
                 server_eprintln!("Rejected connection: {error:#}");
                 continue;
             }
         };
+        let player_name = join_hello.name;
 
         let (player_id, assigned_color) = {
             let mut state = state.lock().expect("host state poisoned");
+            if join_hello.client_version != env!("CARGO_PKG_VERSION") {
+                send_server_message(
+                    stream,
+                    &ServerMessage::Error {
+                        message: version_mismatch_message(
+                            env!("CARGO_PKG_VERSION"),
+                            &join_hello.client_version,
+                        ),
+                    },
+                )?;
+                push_network_log(
+                    &state.debug_log,
+                    format!(
+                        "join rejected: version mismatch name={} host_version={} client_version={}",
+                        player_name,
+                        env!("CARGO_PKG_VERSION"),
+                        join_hello.client_version
+                    ),
+                );
+                continue;
+            }
+
             let connected_players = connected_player_count(&state.players);
             if connected_players >= config.max_players {
                 send_server_message(
@@ -452,7 +481,7 @@ fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
     }
 }
 
-fn read_join_hello(stream: &TcpStream) -> Result<String> {
+fn read_join_hello(stream: &TcpStream) -> Result<JoinHello> {
     let mut reader = BufReader::new(
         stream
             .try_clone()
@@ -462,7 +491,11 @@ fn read_join_hello(stream: &TcpStream) -> Result<String> {
     else {
         bail!("client disconnected before hello");
     };
-    let ClientMessage::Hello { name, .. } = message else {
+    let ClientMessage::Hello {
+        name,
+        client_version,
+    } = message
+    else {
         send_server_message(
             stream
                 .try_clone()
@@ -486,7 +519,22 @@ fn read_join_hello(stream: &TcpStream) -> Result<String> {
         bail!("client sent empty name");
     }
 
-    Ok(name.trim().to_string())
+    if client_version.trim().is_empty() {
+        send_server_message(
+            stream
+                .try_clone()
+                .context("failed to clone client stream for error response")?,
+            &ServerMessage::Error {
+                message: "Client version cannot be empty".to_string(),
+            },
+        )?;
+        bail!("client sent empty version");
+    }
+
+    Ok(JoinHello {
+        name: name.trim().to_string(),
+        client_version: client_version.trim().to_string(),
+    })
 }
 
 fn welcome_joiner(
@@ -2567,11 +2615,11 @@ mod tests {
 
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            let name = read_join_hello(&stream).unwrap();
+            let hello = read_join_hello(&stream).unwrap();
             welcome_joiner(&stream, PlayerId(2), AssignedColor::Red).unwrap();
             LobbyPlayer {
                 id: PlayerId(2),
-                name,
+                name: hello.name,
                 kind: PlayerKind::Human,
                 color: AssignedColor::Red,
                 ready: false,
@@ -2592,6 +2640,35 @@ mod tests {
         assert_eq!(player.id, PlayerId(2));
         assert_eq!(player.name, "alex");
         assert_eq!(player.color, AssignedColor::Red);
+    }
+
+    #[test]
+    fn host_handshake_rejects_empty_client_version() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            read_join_hello(&stream).unwrap_err();
+        });
+
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        let hello = encode_client_message(&ClientMessage::Hello {
+            name: "alex".to_string(),
+            client_version: "".to_string(),
+        })
+        .unwrap();
+        writeln!(client, "{hello}").unwrap();
+
+        let mut reader = BufReader::new(client);
+        let mut error_line = String::new();
+        reader.read_line(&mut error_line).unwrap();
+
+        assert!(matches!(
+            decode_server_message(error_line.trim_end()).unwrap(),
+            ServerMessage::Error { ref message } if message == "Client version cannot be empty"
+        ));
+        server.join().unwrap();
     }
 
     #[test]

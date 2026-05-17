@@ -110,7 +110,9 @@ pub fn run_online_join_proxy(config: OnlineJoinProxyConfig) -> Result<()> {
         &RelayClientMessage::JoinRoom {
             room: config.room.clone(),
             name: join_name(&hello).unwrap_or(&config.name).to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            client_version: join_version(&hello)
+                .unwrap_or(env!("CARGO_PKG_VERSION"))
+                .to_string(),
         },
     )?;
 
@@ -177,7 +179,7 @@ fn handle_host_relay_message(
             room: joined_room,
             pending_player_id,
             name,
-            ..
+            client_version,
         } if &joined_room == room => {
             let mut local_stream = TcpStream::connect(local_server).with_context(|| {
                 format!("failed to connect relay joiner to local host at {local_server}")
@@ -186,7 +188,7 @@ fn handle_host_relay_message(
                 &mut local_stream,
                 &ClientMessage::Hello {
                     name,
-                    client_version: env!("CARGO_PKG_VERSION").to_string(),
+                    client_version,
                 },
             )?;
             let mut local_reader = BufReader::new(
@@ -320,6 +322,15 @@ fn join_name(message: &ClientMessage) -> Option<&str> {
     }
 }
 
+fn join_version(message: &ClientMessage) -> Option<&str> {
+    match message {
+        ClientMessage::Hello { client_version, .. } if !client_version.trim().is_empty() => {
+            Some(client_version.trim())
+        }
+        _ => None,
+    }
+}
+
 fn wait_for_created_room(websocket: &mut RelaySocket) -> Result<RoomCode> {
     loop {
         match websocket
@@ -434,7 +445,7 @@ mod tests {
     };
 
     use super::{
-        OnlineHostBridgeConfig, OnlineJoinProxyConfig, run_online_host_bridge,
+        OnlineHostBridgeConfig, OnlineJoinProxyConfig, join_version, run_online_host_bridge,
         run_online_join_proxy,
     };
     use crate::{
@@ -449,6 +460,16 @@ mod tests {
             transport::{read_server_message, write_client_message},
         },
     };
+
+    #[test]
+    fn join_version_uses_local_client_hello_version() {
+        let message = ClientMessage::Hello {
+            name: "alex".to_string(),
+            client_version: "9.9.9".to_string(),
+        };
+
+        assert_eq!(join_version(&message), Some("9.9.9"));
+    }
 
     #[test]
     fn online_bridge_allows_joiner_to_receive_host_welcome_through_relay() {

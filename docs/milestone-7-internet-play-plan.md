@@ -194,6 +194,7 @@ Milestone 7 does not need accounts, but it does need basic safety:
 - Room codes should be random enough to avoid easy guessing.
 - Relay should reject oversized frames.
 - Relay should cap players per room.
+- Relay should reject clients whose TypeKart version differs from the room host.
 - Relay should cap rooms per process.
 - Relay should time out idle rooms.
 - Relay should avoid logging full player input streams unless debug logging is explicitly enabled.

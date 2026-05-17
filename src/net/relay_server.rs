@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use tungstenite::{Error as WebSocketError, Message, accept, error::ProtocolError};
 
 use super::{
-    protocol::PlayerId,
+    protocol::{PlayerId, version_mismatch_message},
     relay::{RelayClientMessage, RelayServerMessage, RoomCode},
 };
 
@@ -55,6 +55,7 @@ struct RelayState {
 
 #[derive(Debug)]
 struct RelayRoom {
+    host_version: String,
     host: Sender<RelayServerMessage>,
     participants: HashMap<PlayerId, Sender<RelayServerMessage>>,
     next_pending_player_id: u64,
@@ -213,8 +214,8 @@ fn handle_relay_message(
     cleanup_stale_rooms(state, limits.room_idle_timeout);
 
     match message {
-        RelayClientMessage::CreateRoom { .. } => {
-            let room = match create_room(state, sender.clone(), limits) {
+        RelayClientMessage::CreateRoom { host_version } => {
+            let room = match create_room(state, sender.clone(), host_version, limits) {
                 Ok(room) => room,
                 Err(message) => {
                     sender.send(RelayServerMessage::Error { message })?;
@@ -250,6 +251,17 @@ fn handle_relay_message(
                                 room.display(),
                                 room_state.participants.len(),
                                 limits.max_participants_per_room
+                            ),
+                        })
+                        .ok();
+                    return Ok(None);
+                }
+                if client_version != room_state.host_version {
+                    sender
+                        .send(RelayServerMessage::Error {
+                            message: version_mismatch_message(
+                                &room_state.host_version,
+                                &client_version,
                             ),
                         })
                         .ok();
@@ -341,6 +353,7 @@ fn handle_relay_message(
 fn create_room(
     state: &Arc<Mutex<RelayState>>,
     host: Sender<RelayServerMessage>,
+    host_version: String,
     limits: &RelayLimits,
 ) -> std::result::Result<RoomCode, String> {
     let mut state = state.lock().expect("relay state poisoned");
@@ -358,7 +371,8 @@ fn create_room(
             state.rooms.insert(
                 room.clone(),
                 RelayRoom {
-                    host,
+                    host_version: host_version.clone(),
+                    host: host.clone(),
                     participants: HashMap::new(),
                     next_pending_player_id: 2,
                     last_activity: Instant::now(),
@@ -569,6 +583,47 @@ mod tests {
                 message,
             }
         );
+    }
+
+    #[test]
+    fn relay_rejects_join_when_client_version_differs_from_host() {
+        let state = Arc::new(Mutex::new(RelayState::default()));
+        let (host_tx, host_rx) = mpsc::channel();
+        let (joiner_tx, joiner_rx) = mpsc::channel();
+
+        let Some((room, ConnectionRole::Host)) = handle_relay_message(
+            RelayClientMessage::CreateRoom {
+                host_version: "1.2.3".to_string(),
+            },
+            &state,
+            &host_tx,
+            &RelayLimits::default(),
+        )
+        .unwrap() else {
+            panic!("host should create a room");
+        };
+        let _ = host_rx.recv().unwrap();
+
+        let joined = handle_relay_message(
+            RelayClientMessage::JoinRoom {
+                room,
+                name: "joiner".to_string(),
+                client_version: "1.2.4".to_string(),
+            },
+            &state,
+            &joiner_tx,
+            &RelayLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(joined, None);
+        assert!(matches!(
+            joiner_rx.recv().unwrap(),
+            RelayServerMessage::Error { message } if message.contains("Version mismatch")
+                && message.contains("1.2.3")
+                && message.contains("1.2.4")
+        ));
+        assert!(host_rx.try_recv().is_err());
     }
 
     #[test]
