@@ -15,7 +15,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use tungstenite::{accept, Error as WebSocketError, Message};
+use tungstenite::{accept, error::ProtocolError, Error as WebSocketError, Message};
 
 use super::{
     protocol::PlayerId,
@@ -91,7 +91,7 @@ pub fn run_relay(config: RelayConfig) -> Result<()> {
         let limits = config.limits.clone();
         thread::spawn(move || {
             if let Err(error) = handle_connection(stream, state, limits) {
-                eprintln!("Relay connection ended: {error:#}");
+                eprintln!("Relay connection failed: {error:#}");
             }
         });
     }
@@ -146,7 +146,19 @@ fn handle_connection(
             Err(WebSocketError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
             }
-            Err(WebSocketError::ConnectionClosed) => break,
+            Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => break,
+            Err(WebSocketError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                break;
+            }
+            Err(WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake)) => break,
             Err(error) => return Err(error).context("websocket read failed"),
         }
     }
@@ -166,11 +178,29 @@ fn drain_outbound(
 ) -> Result<()> {
     while let Ok(message) = rx.try_recv() {
         let encoded = serde_json::to_string(&message).context("failed to encode relay message")?;
-        websocket
-            .send(Message::Text(encoded))
-            .context("failed to send relay websocket message")?;
+        if let Err(error) = websocket.send(Message::Text(encoded)) {
+            if websocket_disconnect_error(&error) {
+                break;
+            }
+            return Err(error).context("failed to send relay websocket message");
+        }
     }
     Ok(())
+}
+
+fn websocket_disconnect_error(error: &WebSocketError) -> bool {
+    match error {
+        WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => true,
+        WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => true,
+        WebSocketError::Io(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
+    }
 }
 
 fn handle_relay_message(
@@ -236,12 +266,18 @@ fn handle_relay_message(
                     pending_player_id.0,
                     name
                 );
-                room_state.host.send(RelayServerMessage::JoinForwarded {
-                    room: room.clone(),
-                    pending_player_id,
-                    name,
-                    client_version,
-                })?;
+                if room_state
+                    .host
+                    .send(RelayServerMessage::JoinForwarded {
+                        room: room.clone(),
+                        pending_player_id,
+                        name,
+                        client_version,
+                    })
+                    .is_err()
+                {
+                    return Ok(None);
+                }
                 pending_player_id
             };
             Ok(Some((room, ConnectionRole::Participant(pending_player_id))))
@@ -254,11 +290,11 @@ fn handle_relay_message(
             let mut state = state.lock().expect("relay state poisoned");
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
-                room_state.host.send(RelayServerMessage::ClientToHost {
+                let _ = room_state.host.send(RelayServerMessage::ClientToHost {
                     room,
                     player_id,
                     message,
-                })?;
+                });
             }
             Ok(None)
         }
@@ -271,11 +307,11 @@ fn handle_relay_message(
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
                 if let Some(participant) = room_state.participants.get(&player_id) {
-                    participant.send(RelayServerMessage::HostToClient {
+                    let _ = participant.send(RelayServerMessage::HostToClient {
                         room,
                         player_id,
                         message,
-                    })?;
+                    });
                 }
             }
             Ok(None)
@@ -285,10 +321,10 @@ fn handle_relay_message(
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
                 for participant in room_state.participants.values() {
-                    participant.send(RelayServerMessage::HostBroadcast {
+                    let _ = participant.send(RelayServerMessage::HostBroadcast {
                         room: room.clone(),
                         message: message.clone(),
-                    })?;
+                    });
                 }
             }
             Ok(None)
