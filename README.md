@@ -2,10 +2,52 @@
 
 TypeKart is a terminal typing racer with kart-style item effects.
 
+## Install
+
+### macOS With Homebrew
+
+After the Homebrew tap is published:
+
+```sh
+brew tap OWNER/tap
+brew install typekart
+```
+
+### Windows With Scoop
+
+After the Scoop bucket is published:
+
+```powershell
+scoop bucket add typekart https://github.com/OWNER/scoop-bucket
+scoop install typekart
+```
+
+### Windows With WinGet
+
+After the WinGet package is accepted:
+
+```powershell
+winget install OWNER.TypeKart
+```
+
+### Direct Downloads
+
+Download the archive for your system from the GitHub releases page:
+
+- `typekart-aarch64-apple-darwin.tar.gz` for Apple Silicon Macs
+- `typekart-x86_64-apple-darwin.tar.gz` for Intel Macs
+- `typekart-x86_64-pc-windows-msvc.zip` for Windows x64
+
+The built-in word set is embedded in the binary, so the release archive contains everything needed to run the default game.
+
+Maintainer release and package-manager notes are in [docs/install/distribution.md](docs/install/distribution.md).
+
 ## Requirements
 
-- Rust installed locally.
-- Run commands from the repository root.
+- Rust installed locally for development builds.
+- Run development commands from the repository root.
+
+Installed binaries can use `typekart` directly. Development examples below use `cargo run --`.
 
 ## Single Player
 

@@ -2,6 +2,17 @@
 name = "typekart"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal typing racer with kart-style item effects"
+readme = "README.md"
+keywords = ["typing", "game", "terminal", "tui"]
+categories = ["command-line-utilities", "games"]
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "src/**",
+    "words_alpha.txt",
+]
 
 [dependencies]
 anyhow = "1"

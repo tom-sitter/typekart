@@ -1,0 +1,23 @@
+{
+  "version": "0.1.0",
+  "description": "Terminal typing racer with kart-style item effects",
+  "homepage": "https://github.com/OWNER/typekart",
+  "license": "REPLACE_WITH_LICENSE",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/OWNER/typekart/releases/download/v0.1.0/typekart-x86_64-pc-windows-msvc.zip",
+      "hash": "REPLACE_WITH_WINDOWS_SHA256"
+    }
+  },
+  "bin": "typekart.exe",
+  "checkver": {
+    "github": "https://github.com/OWNER/typekart"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/OWNER/typekart/releases/download/v$version/typekart-x86_64-pc-windows-msvc.zip"
+      }
+    }
+  }
+}

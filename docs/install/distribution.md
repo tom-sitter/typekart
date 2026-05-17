@@ -1,0 +1,108 @@
+# Distribution
+
+TypeKart is distributed as a standalone terminal binary. The built-in word set is embedded at compile time, so release archives do not need to carry `words_alpha.txt`.
+
+## Supported Packages
+
+- macOS Apple Silicon: `typekart-aarch64-apple-darwin.tar.gz`
+- macOS Intel: `typekart-x86_64-apple-darwin.tar.gz`
+- Windows x64: `typekart-x86_64-pc-windows-msvc.zip`
+
+The release workflow builds these archives whenever a `v*.*.*` tag is pushed and publishes a GitHub release with `typekart-checksums.txt`.
+
+## Create A Release
+
+Update the Cargo package version first:
+
+```sh
+cargo set-version 0.1.0
+```
+
+If `cargo-edit` is not installed, update `version` in `Cargo.toml` manually.
+
+Commit the version change, then tag and push:
+
+```sh
+git tag v0.1.0
+git push origin main --tags
+```
+
+After the GitHub release finishes, copy the SHA-256 values from `typekart-checksums.txt` into the package manifests under `packaging/`.
+
+## Homebrew
+
+Create a tap repository named `homebrew-tap`, then add `packaging/homebrew/typekart.rb` as `Formula/typekart.rb`.
+
+Users will install with:
+
+```sh
+brew tap OWNER/tap
+brew install typekart
+```
+
+Before publishing the tap, replace:
+
+- `OWNER`
+- `REPLACE_WITH_LICENSE`
+- `REPLACE_WITH_ARM64_SHA256`
+- `REPLACE_WITH_X86_64_SHA256`
+
+Validate locally:
+
+```sh
+brew install --build-from-source ./Formula/typekart.rb
+brew test typekart
+brew audit --strict typekart
+```
+
+## Scoop
+
+Create a Scoop bucket repository, then add `packaging/scoop/typekart.json` as `bucket/typekart.json`.
+
+Users will install with:
+
+```powershell
+scoop bucket add typekart https://github.com/OWNER/scoop-bucket
+scoop install typekart
+```
+
+Before publishing the bucket, replace:
+
+- `OWNER`
+- `REPLACE_WITH_LICENSE`
+- `REPLACE_WITH_WINDOWS_SHA256`
+
+## WinGet
+
+Use the manifests under `packaging/winget/` as the starting point for a pull request to `microsoft/winget-pkgs`.
+
+Before submitting, replace:
+
+- `OWNER`
+- `REPLACE_WITH_WINDOWS_SHA256_UPPERCASE`
+- publisher details if the package should use an organization or personal name
+
+Validate with:
+
+```powershell
+winget validate .\packaging\winget
+```
+
+## Direct Archive Install
+
+macOS:
+
+```sh
+curl -LO https://github.com/OWNER/typekart/releases/download/v0.1.0/typekart-aarch64-apple-darwin.tar.gz
+tar -xzf typekart-aarch64-apple-darwin.tar.gz
+sudo install typekart /usr/local/bin/typekart
+typekart --help
+```
+
+Windows PowerShell:
+
+```powershell
+Invoke-WebRequest https://github.com/OWNER/typekart/releases/download/v0.1.0/typekart-x86_64-pc-windows-msvc.zip -OutFile typekart.zip
+Expand-Archive typekart.zip -DestinationPath typekart
+.\typekart\typekart.exe --help
+```
