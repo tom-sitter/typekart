@@ -34,6 +34,7 @@ Use the same `--ascii` setting on host and joiners when validating ASCII fallbac
 - Full lobby join attempts show a clear rejection.
 - `ready` and `unready` work only in lobby/waiting phases.
 - Host can start with `Space` or `start` once connected players are ready.
+- Footer commands change by phase and do not show irrelevant race/result commands.
 - Lobby Events show joins, ready changes, disconnects, countdown start/cancel, and rematch transitions.
 
 ## Countdown
@@ -59,6 +60,9 @@ Use the same `--ascii` setting on host and joiners when validating ASCII fallbac
 - Banana misses are shown once in Events.
 - Banana hits show one concise attacker/target event and the target blink.
 - Shield blocks Banana and consumes the shield.
+- Star Power shows the star racer marker and discards incorrect keys without forcing backspace recovery.
+- Blue Shell shows the turtle attack cue, reverses the target's next word, and makes the target blink blue.
+- Shield blocks Blue Shell and consumes the shield.
 - Finished racers are not valid item targets.
 - Debug logs include detailed item cause and effect, including target candidates and distances.
 
@@ -70,6 +74,7 @@ Use the same `--ascii` setting on host and joiners when validating ASCII fallbac
 - Disconnected racers are represented clearly.
 - Host can return to lobby after results.
 - Host can start a fresh race from connected lobby players, including players who joined during the previous race.
+- Result footer shows host-only rematch/lobby commands only to the host; joiners only see quit.
 
 ## Disconnects
 
