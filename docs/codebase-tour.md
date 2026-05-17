@@ -8,7 +8,7 @@ The implementation is intentionally split into two broad areas:
 
 - `game`: pure game rules and state.
 - `ui`: terminal input and rendering.
-- `net`: local-network protocol, host, and join client scaffolding.
+- `net`: LAN protocol, relay protocol, host, join client, and relay-backed online adapters.
 
 That separation matters. The game rules should be testable without a terminal, networking, or real-time rendering. The UI should display state and translate key presses into game actions, not decide game rules.
 
@@ -24,7 +24,7 @@ It uses `clap` to parse command-line arguments:
 typekart play --words 40
 ```
 
-Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--ascii`, and `--debug-log <PATH>`. The network `host` and `join` commands also accept `--ascii` and `--debug-log <PATH>` for protocol/session diagnostics.
+Useful local-play flags include `--ai-racers`, `--ai-difficulty`, `--ascii`, and `--debug-log <PATH>`. The network `host`, `join`, `host-lan`, and `join-lan` commands also accept `--ascii` and `--debug-log <PATH>` for protocol/session diagnostics.
 
 The important Rust idea here is that `main` returns `anyhow::Result<()>`. That lets us use the `?` operator inside the call chain and let errors bubble up cleanly instead of manually matching every error.
 
@@ -35,6 +35,8 @@ main
   parse CLI
   match command
   app::play(settings)
+  app::host_online(settings)
+  app::join_online(settings)
   app::host(settings)
   app::join(settings)
 ```
@@ -47,9 +49,9 @@ It:
 
 1. Loads `words_alpha.txt`.
 2. Generates a `Track`.
-3. Starts either local play or the current network host/client path.
+3. Starts either local play or the selected network host/client path.
 
-This file should stay thin. As the project grows, it can coordinate host/join/play commands, but it should not become the place where game rules live.
+This file should stay thin. As the project grows, it can coordinate host, join, LAN, relay, and play commands, but it should not become the place where game rules live.
 
 ## Game Modules
 
@@ -175,8 +177,8 @@ This module defines timed active effects and pending attacks.
 
 Main types:
 
-- `ActiveEffect`: currently only Shield.
-- `PendingAttack`: currently only the planned Banana word swap.
+- `ActiveEffect`: timed racer effects such as Shield and Star Power.
+- `PendingAttack`: delayed attack effects that need warning or resolution timing.
 - `AttackWarning`: an attack plus the time when it resolves.
 
 Shield is represented as an active effect with an expiration `Instant`. The UI can ask `PlayerState` whether Shield is active and render the racer marker as `[███]` in ASCII mode or as `█🛡` in Unicode icon mode. When the effect expires, it is consumed automatically.
@@ -305,7 +307,7 @@ pub mod terminal;
 
 ### `src/ui/session.rs`
 
-This module owns local session state for the terminal prototype.
+This module owns local session state for single-player and local-AI races.
 
 Main types:
 
@@ -412,7 +414,7 @@ The word layer is rendered through fixed-width track cells. Correctly typed char
 
 The local racer marker is also derived from the character stream. It follows the next character while input is valid, and pins to the first typo while typo recovery is required. The local racer lane is rendered immediately below the word layer; AI racer lanes are rendered below it.
 
-The planned minimap should also live in the track renderer, below all racer lanes. See `docs/minimap-plan.md` for the current implementation plan.
+The minimap also lives in the track renderer, below all racer lanes. It scales each racer's whole-race position across the visible minimap width rather than the current track window.
 
 The bonus renderer reads the next visible bonus point from `BonusState`. Choices are stacked vertically so players can scan them before reaching the claim window. They stay grey while merely upcoming, then turn magenta once the player reaches the claim window. They also render grey when unavailable because the player has a held item, has a typo, has an active Shield, or the choice is cooling down.
 
@@ -439,7 +441,7 @@ crossterm KeyEvent  ->  KeyAction  ->  game rules
 
 This keeps terminal-specific code out of the game engine.
 
-The current network prototype has a separate, simpler data flow:
+The network game loop has a separate, simpler data flow:
 
 ```text
 join terminal key event
@@ -532,11 +534,11 @@ Important Rust concepts:
 - `Mutex<T>` protects mutable state so only one thread mutates it at a time.
 - `TcpStream::try_clone` creates another handle to the same socket, letting the server keep a write stream while a reader thread owns the read stream.
 
-The `host` command now starts this server in a background thread and connects a local client to it. That keeps the host as a normal player from the protocol's point of view while preserving a single terminal command for hosting.
+The `host-lan` command starts this server in a background thread and connects a local client to it. That keeps the host as a normal player from the protocol's point of view while preserving a single terminal command for hosting. The online `host` command uses the same local server behind a WebSocket relay bridge.
 
 ### `src/net/client.rs`
 
-This module owns the current join command.
+This module owns the LAN join client. The online `join` command uses a loopback proxy so the same client can talk through the relay.
 
 Current responsibilities:
 
@@ -549,7 +551,7 @@ Current responsibilities:
 - During `Racing`, convert raw character, Space, and Backspace key events into `KeyInput` messages.
 - Render lobby and race snapshots in an alternate-screen Ratatui UI.
 
-Current limitation: this client uses a network-specific Ratatui screen, not the full local race renderer. It has track, bonus-lane, racer-lane, minimap, and item cue basics in both ASCII and optional Unicode mode.
+This client uses a network-specific Ratatui screen. It has track, bonus-lane, racer-lane, minimap, and item cue rendering in both ASCII and Unicode mode.
 
 ## Borrowing And Ownership In This Code
 
@@ -613,7 +615,7 @@ Run tests:
 cargo test
 ```
 
-Run the local typing prototype:
+Run the local typing game:
 
 ```sh
 cargo run -- play
@@ -690,11 +692,11 @@ Recommended order:
 ## Things That Are Intentionally Simple For Now
 
 - The UI is functional, not final.
-- Network multiplayer is still incomplete, but the core local-network race loop is now broad: lobby, countdown, server-authoritative typing, results, basic race rendering, server-owned bonus snapshots, bonus claiming, and first-pass item resolution work.
+- Network multiplayer covers lobby, countdown, server-authoritative typing, results, race rendering, server-owned bonus snapshots, bonus claiming, and item resolution.
 - The network client uses a simpler Ratatui screen instead of the full local race renderer.
 - Local and network renderers are still separate implementations, so future UI changes may need to be mirrored deliberately.
 - The typing engine still only owns main-track typing. Bonus attempts are coordinated by `LocalSession`.
 - Track generation samples with replacement, so repeated words can appear.
 - Most state fields are public to keep early iteration straightforward.
 
-These choices are acceptable for the current local prototype. We should tighten them only when the next milestone creates real pressure to do so.
+These choices are acceptable for the current app shape. Tighten them when a feature creates real pressure to do so.

@@ -29,14 +29,14 @@ You can move `typekart.exe` somewhere on your `PATH` if you want to run `typekar
 
 ### Package Managers
 
-Package-manager manifests are included under `packaging/`, but they need release checksums before they can be published.
-
 Homebrew:
 
 ```sh
 brew tap tom-sitter/tap
 brew install typekart
 ```
+
+Scoop and WinGet packaging manifests are kept under `packaging/` as release targets.
 
 Scoop, after the bucket is published:
 
@@ -62,6 +62,16 @@ The release page contains:
 The built-in word set is embedded in the binary, so the release archive contains everything needed to run the default game.
 
 Maintainer release and package-manager notes are in [docs/install/distribution.md](docs/install/distribution.md).
+
+## Documentation
+
+- [Documentation index](docs/index.md)
+- [Gameplay guide](docs/gameplay.md)
+- [CLI reference](docs/cli.md)
+- [Multiplayer guide](docs/multiplayer.md)
+- [Modding guide](docs/modding.md)
+- [Relay deployment](docs/relay-deployment.md)
+- [Development guide](docs/development.md)
 
 ## Quick Start
 
