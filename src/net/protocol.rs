@@ -173,6 +173,15 @@ pub struct RaceSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceDeltaSnapshot {
+    pub sequence: u64,
+    pub phase: NetworkRacePhase,
+    pub bonuses: Vec<BonusPointSnapshot>,
+    pub players: Vec<PlayerSnapshot>,
+    pub events: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RaceResultRow {
     pub placement: usize,
     pub player_id: PlayerId,
@@ -282,6 +291,7 @@ pub enum ServerMessage {
         events: Vec<String>,
     },
     RaceSnapshot(RaceSnapshot),
+    RaceDelta(RaceDeltaSnapshot),
     RaceEvent {
         message: String,
     },
@@ -315,9 +325,9 @@ mod tests {
     use super::{
         AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
         ClientMessage, ClientSequence, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
-        PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot,
-        ServerMessage, WordOverrideSnapshot, decode_client_message, decode_server_message,
-        encode_client_message, encode_server_message,
+        PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot, RaceResultRow,
+        RaceResultStatus, RaceSnapshot, ServerMessage, WordOverrideSnapshot, decode_client_message,
+        decode_server_message, encode_client_message, encode_server_message,
     };
 
     #[test]
@@ -407,6 +417,40 @@ mod tests {
                 connected: true,
                 shielded: false,
                 starred: true,
+                boosted: false,
+                stunned: false,
+                impact_remaining_ms: 0,
+                impact_cue: None,
+                item_cue: None,
+            }],
+            events: vec!["Go".to_string()],
+        });
+
+        let encoded = encode_server_message(&message).unwrap();
+        let decoded = decode_server_message(&encoded).unwrap();
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn server_message_round_trips_race_delta() {
+        let message = ServerMessage::RaceDelta(RaceDeltaSnapshot {
+            sequence: 8,
+            phase: NetworkRacePhase::Racing,
+            bonuses: Vec::new(),
+            players: vec![PlayerSnapshot {
+                id: PlayerId(1),
+                name: "tom".to_string(),
+                kind: PlayerKind::Human,
+                color: AssignedColor::Cyan,
+                word_index: 1,
+                input: "t".to_string(),
+                typo_index: None,
+                word_overrides: Vec::new(),
+                finished: false,
+                connected: true,
+                shielded: false,
+                starred: false,
                 boosted: false,
                 stunned: false,
                 impact_remaining_ms: 0,

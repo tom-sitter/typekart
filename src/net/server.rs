@@ -35,8 +35,8 @@ use super::protocol::{
     AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshot, BonusChoiceSnapshotStatus,
     BonusPointSnapshot, ClientMessage, ImpactCueSnapshot, ImpactCueSnapshotKind,
     ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase,
-    PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus,
-    RaceSnapshot, ServerMessage, WordOverrideSnapshot, version_mismatch_message,
+    PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot, RaceResultRow,
+    RaceResultStatus, RaceSnapshot, ServerMessage, WordOverrideSnapshot, version_mismatch_message,
 };
 use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
@@ -49,7 +49,7 @@ const COLOR_ROTATION: [AssignedColor; 6] = [
     AssignedColor::Magenta,
 ];
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
-const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(50);
+const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(100);
 static SERVER_CONSOLE_LOGGING: AtomicBool = AtomicBool::new(true);
 
 macro_rules! server_println {
@@ -921,14 +921,16 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                 );
                 if apply_network_key_input(&mut state, player_id, action, now) {
                     update_race_status(&mut state, now);
-                    if let Err(error) = broadcast_race_snapshot(&mut state) {
-                        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-                    }
                     if state.phase == NetworkRacePhase::Finished {
+                        if let Err(error) = broadcast_race_snapshot(&mut state) {
+                            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+                        }
                         server_println!("Race finished");
                         if let Err(error) = broadcast_race_results_once(&mut state) {
                             server_eprintln!("Failed to broadcast race results: {error:#}");
                         }
+                    } else if let Err(error) = broadcast_race_delta(&mut state) {
+                        server_eprintln!("Failed to broadcast race delta: {error:#}");
                     }
                 }
             }
@@ -1196,15 +1198,17 @@ fn apply_line_input(state: &Arc<Mutex<HostState>>, player_id: PlayerId, line: &s
     apply_network_key_input(&mut state, player_id, KeyAction::Space, now);
 
     update_race_status(&mut state, now);
-    if let Err(error) = broadcast_race_snapshot(&mut state) {
-        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-    }
     if state.phase == NetworkRacePhase::Finished {
+        if let Err(error) = broadcast_race_snapshot(&mut state) {
+            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+        }
         server_println!("Race finished");
         push_network_log(&state.debug_log, "race finished after host line input");
         if let Err(error) = broadcast_race_results_once(&mut state) {
             server_eprintln!("Failed to broadcast race results: {error:#}");
         }
+    } else if let Err(error) = broadcast_race_delta(&mut state) {
+        server_eprintln!("Failed to broadcast race delta: {error:#}");
     }
 }
 
@@ -2314,17 +2318,18 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
                 );
             }
 
-            if let Err(error) = broadcast_race_snapshot(&mut state) {
-                server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-            }
-
             if state.phase == NetworkRacePhase::Finished {
+                if let Err(error) = broadcast_race_snapshot(&mut state) {
+                    server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+                }
                 server_println!("Race finished");
                 push_network_log(&state.debug_log, "race finished on snapshot tick");
                 if let Err(error) = broadcast_race_results_once(&mut state) {
                     server_eprintln!("Failed to broadcast race results: {error:#}");
                 }
                 break;
+            } else if let Err(error) = broadcast_race_delta(&mut state) {
+                server_eprintln!("Failed to broadcast race delta: {error:#}");
             }
         }
     });
@@ -2411,12 +2416,24 @@ fn expire_bonus_cooldowns(state: &mut HostState, now: Instant) -> usize {
 fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
     let snapshot = ServerMessage::RaceSnapshot(build_race_snapshot(state));
     log_race_snapshot(state);
+    broadcast_server_message_to_clients(state, &snapshot)
+}
 
+fn broadcast_race_delta(state: &mut HostState) -> Result<()> {
+    let delta = ServerMessage::RaceDelta(build_race_delta_snapshot(state));
+    log_race_delta(state);
+    broadcast_server_message_to_clients(state, &delta)
+}
+
+fn broadcast_server_message_to_clients(
+    state: &mut HostState,
+    message: &ServerMessage,
+) -> Result<()> {
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
-        if let Err(error) = write_server_message(&mut client.stream, &snapshot) {
+        if let Err(error) = write_server_message(&mut client.stream, message) {
             server_eprintln!(
-                "Failed to send race snapshot to player {}: {error:#}",
+                "Failed to send server message to player {}: {error:#}",
                 client.player_id.0
             );
             failed_clients.push(client.player_id);
@@ -2449,6 +2466,26 @@ fn log_race_snapshot(state: &HostState) {
             &state.debug_log,
             format!(
                 "broadcast snapshot seq={} phase=finished",
+                state.snapshot_sequence
+            ),
+        ),
+        _ => {}
+    }
+}
+
+fn log_race_delta(state: &HostState) {
+    match state.phase {
+        NetworkRacePhase::Racing if state.snapshot_sequence.is_multiple_of(20) => push_network_log(
+            &state.debug_log,
+            format!(
+                "broadcast delta seq={} phase=racing",
+                state.snapshot_sequence
+            ),
+        ),
+        NetworkRacePhase::Finished => push_network_log(
+            &state.debug_log,
+            format!(
+                "broadcast delta seq={} phase=finished",
                 state.snapshot_sequence
             ),
         ),
@@ -2694,48 +2731,66 @@ fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
         mod_config: (&state.active_mod_config).into(),
         track_words: state.race.track.words.clone(),
         bonuses: build_bonus_snapshots(&state.bonuses, now),
-        players: state
-            .race
-            .players
-            .iter()
-            .map(|player| {
-                let player_id = PlayerId(player.id.0);
-                let effects = state
-                    .player_effects
-                    .get(&player_id)
-                    .cloned()
-                    .unwrap_or_default();
-                PlayerSnapshot {
-                    id: player_id,
-                    name: player.name.clone(),
-                    kind: player_kind(state, player_id),
-                    color: player.color.into(),
-                    word_index: player.state.word_index,
-                    input: player.state.input.clone(),
-                    typo_index: player.state.typo_index,
-                    word_overrides: player
-                        .state
-                        .word_overrides
-                        .iter()
-                        .map(|(word_index, word)| WordOverrideSnapshot {
-                            word_index: *word_index,
-                            word: word.clone(),
-                        })
-                        .collect(),
-                    finished: player.state.is_finished(),
-                    connected: player.connected,
-                    shielded: player.state.has_active_shield(now),
-                    starred: player.state.has_active_star(now),
-                    boosted: player_has_active_mushroom_effect(player, now),
-                    stunned: effects.stunned_until.is_some_and(|until| until > now),
-                    impact_remaining_ms: remaining_ms(effects.impact_cue.map(|cue| cue.until), now),
-                    impact_cue: build_impact_cue_snapshot(effects.impact_cue, now),
-                    item_cue: build_item_cue_snapshot(effects.item_cue.clone(), now),
-                }
-            })
-            .collect(),
+        players: build_player_snapshots(state, now),
         events: state.events.clone(),
     }
+}
+
+fn build_race_delta_snapshot(state: &mut HostState) -> RaceDeltaSnapshot {
+    let now = Instant::now();
+    expire_bonus_cooldowns(state, now);
+
+    state.snapshot_sequence += 1;
+    RaceDeltaSnapshot {
+        sequence: state.snapshot_sequence,
+        phase: state.phase,
+        bonuses: build_bonus_snapshots(&state.bonuses, now),
+        players: build_player_snapshots(state, now),
+        events: state.events.clone(),
+    }
+}
+
+fn build_player_snapshots(state: &HostState, now: Instant) -> Vec<PlayerSnapshot> {
+    state
+        .race
+        .players
+        .iter()
+        .map(|player| {
+            let player_id = PlayerId(player.id.0);
+            let effects = state
+                .player_effects
+                .get(&player_id)
+                .cloned()
+                .unwrap_or_default();
+            PlayerSnapshot {
+                id: player_id,
+                name: player.name.clone(),
+                kind: player_kind(state, player_id),
+                color: player.color.into(),
+                word_index: player.state.word_index,
+                input: player.state.input.clone(),
+                typo_index: player.state.typo_index,
+                word_overrides: player
+                    .state
+                    .word_overrides
+                    .iter()
+                    .map(|(word_index, word)| WordOverrideSnapshot {
+                        word_index: *word_index,
+                        word: word.clone(),
+                    })
+                    .collect(),
+                finished: player.state.is_finished(),
+                connected: player.connected,
+                shielded: player.state.has_active_shield(now),
+                starred: player.state.has_active_star(now),
+                boosted: player_has_active_mushroom_effect(player, now),
+                stunned: effects.stunned_until.is_some_and(|until| until > now),
+                impact_remaining_ms: remaining_ms(effects.impact_cue.map(|cue| cue.until), now),
+                impact_cue: build_impact_cue_snapshot(effects.impact_cue, now),
+                item_cue: build_item_cue_snapshot(effects.item_cue.clone(), now),
+            }
+        })
+        .collect()
 }
 
 fn remaining_ms(until: Option<Instant>, now: Instant) -> u64 {

@@ -29,8 +29,8 @@ use super::log::{NetworkLog, SharedNetworkLog, push_network_log, write_network_l
 use super::protocol::{
     AiDifficultySnapshot, AssignedColor, ClientMessage, ClientSequence, ImpactCueSnapshotKind,
     ItemCuePlacementSnapshot, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
-    PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot,
-    ServerMessage,
+    PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot, RaceResultRow, RaceResultStatus,
+    RaceSnapshot, ServerMessage,
 };
 use super::relay::RoomCode;
 use super::transport::{read_server_message, write_client_message};
@@ -180,6 +180,12 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                     *reader_phase.lock().expect("client phase poisoned") = snapshot.phase;
                     let mut state = reader_view_state.lock().expect("client view poisoned");
                     state.apply_race_snapshot(snapshot);
+                }
+                Ok(Some(ServerMessage::RaceDelta(delta))) => {
+                    log_client_delta(&reader_log, &delta);
+                    *reader_phase.lock().expect("client phase poisoned") = delta.phase;
+                    let mut state = reader_view_state.lock().expect("client view poisoned");
+                    state.apply_race_delta(delta);
                 }
                 Ok(Some(ServerMessage::Error { message })) => {
                     push_network_log(&reader_log, format!("client received error: {message}"));
@@ -442,6 +448,19 @@ impl NetworkViewState {
                 self.race_snapshot = Some(snapshot);
             }
         }
+    }
+
+    fn apply_race_delta(&mut self, delta: RaceDeltaSnapshot) {
+        if let Some(snapshot) = &mut self.race_snapshot {
+            snapshot.sequence = delta.sequence;
+            snapshot.phase = delta.phase;
+            snapshot.bonuses = delta.bonuses;
+            snapshot.players = delta.players;
+            snapshot.events = delta.events;
+            return;
+        }
+
+        self.push_message("Skipped race update until full race snapshot arrives".to_string());
     }
 }
 
@@ -772,6 +791,23 @@ fn log_client_snapshot(log: &Option<SharedNetworkLog>, snapshot: &RaceSnapshot) 
             format!(
                 "client received snapshot seq={} phase=finished",
                 snapshot.sequence
+            ),
+        ),
+        _ => {}
+    }
+}
+
+fn log_client_delta(log: &Option<SharedNetworkLog>, delta: &RaceDeltaSnapshot) {
+    match delta.phase {
+        NetworkRacePhase::Racing if delta.sequence.is_multiple_of(20) => push_network_log(
+            log,
+            format!("client received delta seq={} phase=racing", delta.sequence),
+        ),
+        NetworkRacePhase::Finished => push_network_log(
+            log,
+            format!(
+                "client received delta seq={} phase=finished",
+                delta.sequence
             ),
         ),
         _ => {}

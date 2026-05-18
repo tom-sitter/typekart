@@ -6,10 +6,13 @@
 //! authoritative for game rules.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{BufReader, ErrorKind},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -27,6 +30,13 @@ use super::{
 
 type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
 const RELAY_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+
+#[derive(Debug, Default)]
+struct HostBroadcastDedupe {
+    race_snapshots: HashSet<u64>,
+    race_deltas: HashSet<u64>,
+    race_results_sent: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct OnlineHostBridgeConfig {
@@ -66,6 +76,7 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
 
     let (outbound_tx, outbound_rx) = mpsc::channel();
     let mut participants = HashMap::<PlayerId, TcpStream>::new();
+    let broadcast_dedupe = Arc::new(Mutex::new(HostBroadcastDedupe::default()));
     let mut last_keepalive = Instant::now();
 
     loop {
@@ -80,6 +91,7 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
                     config.local_server,
                     &outbound_tx,
                     &mut participants,
+                    &broadcast_dedupe,
                 )?;
             }
             Ok(Message::Close(_)) | Err(WebSocketError::ConnectionClosed) => break,
@@ -179,6 +191,7 @@ fn handle_host_relay_message(
     local_server: SocketAddr,
     outbound_tx: &Sender<RelayClientMessage>,
     participants: &mut HashMap<PlayerId, TcpStream>,
+    broadcast_dedupe: &Arc<Mutex<HostBroadcastDedupe>>,
 ) -> Result<()> {
     match message {
         RelayServerMessage::JoinForwarded {
@@ -220,12 +233,14 @@ fn handle_host_relay_message(
                     .context("failed to clone local participant stream for forwarding")?;
                 let room_for_reader = room.clone();
                 let outbound_tx = outbound_tx.clone();
+                let broadcast_dedupe = Arc::clone(broadcast_dedupe);
                 thread::spawn(move || {
                     forward_local_server_to_relay(
                         reader_stream,
                         room_for_reader,
                         pending_player_id,
                         outbound_tx,
+                        broadcast_dedupe,
                     );
                 });
                 participants.insert(pending_player_id, local_stream);
@@ -236,9 +251,14 @@ fn handle_host_relay_message(
             player_id,
             message,
         } if &routed_room == room => {
-            if let Some(local_stream) = participants.get_mut(&player_id) {
-                write_client_message(local_stream, &message)
-                    .context("failed to forward relay client message to local host")?;
+            if let Some(local_stream) = participants.get_mut(&player_id)
+                && let Err(error) = write_client_message(local_stream, &message)
+            {
+                eprintln!(
+                    "Dropping relay participant {} after local host write failed: {error:#}",
+                    player_id.0
+                );
+                participants.remove(&player_id);
             }
         }
         RelayServerMessage::ParticipantDisconnected {
@@ -264,27 +284,50 @@ fn forward_local_server_to_relay(
     room: RoomCode,
     player_id: PlayerId,
     outbound_tx: Sender<RelayClientMessage>,
+    broadcast_dedupe: Arc<Mutex<HostBroadcastDedupe>>,
 ) {
     let mut reader = BufReader::new(stream);
     loop {
         match read_server_message(&mut reader) {
             Ok(Some(message)) => {
-                if send_relay_channel(
-                    &outbound_tx,
+                let relay_message = if should_broadcast_host_message(&message, &broadcast_dedupe) {
+                    RelayClientMessage::HostBroadcast {
+                        room: room.clone(),
+                        message,
+                    }
+                } else {
                     RelayClientMessage::HostToClient {
                         room: room.clone(),
                         player_id,
                         message,
-                    },
-                )
-                .is_err()
-                {
+                    }
+                };
+                if send_relay_channel(&outbound_tx, relay_message).is_err() {
                     break;
                 }
             }
             Ok(None) => break,
             Err(_) => continue,
         }
+    }
+}
+
+fn should_broadcast_host_message(
+    message: &ServerMessage,
+    broadcast_dedupe: &Arc<Mutex<HostBroadcastDedupe>>,
+) -> bool {
+    let mut dedupe = broadcast_dedupe
+        .lock()
+        .expect("host broadcast dedupe poisoned");
+    match message {
+        ServerMessage::RaceSnapshot(snapshot) => dedupe.race_snapshots.insert(snapshot.sequence),
+        ServerMessage::RaceDelta(delta) => dedupe.race_deltas.insert(delta.sequence),
+        ServerMessage::RaceResults { .. } if !dedupe.race_results_sent => {
+            dedupe.race_results_sent = true;
+            true
+        }
+        ServerMessage::RaceResults { .. } => false,
+        _ => false,
     }
 }
 
@@ -491,14 +534,15 @@ mod tests {
         collections::HashMap,
         io::BufReader,
         net::{SocketAddr, TcpStream},
-        sync::mpsc,
+        sync::{Arc, Mutex, mpsc},
         thread,
         time::Duration,
     };
 
     use super::{
-        OnlineHostBridgeConfig, OnlineJoinProxyConfig, handle_host_relay_message, join_version,
-        run_online_host_bridge, run_online_join_proxy,
+        HostBroadcastDedupe, OnlineHostBridgeConfig, OnlineJoinProxyConfig,
+        handle_host_relay_message, join_version, run_online_host_bridge, run_online_join_proxy,
+        should_broadcast_host_message,
     };
     use crate::{
         game::{
@@ -594,6 +638,7 @@ mod tests {
         let player_id = PlayerId(2);
         let (outbound_tx, _outbound_rx) = mpsc::channel();
         let mut participants = HashMap::from([(player_id, participant_stream)]);
+        let broadcast_dedupe = Arc::new(Mutex::new(HostBroadcastDedupe::default()));
 
         handle_host_relay_message(
             RelayServerMessage::ParticipantDisconnected {
@@ -604,6 +649,7 @@ mod tests {
             address,
             &outbound_tx,
             &mut participants,
+            &broadcast_dedupe,
         )
         .unwrap();
 
@@ -613,6 +659,21 @@ mod tests {
             Some(ClientMessage::Leave)
         );
         assert!(!participants.contains_key(&player_id));
+    }
+
+    #[test]
+    fn host_bridge_broadcast_dedupe_allows_one_shared_race_update() {
+        let dedupe = Arc::new(Mutex::new(HostBroadcastDedupe::default()));
+        let message = ServerMessage::RaceDelta(crate::net::protocol::RaceDeltaSnapshot {
+            sequence: 9,
+            phase: crate::net::protocol::NetworkRacePhase::Racing,
+            bonuses: Vec::new(),
+            players: Vec::new(),
+            events: Vec::new(),
+        });
+
+        assert!(should_broadcast_host_message(&message, &dedupe));
+        assert!(!should_broadcast_host_message(&message, &dedupe));
     }
 
     fn spawn_test_relay() -> SocketAddr {

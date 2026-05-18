@@ -129,6 +129,7 @@ Deploy:
 
 ```sh
 fly deploy
+fly scale count 1 --yes
 ```
 
 The default app name in `fly.toml` is `typekart-relay`. Fly app names are globally unique, so you may need to change:
@@ -144,7 +145,11 @@ cargo run -- host --name host --relay wss://your-typekart-relay-name.fly.dev
 cargo run -- join --name player2 --relay wss://your-typekart-relay-name.fly.dev --room rocket-salad-tiger
 ```
 
-The Fly config keeps one machine running because relay rooms are in memory.
+The Fly deployment must run exactly one machine because relay rooms are in memory. If multiple machines are started, hosts and joiners can be routed to different machines and joins will intermittently fail with "room not found". Verify after deploy:
+
+```sh
+fly status -a your-typekart-relay-name
+```
 
 ## Render
 
