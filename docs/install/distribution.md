@@ -81,6 +81,8 @@ brew test tom-sitter/tap/typekart
 ## WinGet
 
 Use the manifests under `packaging/winget/` as the starting point for a pull request to `microsoft/winget-pkgs`.
+The package is not installable with `winget install tom-sitter.TypeKart` until
+that pull request is merged and the public WinGet source has indexed it.
 
 After each GitHub release, update the manifests with:
 

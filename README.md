@@ -36,7 +36,11 @@ brew tap tom-sitter/tap
 brew install typekart
 ```
 
-WinGet, after the package is accepted:
+WinGet is not published yet. Until the package is accepted into the
+`microsoft/winget-pkgs` community repository, use the Windows release archive
+above.
+
+Once published, Windows users will be able to install with:
 
 ```powershell
 winget install tom-sitter.TypeKart

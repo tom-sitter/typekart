@@ -82,7 +82,7 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
             room.display()
         );
     }
-    set_plain_nonblocking(&mut websocket)?;
+    set_relay_read_timeout(&mut websocket)?;
 
     let (outbound_tx, outbound_rx) = mpsc::channel();
     let mut participants = HashMap::<PlayerId, TcpStream>::new();
@@ -107,7 +107,9 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
             Ok(Message::Close(_)) | Err(WebSocketError::ConnectionClosed) => break,
             Ok(Message::Ping(payload)) => websocket.send(Message::Pong(payload))?,
             Ok(_) => {}
-            Err(WebSocketError::Io(error)) if error.kind() == ErrorKind::WouldBlock => {
+            Err(WebSocketError::Io(error))
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) if websocket_disconnect_error(&error) => break,
@@ -144,7 +146,7 @@ pub fn run_online_join_proxy(config: OnlineJoinProxyConfig) -> Result<()> {
     )?;
 
     let relay_player_id = wait_for_join_welcome(&mut websocket, &mut local_stream)?;
-    set_plain_nonblocking(&mut websocket)?;
+    set_relay_read_timeout(&mut websocket)?;
 
     let read_stream = local_stream
         .try_clone()
@@ -186,7 +188,9 @@ pub fn run_online_join_proxy(config: OnlineJoinProxyConfig) -> Result<()> {
             Ok(Message::Close(_)) | Err(WebSocketError::ConnectionClosed) => break,
             Ok(Message::Ping(payload)) => websocket.send(Message::Pong(payload))?,
             Ok(_) => {}
-            Err(WebSocketError::Io(error)) if error.kind() == ErrorKind::WouldBlock => {
+            Err(WebSocketError::Io(error))
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) if websocket_disconnect_error(&error) => break,
@@ -495,15 +499,16 @@ fn connect_relay(relay: &str) -> Result<RelaySocket> {
     Ok(websocket)
 }
 
-fn set_plain_nonblocking(websocket: &mut RelaySocket) -> Result<()> {
+fn set_relay_read_timeout(websocket: &mut RelaySocket) -> Result<()> {
+    const RELAY_READ_TIMEOUT: Duration = Duration::from_millis(10);
     match websocket.get_mut() {
         MaybeTlsStream::Plain(stream) => stream
-            .set_nonblocking(true)
-            .context("failed to set relay websocket nonblocking"),
+            .set_read_timeout(Some(RELAY_READ_TIMEOUT))
+            .context("failed to set relay websocket read timeout"),
         MaybeTlsStream::NativeTls(stream) => stream
             .get_ref()
-            .set_nonblocking(true)
-            .context("failed to set TLS relay websocket nonblocking"),
+            .set_read_timeout(Some(RELAY_READ_TIMEOUT))
+            .context("failed to set TLS relay websocket read timeout"),
         _ => bail!("unsupported relay websocket stream type"),
     }
 }

@@ -115,8 +115,8 @@ fn handle_connection(
     let mut websocket = accept(stream).context("failed to accept websocket connection")?;
     websocket
         .get_mut()
-        .set_nonblocking(true)
-        .context("failed to set relay socket nonblocking")?;
+        .set_read_timeout(Some(Duration::from_millis(10)))
+        .context("failed to set relay socket read timeout")?;
 
     let (tx, rx) = mpsc::channel::<RelayServerMessage>();
     let mut joined_room: Option<(RoomCode, ConnectionRole)> = None;
@@ -150,7 +150,12 @@ fn handle_connection(
                     .context("failed to send websocket pong")?;
             }
             Ok(_) => {}
-            Err(WebSocketError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(WebSocketError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
                 thread::sleep(Duration::from_millis(10));
             }
             Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => break,
