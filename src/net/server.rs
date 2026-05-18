@@ -894,7 +894,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
             ClientMessage::RestartRace => {
                 if player_id == PlayerId(1) {
                     let mut state = state.lock().expect("host state poisoned");
-                    if let Err(error) = return_to_lobby_for_rematch(&mut state) {
+                    if let Err(error) = return_to_lobby(&mut state) {
                         server_eprintln!("Failed to return to lobby: {error:#}");
                         push_network_log(
                             &state.debug_log,
@@ -1148,7 +1148,6 @@ fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
     state.first_finished_at = None;
     state.race_results_sent = false;
     state.events.clear();
-    state.snapshot_sequence = 0;
     state.phase = NetworkRacePhase::WaitingForHost;
     push_network_log(
         &state.debug_log,
@@ -1158,19 +1157,20 @@ fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
     Ok(())
 }
 
-fn return_to_lobby_for_rematch(state: &mut HostState) -> Result<()> {
-    if state.phase != NetworkRacePhase::Finished {
-        return Ok(());
-    }
-
+fn return_to_lobby(state: &mut HostState) -> Result<()> {
+    let event = match state.phase {
+        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => "Race cancelled",
+        NetworkRacePhase::Finished => "Returned to lobby",
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => return Ok(()),
+    };
     reset_race_from_lobby(state)?;
-    push_event(state, "Returned to lobby".to_string());
-    push_network_log(&state.debug_log, "returned to lobby for rematch");
+    push_event(state, event.to_string());
+    push_network_log(&state.debug_log, event.to_ascii_lowercase());
     if let Err(error) = broadcast_race_snapshot(state) {
-        server_eprintln!("Failed to broadcast rematch race snapshot: {error:#}");
+        server_eprintln!("Failed to broadcast lobby race snapshot: {error:#}");
     }
     if let Err(error) = broadcast_lobby_snapshot(state) {
-        server_eprintln!("Failed to broadcast rematch lobby snapshot: {error:#}");
+        server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
     }
 
     Ok(())
@@ -2927,9 +2927,9 @@ mod tests {
         cleanup_disconnected_waiting_players, client_is_in_current_race, connected_player_count,
         first_available_color, handle_client_messages, handle_player_disconnect,
         new_human_lobby_player, push_event, read_join_hello, reconcile_phase_after_disconnect,
-        remove_lobby_player, reset_race_from_lobby, return_to_lobby_for_rematch,
-        set_lobby_ai_difficulty, unique_player_name, update_host_ready, update_race_status,
-        validate_host_capacity, welcome_joiner,
+        remove_lobby_player, reset_race_from_lobby, return_to_lobby, set_lobby_ai_difficulty,
+        unique_player_name, update_host_ready, update_race_status, validate_host_capacity,
+        welcome_joiner,
     };
     use crate::game::{
         ai::AiDifficulty,
@@ -3547,16 +3547,33 @@ mod tests {
     }
 
     #[test]
-    fn return_to_lobby_for_rematch_resets_finished_race() {
+    fn return_to_lobby_resets_finished_race() {
         let mut state = test_host_state(NetworkRacePhase::Finished);
         state.placements = vec![PlayerId(2), PlayerId(1)];
         state.race_results_sent = true;
 
-        return_to_lobby_for_rematch(&mut state).unwrap();
+        return_to_lobby(&mut state).unwrap();
 
         assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
         assert!(state.placements.is_empty());
         assert!(!state.race_results_sent);
+        assert_eq!(state.race.players.len(), 2);
+    }
+
+    #[test]
+    fn return_to_lobby_cancels_active_race() {
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.snapshot_sequence = 7;
+        state.placements = vec![PlayerId(1)];
+        state.player_effects.insert(PlayerId(1), Default::default());
+
+        return_to_lobby(&mut state).unwrap();
+
+        assert_eq!(state.snapshot_sequence, 8);
+        assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
+        assert!(state.placements.is_empty());
+        assert!(state.player_effects.is_empty());
+        assert!(state.events.iter().any(|event| event == "Race cancelled"));
         assert_eq!(state.race.players.len(), 2);
     }
 

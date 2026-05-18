@@ -39,6 +39,7 @@ Esc / quit          Leave
 - `E` sets the selected AI to Easy. If a human is selected, it changes the default difficulty for newly added AIs.
 - `H` sets the selected AI to Hard. If a human is selected, it changes the default difficulty for newly added AIs.
 - `Space` starts the countdown once the lobby is ready.
+- `Ctrl-R` cancels an active multiplayer countdown or race and returns everyone to the lobby.
 
 Joiners use:
 

@@ -792,6 +792,18 @@ mod tests {
                 if matches!(snapshot.phase, crate::net::protocol::NetworkRacePhase::Countdown { remaining_seconds: 3 })
         ));
 
+        write_client_message(&mut host_client, &ClientMessage::RestartRace)
+            .expect("host cancel should be accepted");
+        let cancelled = read_server_message(&mut join_reader)
+            .expect("cancel snapshot should decode")
+            .expect("cancel snapshot should arrive");
+        assert!(matches!(
+            cancelled,
+            ServerMessage::RaceSnapshot(snapshot)
+                if snapshot.phase == crate::net::protocol::NetworkRacePhase::WaitingForHost
+                    && snapshot.events.iter().any(|event| event == "Race cancelled")
+        ));
+
         write_client_message(&mut join_client, &ClientMessage::Leave).unwrap();
         write_client_message(&mut host_client, &ClientMessage::Leave).unwrap();
     }

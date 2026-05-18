@@ -270,6 +270,13 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
             continue;
         }
 
+        if host_cancel_key(state.is_host(), state.current_phase(), key_event) {
+            send_client_message(&mut stream, &ClientMessage::RestartRace)?;
+            push_network_log(&log, "client sent host cancel race");
+            lobby_command.clear();
+            continue;
+        }
+
         if *phase.lock().expect("client phase poisoned") == NetworkRacePhase::Racing {
             let is_racer = view_state
                 .lock()
@@ -525,6 +532,18 @@ fn should_leave(key_event: KeyEvent) -> bool {
     key_event.code == KeyCode::Esc
         || (key_event.code == KeyCode::Char('c')
             && key_event.modifiers.contains(KeyModifiers::CONTROL))
+}
+
+fn host_cancel_key(is_host: bool, phase: NetworkRacePhase, key_event: KeyEvent) -> bool {
+    is_host
+        && matches!(
+            phase,
+            NetworkRacePhase::Countdown { .. }
+                | NetworkRacePhase::Racing
+                | NetworkRacePhase::Finished
+        )
+        && matches!(key_event.code, KeyCode::Char('r') | KeyCode::Char('R'))
+        && key_event.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 fn handle_lobby_key(
@@ -1984,9 +2003,15 @@ fn primary_command_help(is_host: bool, phase: NetworkRacePhase) -> &'static str 
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {
             "    Enter ready | ? help | quit"
         }
-        NetworkRacePhase::Finished if is_host => "    Space rematch | lobby | ? help | quit",
+        NetworkRacePhase::Finished if is_host => "    Space rematch | Ctrl-R lobby | ? help | quit",
         NetworkRacePhase::Finished => "    ? help | quit",
+        NetworkRacePhase::Countdown { .. } if is_host => {
+            "Countdown active | Ctrl-R lobby | ? help | Esc/Ctrl-C leaves"
+        }
         NetworkRacePhase::Countdown { .. } => "Countdown active | ? help | Esc/Ctrl-C leaves",
+        NetworkRacePhase::Racing if is_host => {
+            "Type words | Ctrl-R lobby | ? help | Esc/Ctrl-C leaves"
+        }
         NetworkRacePhase::Racing => "Type words | Backspace fixes | ? help | Esc/Ctrl-C leaves",
     }
 }
@@ -2039,6 +2064,7 @@ fn network_help_lines(is_host: bool, phase: NetworkRacePhase) -> Vec<Line<'stati
         NetworkRacePhase::Finished if is_host => {
             lines.extend([
                 Line::from("Space / start       Start rematch countdown"),
+                Line::from("Ctrl-R              Return racers to lobby"),
                 Line::from("lobby               Return racers to lobby"),
                 Line::from("rematch / restart   Return racers to lobby"),
                 Line::from("?                   Hide this help"),
@@ -2052,8 +2078,13 @@ fn network_help_lines(is_host: bool, phase: NetworkRacePhase) -> Vec<Line<'stati
             ]);
         }
         NetworkRacePhase::Countdown { .. } => {
+            lines.push(Line::from("Input locked        Wait for countdown"));
+            if is_host {
+                lines.push(Line::from(
+                    "Ctrl-R              Cancel race and return to lobby",
+                ));
+            }
             lines.extend([
-                Line::from("Input locked        Wait for countdown"),
                 Line::from("?                   Hide this help"),
                 Line::from("Esc / Ctrl-C        Leave"),
             ]);
@@ -2063,6 +2094,13 @@ fn network_help_lines(is_host: bool, phase: NetworkRacePhase) -> Vec<Line<'stati
                 Line::from("Letters             Type current word"),
                 Line::from("Space               Submit completed word"),
                 Line::from("Backspace           Fix typos"),
+            ]);
+            if is_host {
+                lines.push(Line::from(
+                    "Ctrl-R              Cancel race and return to lobby",
+                ));
+            }
+            lines.extend([
                 Line::from("?                   Hide this help"),
                 Line::from("Esc / Ctrl-C        Leave"),
             ]);
@@ -2118,9 +2156,9 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 mod tests {
     use super::{
         AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, NetworkViewState, PlayerId,
-        PlayerSnapshot, display_word_number, enter_sets_ready, join_rejection_message,
-        lifecycle_command_message, network_bonus_column, network_help_lines,
-        network_minimap_column, network_racer_label, network_track_word_line,
+        PlayerSnapshot, display_word_number, enter_sets_ready, host_cancel_key,
+        join_rejection_message, lifecycle_command_message, network_bonus_column,
+        network_help_lines, network_minimap_column, network_racer_label, network_track_word_line,
         phase_accepts_typed_commands, primary_command_help, space_starts_countdown,
         stream_index_for_word_char, visible_network_bonus_point,
     };
@@ -2128,6 +2166,7 @@ mod tests {
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
         ModConfigSnapshot, NetworkRacePhase, PlayerKind, RaceSnapshot,
     };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Modifier};
 
     #[test]
@@ -2301,6 +2340,27 @@ mod tests {
             lifecycle_command_message("lobby", false, NetworkRacePhase::Finished),
             None
         );
+    }
+
+    #[test]
+    fn ctrl_r_is_host_only_cancel_during_active_network_races() {
+        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+
+        assert!(host_cancel_key(
+            true,
+            NetworkRacePhase::Countdown {
+                remaining_seconds: 2
+            },
+            key
+        ));
+        assert!(host_cancel_key(true, NetworkRacePhase::Racing, key));
+        assert!(host_cancel_key(true, NetworkRacePhase::Finished, key));
+        assert!(!host_cancel_key(false, NetworkRacePhase::Racing, key));
+        assert!(!host_cancel_key(
+            true,
+            NetworkRacePhase::WaitingForHost,
+            key
+        ));
     }
 
     #[test]

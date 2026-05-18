@@ -652,6 +652,7 @@ Current network lobby commands:
 ```text
 host> ready
 host> start
+host> Ctrl-R cancels an active countdown/race
 join> ready
 join> quit
 ```

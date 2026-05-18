@@ -106,7 +106,7 @@ Join that race from another terminal or computer:
 typekart join-lan --name player2 --server HOST_IP:4000
 ```
 
-The host starts ready. Joiners press `Enter` to ready up. The host presses `Space` to start with ready racers; unready players can watch from the lobby and join the next race.
+The host starts ready. Joiners press `Enter` to ready up. The host presses `Space` to start with ready racers; unready players can watch from the lobby and join the next race. During countdown or racing, the host can press `Ctrl-R` to cancel and return everyone to the lobby.
 
 Before starting, press `?` to show detailed lobby controls such as AI management and kicking joiners.
 

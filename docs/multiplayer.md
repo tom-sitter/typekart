@@ -58,6 +58,7 @@ If joiners cannot connect, check that the host firewall allows inbound traffic o
 - The host can press `E` or `H` to set Easy or Hard AI difficulty for the selected AI. If a human is selected, this changes the default difficulty for newly added AIs.
 - The host presses `Space` to start with ready connected racers. Unready players stay in the lobby and can ready for the next race.
 - During countdown, input is locked and the track text is grey.
+- During countdown or racing, the host can press `Ctrl-R` to cancel the race and return everyone to the lobby.
 - If too few connected racers remain during countdown, the game returns to the lobby.
 - Players who join or ready up while a race is active can watch the current race from the lobby and join the next race.
 - After results, the host can return to the lobby or start a rematch with connected lobby players.
