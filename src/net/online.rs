@@ -18,7 +18,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use tungstenite::{Error as WebSocketError, Message, WebSocket, connect, stream::MaybeTlsStream};
+use tungstenite::{
+    Error as WebSocketError, Message, WebSocket, connect, error::ProtocolError,
+    stream::MaybeTlsStream,
+};
 
 use super::{
     protocol::{ClientMessage, PlayerId, ServerMessage},
@@ -36,6 +39,13 @@ struct HostBroadcastDedupe {
     race_snapshots: HashSet<u64>,
     race_deltas: HashSet<u64>,
     race_results_sent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostRelayDelivery {
+    Broadcast,
+    Direct,
+    Skip,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +110,7 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
             Err(WebSocketError::Io(error)) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
             }
+            Err(error) if websocket_disconnect_error(&error) => break,
             Err(error) => return Err(error).context("failed to read relay message"),
         }
     }
@@ -178,6 +189,7 @@ pub fn run_online_join_proxy(config: OnlineJoinProxyConfig) -> Result<()> {
             Err(WebSocketError::Io(error)) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
             }
+            Err(error) if websocket_disconnect_error(&error) => break,
             Err(error) => return Err(error).context("failed to read relay message"),
         }
     }
@@ -290,17 +302,17 @@ fn forward_local_server_to_relay(
     loop {
         match read_server_message(&mut reader) {
             Ok(Some(message)) => {
-                let relay_message = if should_broadcast_host_message(&message, &broadcast_dedupe) {
-                    RelayClientMessage::HostBroadcast {
+                let relay_message = match host_relay_delivery(&message, &broadcast_dedupe) {
+                    HostRelayDelivery::Broadcast => RelayClientMessage::HostBroadcast {
                         room: room.clone(),
                         message,
-                    }
-                } else {
-                    RelayClientMessage::HostToClient {
+                    },
+                    HostRelayDelivery::Direct => RelayClientMessage::HostToClient {
                         room: room.clone(),
                         player_id,
                         message,
-                    }
+                    },
+                    HostRelayDelivery::Skip => continue,
                 };
                 if send_relay_channel(&outbound_tx, relay_message).is_err() {
                     break;
@@ -312,22 +324,30 @@ fn forward_local_server_to_relay(
     }
 }
 
-fn should_broadcast_host_message(
+fn host_relay_delivery(
     message: &ServerMessage,
     broadcast_dedupe: &Arc<Mutex<HostBroadcastDedupe>>,
-) -> bool {
+) -> HostRelayDelivery {
     let mut dedupe = broadcast_dedupe
         .lock()
         .expect("host broadcast dedupe poisoned");
     match message {
-        ServerMessage::RaceSnapshot(snapshot) => dedupe.race_snapshots.insert(snapshot.sequence),
-        ServerMessage::RaceDelta(delta) => dedupe.race_deltas.insert(delta.sequence),
+        ServerMessage::RaceSnapshot(snapshot)
+            if dedupe.race_snapshots.insert(snapshot.sequence) =>
+        {
+            HostRelayDelivery::Broadcast
+        }
+        ServerMessage::RaceSnapshot(_) => HostRelayDelivery::Skip,
+        ServerMessage::RaceDelta(delta) if dedupe.race_deltas.insert(delta.sequence) => {
+            HostRelayDelivery::Broadcast
+        }
+        ServerMessage::RaceDelta(_) => HostRelayDelivery::Skip,
         ServerMessage::RaceResults { .. } if !dedupe.race_results_sent => {
             dedupe.race_results_sent = true;
-            true
+            HostRelayDelivery::Broadcast
         }
-        ServerMessage::RaceResults { .. } => false,
-        _ => false,
+        ServerMessage::RaceResults { .. } => HostRelayDelivery::Skip,
+        _ => HostRelayDelivery::Direct,
     }
 }
 
@@ -493,7 +513,14 @@ fn drain_relay_outbound(
     outbound_rx: &Receiver<RelayClientMessage>,
 ) -> Result<()> {
     while let Ok(message) = outbound_rx.try_recv() {
-        send_relay_message(websocket, &message)?;
+        if let Err(error) = send_relay_message(websocket, &message) {
+            if let Some(websocket_error) = error.downcast_ref::<WebSocketError>()
+                && websocket_disconnect_error(websocket_error)
+            {
+                break;
+            }
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -524,6 +551,21 @@ fn send_relay_message(websocket: &mut RelaySocket, message: &RelayClientMessage)
         .context("failed to send relay message")
 }
 
+fn websocket_disconnect_error(error: &WebSocketError) -> bool {
+    match error {
+        WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => true,
+        WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => true,
+        WebSocketError::Io(error) => matches!(
+            error.kind(),
+            ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::BrokenPipe
+                | ErrorKind::UnexpectedEof
+        ),
+        _ => false,
+    }
+}
+
 fn decode_relay_message(text: &str) -> Result<RelayServerMessage> {
     serde_json::from_str(text).context("failed to decode relay message")
 }
@@ -540,9 +582,9 @@ mod tests {
     };
 
     use super::{
-        HostBroadcastDedupe, OnlineHostBridgeConfig, OnlineJoinProxyConfig,
-        handle_host_relay_message, join_version, run_online_host_bridge, run_online_join_proxy,
-        should_broadcast_host_message,
+        HostBroadcastDedupe, HostRelayDelivery, OnlineHostBridgeConfig, OnlineJoinProxyConfig,
+        handle_host_relay_message, host_relay_delivery, join_version, run_online_host_bridge,
+        run_online_join_proxy,
     };
     use crate::{
         game::{
@@ -662,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn host_bridge_broadcast_dedupe_allows_one_shared_race_update() {
+    fn host_bridge_broadcast_dedupe_skips_duplicate_shared_race_update() {
         let dedupe = Arc::new(Mutex::new(HostBroadcastDedupe::default()));
         let message = ServerMessage::RaceDelta(crate::net::protocol::RaceDeltaSnapshot {
             sequence: 9,
@@ -672,8 +714,29 @@ mod tests {
             events: Vec::new(),
         });
 
-        assert!(should_broadcast_host_message(&message, &dedupe));
-        assert!(!should_broadcast_host_message(&message, &dedupe));
+        assert_eq!(
+            host_relay_delivery(&message, &dedupe),
+            HostRelayDelivery::Broadcast
+        );
+        assert_eq!(
+            host_relay_delivery(&message, &dedupe),
+            HostRelayDelivery::Skip
+        );
+    }
+
+    #[test]
+    fn online_bridge_treats_common_websocket_disconnects_as_normal_close() {
+        assert!(super::websocket_disconnect_error(
+            &tungstenite::Error::ConnectionClosed
+        ));
+        assert!(super::websocket_disconnect_error(
+            &tungstenite::Error::Protocol(
+                tungstenite::error::ProtocolError::ResetWithoutClosingHandshake
+            )
+        ));
+        assert!(super::websocket_disconnect_error(&tungstenite::Error::Io(
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset")
+        )));
     }
 
     fn spawn_test_relay() -> SocketAddr {
