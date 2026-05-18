@@ -38,6 +38,9 @@ pub enum ClientMessage {
     SetReady {
         ready: bool,
     },
+    Rename {
+        name: String,
+    },
     StartCountdown,
     AddAi,
     RemoveLobbyPlayer {
@@ -351,6 +354,9 @@ mod tests {
                 client_version: env!("CARGO_PKG_VERSION").to_string(),
             },
             ClientMessage::SetReady { ready: true },
+            ClientMessage::Rename {
+                name: "alex".to_string(),
+            },
             ClientMessage::StartCountdown,
             ClientMessage::RestartRace,
             ClientMessage::Leave,

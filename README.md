@@ -85,26 +85,28 @@ typekart play --ai-racers 3 --ai-difficulty easy
 Host an internet race:
 
 ```sh
-typekart host --name host
+typekart host
 ```
 
 The host prints a room code and join command. Other racers can join with:
 
 ```sh
-typekart join --name player2 --room rocket-salad-tiger
+typekart join --room rocket-salad-tiger
 ```
 
 Host a local multiplayer race:
 
 ```sh
-typekart host-lan --name host --bind 0.0.0.0:4000
+typekart host-lan --bind 0.0.0.0:4000
 ```
 
 Join that race from another terminal or computer:
 
 ```sh
-typekart join-lan --name player2 --server HOST_IP:4000
+typekart join-lan --server HOST_IP:4000
 ```
+
+If `--name` is omitted, TypeKart assigns an anonymous name such as `anonymous` or `anonymous2`. In the lobby, press `N` to rename yourself.
 
 The host starts ready. Joiners press `Enter` to ready up. The host presses `Space` to start with ready racers; unready players can watch from the lobby and join the next race. During countdown or racing, the host can press `Ctrl-R` to cancel and return everyone to the lobby.
 
@@ -212,13 +214,13 @@ All racers must run the same TypeKart version as the host. Relay-backed joins ar
 To host through the public TypeKart relay:
 
 ```sh
-typekart host --name host
+typekart host
 ```
 
 The host prints a room code. Other racers join with:
 
 ```sh
-typekart join --name player2 --room rocket-salad-tiger
+typekart join --room rocket-salad-tiger
 ```
 
 Use `--relay` only when you want to use a custom relay:

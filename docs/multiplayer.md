@@ -12,21 +12,23 @@ The host is authoritative in both modes. Joiners send input commands and render 
 The easiest path is the public relay:
 
 ```sh
-typekart host --name host
+typekart host
 ```
 
 The host prints a room code and a join command:
 
 ```text
 Online room: rocket-salad-tiger
-Join command: typekart join --name PLAYER --relay wss://typekart-relay.fly.dev --room rocket-salad-tiger
+Join command: typekart join --relay wss://typekart-relay.fly.dev --room rocket-salad-tiger
 ```
 
 Other racers join with:
 
 ```sh
-typekart join --name player2 --room rocket-salad-tiger
+typekart join --room rocket-salad-tiger
 ```
+
+`--name` is optional for hosts and joiners. When omitted, TypeKart assigns an anonymous name and de-duplicates it in the lobby. Press `N` in the lobby to rename yourself.
 
 Use `--relay` only for a local, private, or self-hosted relay.
 

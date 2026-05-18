@@ -65,7 +65,7 @@ enum Command {
     Host {
         /// Display name for the host player.
         #[arg(long)]
-        name: String,
+        name: Option<String>,
         /// WebSocket relay URL.
         #[arg(long, default_value = DEFAULT_PUBLIC_RELAY_URL)]
         relay: String,
@@ -105,7 +105,7 @@ enum Command {
     HostLan {
         /// Display name for the host player.
         #[arg(long)]
-        name: String,
+        name: Option<String>,
         /// Number of words in the generated track.
         #[arg(short, long, default_value_t = 40)]
         words: usize,
@@ -144,7 +144,7 @@ enum Command {
     Join {
         /// Display name for this player.
         #[arg(long)]
-        name: String,
+        name: Option<String>,
         /// WebSocket relay URL.
         #[arg(long, default_value = DEFAULT_PUBLIC_RELAY_URL)]
         relay: String,
@@ -163,7 +163,7 @@ enum Command {
     JoinLan {
         /// Display name for this player.
         #[arg(long)]
-        name: String,
+        name: Option<String>,
         /// Host address and port to connect to.
         #[arg(long)]
         server: SocketAddr,

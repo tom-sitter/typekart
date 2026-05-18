@@ -239,10 +239,11 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
     let mut terminal = NetworkTerminal::setup()?;
     let mut sequence = 1;
     let mut lobby_command = String::new();
+    let mut rename_input: Option<String> = None;
 
     loop {
         let state = view_state.lock().expect("client view poisoned").clone();
-        terminal.draw(&state, &lobby_command)?;
+        terminal.draw(&state, &lobby_command, rename_input.as_deref())?;
 
         if !event::poll(Duration::from_millis(50)).context("failed to poll terminal input")? {
             continue;
@@ -253,6 +254,22 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
         };
 
         if key_event.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        if rename_input.is_some()
+            && key_event.code == KeyCode::Char('c')
+            && key_event.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            send_client_message(&mut stream, &ClientMessage::Leave)?;
+            push_network_log(&log, "client sent leave");
+            break;
+        }
+
+        if let Some(input) = rename_input.as_mut() {
+            if handle_rename_key(&mut stream, key_event, input, &log)? {
+                rename_input = None;
+            }
             continue;
         }
 
@@ -274,6 +291,11 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
             send_client_message(&mut stream, &ClientMessage::RestartRace)?;
             push_network_log(&log, "client sent host cancel race");
             lobby_command.clear();
+            continue;
+        }
+
+        if starts_rename_mode(state.current_phase(), &lobby_command, key_event) {
+            rename_input = Some(state.local_player_name().unwrap_or_default());
             continue;
         }
 
@@ -405,6 +427,22 @@ impl NetworkViewState {
         self.lobby_players.get(self.selected_lobby_index)
     }
 
+    fn local_player_name(&self) -> Option<String> {
+        self.lobby_players
+            .iter()
+            .find(|player| player.id == self.player_id)
+            .map(|player| player.name.clone())
+            .or_else(|| {
+                self.race_snapshot.as_ref().and_then(|snapshot| {
+                    snapshot
+                        .players
+                        .iter()
+                        .find(|player| player.id == self.player_id)
+                        .map(|player| player.name.clone())
+                })
+            })
+    }
+
     fn select_previous_lobby_player(&mut self) {
         if self.lobby_players.is_empty() {
             self.selected_lobby_index = 0;
@@ -493,9 +531,14 @@ impl NetworkTerminal {
         })
     }
 
-    fn draw(&mut self, state: &NetworkViewState, lobby_command: &str) -> Result<()> {
+    fn draw(
+        &mut self,
+        state: &NetworkViewState,
+        lobby_command: &str,
+        rename_input: Option<&str>,
+    ) -> Result<()> {
         self.terminal
-            .draw(|frame| render_network(frame, state, lobby_command))
+            .draw(|frame| render_network(frame, state, lobby_command, rename_input))
             .context("failed to draw network screen")?;
         Ok(())
     }
@@ -544,6 +587,51 @@ fn host_cancel_key(is_host: bool, phase: NetworkRacePhase, key_event: KeyEvent) 
         )
         && matches!(key_event.code, KeyCode::Char('r') | KeyCode::Char('R'))
         && key_event.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn starts_rename_mode(phase: NetworkRacePhase, lobby_command: &str, key_event: KeyEvent) -> bool {
+    lobby_command.is_empty()
+        && matches!(
+            phase,
+            NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
+        )
+        && matches!(key_event.code, KeyCode::Char('n') | KeyCode::Char('N'))
+        && (key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT)
+}
+
+fn handle_rename_key(
+    stream: &mut std::net::TcpStream,
+    key_event: KeyEvent,
+    input: &mut String,
+    log: &Option<SharedNetworkLog>,
+) -> Result<bool> {
+    match key_event.code {
+        KeyCode::Esc => Ok(true),
+        KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
+            let name = input.trim();
+            if !name.is_empty() {
+                send_client_message(
+                    stream,
+                    &ClientMessage::Rename {
+                        name: name.to_string(),
+                    },
+                )?;
+                push_network_log(log, format!("client sent rename name={name}"));
+            }
+            Ok(true)
+        }
+        KeyCode::Backspace => {
+            input.pop();
+            Ok(false)
+        }
+        KeyCode::Char(ch)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            input.push(ch);
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn handle_lobby_key(
@@ -833,7 +921,12 @@ fn log_client_delta(log: &Option<SharedNetworkLog>, delta: &RaceDeltaSnapshot) {
     }
 }
 
-fn render_network(frame: &mut Frame<'_>, state: &NetworkViewState, lobby_command: &str) {
+fn render_network(
+    frame: &mut Frame<'_>,
+    state: &NetworkViewState,
+    lobby_command: &str,
+    rename_input: Option<&str>,
+) {
     let area = frame.size();
     frame.render_widget(Clear, area);
 
@@ -851,7 +944,7 @@ fn render_network(frame: &mut Frame<'_>, state: &NetworkViewState, lobby_command
         Some(snapshot) => render_race(frame, rows[1], state, snapshot),
         None => render_lobby(frame, rows[1], state),
     }
-    frame.render_widget(network_footer(state, lobby_command), rows[2]);
+    frame.render_widget(network_footer(state, lobby_command, rename_input), rows[2]);
     if state.show_help {
         render_network_help_overlay(frame, area, state.is_host(), state.current_phase());
     }
@@ -1974,9 +2067,19 @@ fn short_hash(hash: &str) -> String {
     hash.chars().take(8).collect()
 }
 
-fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragraph<'a> {
+fn network_footer<'a>(
+    state: &NetworkViewState,
+    lobby_command: &str,
+    rename_input: Option<&str>,
+) -> Paragraph<'a> {
     let phase = state.current_phase();
-    let line = if state.show_help {
+    let line = if let Some(rename_input) = rename_input {
+        Line::from(vec![
+            Span::raw("Rename: "),
+            Span::styled(rename_input.to_string(), Style::default().fg(Color::Yellow)),
+            Span::raw("    Enter save | Esc cancel"),
+        ])
+    } else if state.show_help {
         Line::from("? hide help | Esc/Ctrl-C leaves")
     } else if phase_accepts_typed_commands(state.is_host(), phase) {
         let commands = primary_command_help(state.is_host(), phase);
@@ -1998,10 +2101,10 @@ fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragrap
 fn primary_command_help(is_host: bool, phase: NetworkRacePhase) -> &'static str {
     match phase {
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost if is_host => {
-            "    Space start | ? help | quit"
+            "    Space start | N rename | ? help | quit"
         }
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {
-            "    Enter ready | ? help | quit"
+            "    Enter ready | N rename | ? help | quit"
         }
         NetworkRacePhase::Finished if is_host => "    Space rematch | Ctrl-R lobby | ? help | quit",
         NetworkRacePhase::Finished => "    ? help | quit",
@@ -2045,6 +2148,7 @@ fn network_help_lines(is_host: bool, phase: NetworkRacePhase) -> Vec<Line<'stati
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost if is_host => {
             lines.extend([
                 Line::from("Space / start       Start countdown"),
+                Line::from("N                   Rename yourself"),
                 Line::from("Up / Down           Select lobby racer"),
                 Line::from("A                   Add AI racer"),
                 Line::from("X                   Remove selected AI or kick human"),
@@ -2057,6 +2161,7 @@ fn network_help_lines(is_host: bool, phase: NetworkRacePhase) -> Vec<Line<'stati
             lines.extend([
                 Line::from("Enter / ready       Ready up"),
                 Line::from("unready             Mark yourself not ready"),
+                Line::from("N                   Rename yourself"),
                 Line::from("?                   Hide this help"),
                 Line::from("Esc / quit          Leave"),
             ]);
@@ -2160,7 +2265,7 @@ mod tests {
         join_rejection_message, lifecycle_command_message, network_bonus_column,
         network_help_lines, network_minimap_column, network_racer_label, network_track_word_line,
         phase_accepts_typed_commands, primary_command_help, space_starts_countdown,
-        stream_index_for_word_char, visible_network_bonus_point,
+        starts_rename_mode, stream_index_for_word_char, visible_network_bonus_point,
     };
     use crate::net::protocol::{
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
@@ -2337,9 +2442,30 @@ mod tests {
             Some(ClientMessage::RestartRace)
         );
         assert_eq!(
+            lifecycle_command_message("rename speedy", false, NetworkRacePhase::WaitingForHost),
+            None
+        );
+        assert_eq!(
             lifecycle_command_message("lobby", false, NetworkRacePhase::Finished),
             None
         );
+    }
+
+    #[test]
+    fn n_starts_rename_mode_only_from_lobby_without_typed_command() {
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+
+        assert!(starts_rename_mode(
+            NetworkRacePhase::WaitingForHost,
+            "",
+            key
+        ));
+        assert!(!starts_rename_mode(
+            NetworkRacePhase::WaitingForHost,
+            "ready",
+            key
+        ));
+        assert!(!starts_rename_mode(NetworkRacePhase::Racing, "", key));
     }
 
     #[test]

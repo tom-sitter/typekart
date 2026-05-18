@@ -77,7 +77,7 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
     } else {
         println!("Online room: {}", room.display());
         println!(
-            "Join command: typekart join --name PLAYER --relay {} --room {}",
+            "Join command: typekart join --relay {} --room {}",
             config.relay,
             room.display()
         );
@@ -772,6 +772,22 @@ mod tests {
                 .expect("join lobby should arrive"),
             ServerMessage::LobbySnapshot { ref players, .. }
                 if players.iter().any(|player| player.name == "joiner")
+        ));
+
+        write_client_message(
+            &mut join_client,
+            &ClientMessage::Rename {
+                name: "speedy".to_string(),
+            },
+        )
+        .expect("joiner rename should be forwarded");
+        let renamed_lobby = read_server_message(&mut join_reader)
+            .expect("renamed lobby should decode")
+            .expect("renamed lobby should arrive");
+        assert!(matches!(
+            renamed_lobby,
+            ServerMessage::LobbySnapshot { ref players, .. }
+                if players.iter().any(|player| player.name == "speedy")
         ));
 
         write_client_message(&mut join_client, &ClientMessage::SetReady { ready: true })

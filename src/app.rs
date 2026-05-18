@@ -33,6 +33,8 @@ use crate::net::{
 };
 use crate::ui::{render::IconMode, terminal::run_typing_session};
 
+const DEFAULT_PLAYER_NAME: &str = "anonymous";
+
 pub fn play(
     word_count: usize,
     word_set: WordSetSelection,
@@ -70,7 +72,7 @@ pub fn play(
 #[allow(clippy::too_many_arguments)]
 pub fn host(
     bind: SocketAddr,
-    name: String,
+    name: Option<String>,
     word_count: usize,
     word_set: WordSetSelection,
     item_pack_file: Option<PathBuf>,
@@ -122,7 +124,7 @@ pub fn host(
 
     let result = run_join(JoinConfig {
         server,
-        name,
+        name: player_name_or_default(name),
         icon_mode,
         online_room: None,
         debug_log: None,
@@ -140,7 +142,7 @@ pub fn host(
 #[allow(clippy::too_many_arguments)]
 pub fn host_online(
     relay: String,
-    name: String,
+    name: Option<String>,
     word_count: usize,
     word_set: WordSetSelection,
     item_pack_file: Option<PathBuf>,
@@ -205,7 +207,7 @@ pub fn host_online(
 
     let result = run_join(JoinConfig {
         server: loopback_server_addr(local_server),
-        name,
+        name: player_name_or_default(name),
         icon_mode,
         online_room: Some(OnlineRoomInfo { relay, room }),
         debug_log: None,
@@ -241,13 +243,13 @@ fn loopback_server_addr(address: SocketAddr) -> SocketAddr {
 
 pub fn join(
     server: SocketAddr,
-    name: String,
+    name: Option<String>,
     icon_mode: IconMode,
     debug_log: Option<PathBuf>,
 ) -> Result<()> {
     run_join(JoinConfig {
         server,
-        name,
+        name: player_name_or_default(name),
         icon_mode,
         online_room: None,
         debug_log,
@@ -258,14 +260,15 @@ pub fn join(
 pub fn join_online(
     relay: String,
     room: RoomCode,
-    name: String,
+    name: Option<String>,
     icon_mode: IconMode,
     debug_log: Option<PathBuf>,
 ) -> Result<()> {
     let (ready_sender, ready_receiver) = mpsc::channel();
     let proxy_relay = relay.clone();
     let proxy_room = room.clone();
-    let proxy_name = name.clone();
+    let player_name = player_name_or_default(name);
+    let proxy_name = player_name.clone();
     thread::spawn(move || {
         let result = run_online_join_proxy(OnlineJoinProxyConfig {
             relay: proxy_relay,
@@ -287,12 +290,20 @@ pub fn join_online(
 
     run_join(JoinConfig {
         server: local_server,
-        name,
+        name: player_name,
         icon_mode,
         online_room: Some(OnlineRoomInfo { relay, room }),
         debug_log,
         shared_log: None,
     })
+}
+
+fn player_name_or_default(name: Option<String>) -> String {
+    name.as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(DEFAULT_PLAYER_NAME)
+        .to_string()
 }
 
 fn is_expected_online_join_rejection(error: &anyhow::Error) -> bool {

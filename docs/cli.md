@@ -19,26 +19,28 @@ typekart play --ai-racers 3 --ai-difficulty easy
 Host an internet race through the default public relay:
 
 ```sh
-typekart host --name host
+typekart host
 ```
 
 Join an internet race:
 
 ```sh
-typekart join --name player2 --room rocket-salad-tiger
+typekart join --room rocket-salad-tiger
 ```
 
 Host a LAN race:
 
 ```sh
-typekart host-lan --name host --bind 0.0.0.0:4000
+typekart host-lan --bind 0.0.0.0:4000
 ```
 
 Join a LAN race:
 
 ```sh
-typekart join-lan --name player2 --server HOST_IP:4000
+typekart join-lan --server HOST_IP:4000
 ```
+
+`--name` is optional on multiplayer host and join commands. If omitted, TypeKart assigns an anonymous name; press `N` in the lobby to rename yourself.
 
 ## Internet Relay Options
 

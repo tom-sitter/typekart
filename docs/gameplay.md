@@ -40,6 +40,7 @@ Esc / quit          Leave
 - `H` sets the selected AI to Hard. If a human is selected, it changes the default difficulty for newly added AIs.
 - `Space` starts the countdown once the lobby is ready.
 - `Ctrl-R` cancels an active multiplayer countdown or race and returns everyone to the lobby.
+- `N` opens rename mode for your lobby player. Duplicate names receive a numbered suffix.
 
 Joiners use:
 

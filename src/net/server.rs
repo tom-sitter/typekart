@@ -823,6 +823,16 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         };
 
         match message {
+            ClientMessage::Rename { name } => {
+                let mut state = state.lock().expect("host state poisoned");
+                if let Err(error) = rename_lobby_player(&mut state, player_id, &name) {
+                    push_event(&mut state, error.to_string());
+                }
+                print_lobby_snapshot(&state.players);
+                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
+                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+                }
+            }
             ClientMessage::SetReady { ready } => {
                 let mut state = state.lock().expect("host state poisoned");
                 if let Some(player) = state
@@ -959,6 +969,66 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
     {
         server_eprintln!("Failed to broadcast race results: {error:#}");
     }
+}
+
+fn rename_lobby_player(
+    state: &mut HostState,
+    player_id: PlayerId,
+    requested_name: &str,
+) -> Result<()> {
+    if !matches!(
+        state.phase,
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
+    ) {
+        bail!("Renaming is only available in the lobby");
+    }
+
+    let requested_name = requested_name.trim();
+    if requested_name.is_empty() {
+        bail!("Name cannot be empty");
+    }
+
+    let existing_name = state
+        .players
+        .iter()
+        .find(|player| {
+            player.id == player_id && player.connected && player.kind == PlayerKind::Human
+        })
+        .map(|player| player.name.clone())
+        .context("Player is no longer in the lobby")?;
+    let other_players = state
+        .players
+        .iter()
+        .filter(|player| player.id != player_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let new_name = unique_player_name(requested_name, &other_players);
+
+    if let Some(player) = state
+        .players
+        .iter_mut()
+        .find(|player| player.id == player_id)
+    {
+        player.name = new_name.clone();
+    }
+    if let Some(racer) = state
+        .race
+        .players
+        .iter_mut()
+        .find(|racer| racer.id == RacePlayerId(player_id.0))
+    {
+        racer.name = new_name.clone();
+    }
+    push_event(state, format!("{existing_name} renamed to {new_name}"));
+    push_network_log(
+        &state.debug_log,
+        format!(
+            "player={} renamed {existing_name} -> {new_name}",
+            player_id.0
+        ),
+    );
+
+    Ok(())
 }
 
 fn handle_player_disconnect(state: &mut HostState, player_id: PlayerId, now: Instant) -> bool {
@@ -2927,9 +2997,9 @@ mod tests {
         cleanup_disconnected_waiting_players, client_is_in_current_race, connected_player_count,
         first_available_color, handle_client_messages, handle_player_disconnect,
         new_human_lobby_player, push_event, read_join_hello, reconcile_phase_after_disconnect,
-        remove_lobby_player, reset_race_from_lobby, return_to_lobby, set_lobby_ai_difficulty,
-        unique_player_name, update_host_ready, update_race_status, validate_host_capacity,
-        welcome_joiner,
+        remove_lobby_player, rename_lobby_player, reset_race_from_lobby, return_to_lobby,
+        set_lobby_ai_difficulty, unique_player_name, update_host_ready, update_race_status,
+        validate_host_capacity, welcome_joiner,
     };
     use crate::game::{
         ai::AiDifficulty,
@@ -3023,6 +3093,29 @@ mod tests {
 
         assert_eq!(unique_player_name("tom", &players), "tom3");
         assert_eq!(unique_player_name("alex", &players), "alex");
+    }
+
+    #[test]
+    fn lobby_player_can_rename_with_unique_suffix() {
+        let mut state = test_host_state(NetworkRacePhase::WaitingForHost);
+
+        rename_lobby_player(&mut state, PlayerId(2), "host").unwrap();
+
+        assert_eq!(state.players[1].name, "host2");
+        assert_eq!(state.race.players[1].name, "host2");
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event == "alex renamed to host2")
+        );
+    }
+
+    #[test]
+    fn lobby_player_cannot_rename_during_active_race() {
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+
+        assert!(rename_lobby_player(&mut state, PlayerId(2), "alex").is_err());
     }
 
     #[test]
