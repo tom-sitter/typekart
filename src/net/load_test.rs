@@ -262,7 +262,8 @@ fn run_host_load_connection(
                 &mut websocket,
                 &RelayClientMessage::HostBroadcast {
                     room: room.clone(),
-                    message: ServerMessage::RaceDelta(load_delta(sequence)),
+                    message: serde_json::to_value(ServerMessage::RaceDelta(load_delta(sequence)))
+                        .context("failed to encode load-test race delta")?,
                 },
             )?;
             metrics.broadcasts_sent.fetch_add(1, Ordering::Relaxed);
@@ -306,10 +307,11 @@ fn run_joiner_load_connection(
                 &RelayClientMessage::ClientToHost {
                     room: room.clone(),
                     player_id,
-                    message: ClientMessage::KeyInput {
+                    message: serde_json::to_value(ClientMessage::KeyInput {
                         sequence: ClientSequence(sequence),
                         key: ProtocolKey::Char('a'),
-                    },
+                    })
+                    .context("failed to encode load-test key input")?,
                 },
             )?;
             metrics.inputs_sent.fetch_add(1, Ordering::Relaxed);

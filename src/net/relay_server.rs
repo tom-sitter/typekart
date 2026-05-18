@@ -539,7 +539,7 @@ mod tests {
         handle_relay_message, idle_sweep_interval, spawn_idle_room_sweeper,
     };
     use crate::net::{
-        protocol::{ClientMessage, ClientSequence, PlayerId, ProtocolKey, ServerMessage},
+        protocol::PlayerId,
         relay::{RelayClientMessage, RelayServerMessage},
     };
 
@@ -622,10 +622,10 @@ mod tests {
         .unwrap();
         let _ = host_rx.recv().unwrap();
 
-        let message = ClientMessage::KeyInput {
-            sequence: ClientSequence(7),
-            key: ProtocolKey::Char('a'),
-        };
+        let message = serde_json::json!({
+            "type": "future_client_command",
+            "payload": { "sequence": 7 }
+        });
         handle_relay_message(
             RelayClientMessage::ClientToHost {
                 room: room.clone(),
@@ -718,9 +718,10 @@ mod tests {
         )
         .unwrap();
 
-        let message = ServerMessage::Error {
-            message: "test".to_string(),
-        };
+        let message = serde_json::json!({
+            "type": "future_server_command",
+            "payload": { "message": "test" }
+        });
         handle_relay_message(
             RelayClientMessage::HostBroadcast {
                 room: room.clone(),

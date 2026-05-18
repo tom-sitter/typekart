@@ -1,13 +1,15 @@
 //! Relay room and envelope protocol.
 //!
-//! The relay protocol wraps the existing TypeKart client/server messages so a
-//! public relay can route them without understanding race rules.
+//! The relay protocol wraps opaque TypeKart client/server payloads so a public
+//! relay can route them without understanding race rules or game command
+//! schemas.
 
 use anyhow::{Result, bail};
 use rand::{seq::SliceRandom, thread_rng};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use super::protocol::{ClientMessage, PlayerId, ServerMessage};
+use super::protocol::PlayerId;
 
 const ROOM_CODE_WORDS: &[&str] = &[
     "apple", "beach", "brave", "candy", "cedar", "charm", "cloud", "coral", "crisp", "delta",
@@ -85,16 +87,16 @@ pub enum RelayClientMessage {
     ClientToHost {
         room: RoomCode,
         player_id: PlayerId,
-        message: ClientMessage,
+        message: Value,
     },
     HostToClient {
         room: RoomCode,
         player_id: PlayerId,
-        message: ServerMessage,
+        message: Value,
     },
     HostBroadcast {
         room: RoomCode,
-        message: ServerMessage,
+        message: Value,
     },
     LeaveRoom {
         room: RoomCode,
@@ -116,16 +118,16 @@ pub enum RelayServerMessage {
     ClientToHost {
         room: RoomCode,
         player_id: PlayerId,
-        message: ClientMessage,
+        message: Value,
     },
     HostToClient {
         room: RoomCode,
         player_id: PlayerId,
-        message: ServerMessage,
+        message: Value,
     },
     HostBroadcast {
         room: RoomCode,
-        message: ServerMessage,
+        message: Value,
     },
     Error {
         message: String,
@@ -142,9 +144,7 @@ pub enum RelayServerMessage {
 #[cfg(test)]
 mod tests {
     use super::{RelayClientMessage, RelayServerMessage, RoomCode};
-    use crate::net::protocol::{
-        AssignedColor, ClientMessage, ClientSequence, PlayerId, ProtocolKey, ServerMessage,
-    };
+    use crate::net::protocol::PlayerId;
 
     #[test]
     fn room_codes_normalize_display_form() {
@@ -173,10 +173,10 @@ mod tests {
         let message = RelayClientMessage::ClientToHost {
             room: RoomCode::parse("rocket-salad-tiger").unwrap(),
             player_id: PlayerId(2),
-            message: ClientMessage::KeyInput {
-                sequence: ClientSequence(9),
-                key: ProtocolKey::Space,
-            },
+            message: serde_json::json!({
+                "type": "future_client_command",
+                "payload": { "anything": true }
+            }),
         };
 
         let encoded = serde_json::to_string(&message).unwrap();
@@ -190,10 +190,10 @@ mod tests {
         let message = RelayServerMessage::HostToClient {
             room: RoomCode::parse("rocket-salad-tiger").unwrap(),
             player_id: PlayerId(2),
-            message: ServerMessage::Welcome {
-                player_id: PlayerId(2),
-                assigned_color: AssignedColor::Red,
-            },
+            message: serde_json::json!({
+                "type": "future_server_command",
+                "payload": { "anything": true }
+            }),
         };
 
         let encoded = serde_json::to_string(&message).unwrap();

@@ -1,6 +1,6 @@
 # Relay Deployment
 
-TypeKart internet play uses a WebSocket relay. The relay routes room-scoped protocol envelopes between an authoritative host and joiners. It does not run game rules, store accounts, or perform matchmaking.
+TypeKart internet play uses a WebSocket relay. The relay routes room-scoped protocol envelopes between an authoritative host and joiners. It does not run game rules, store accounts, perform matchmaking, or decode game commands. Routed game payloads are opaque to the relay so new lobby/race commands can ship in the app without changing relay routing logic.
 
 ## Local Development
 

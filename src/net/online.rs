@@ -18,6 +18,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
+use serde_json::Value;
 use tungstenite::{
     Error as WebSocketError, Message, WebSocket, connect, error::ProtocolError,
     stream::MaybeTlsStream,
@@ -167,6 +169,7 @@ pub fn run_online_join_proxy(config: OnlineJoinProxyConfig) -> Result<()> {
                 match message {
                     RelayServerMessage::HostToClient { message, .. }
                     | RelayServerMessage::HostBroadcast { message, .. } => {
+                        let message = decode_server_payload(message)?;
                         write_server_message(&mut local_stream, &message)
                             .context("failed to forward relay server message to local client")?;
                     }
@@ -239,7 +242,7 @@ fn handle_host_relay_message(
                 RelayClientMessage::HostToClient {
                     room: room.clone(),
                     player_id: pending_player_id,
-                    message: welcome.clone(),
+                    message: encode_payload(&welcome)?,
                 },
             )?;
 
@@ -264,6 +267,7 @@ fn handle_host_relay_message(
             player_id,
             message,
         } if &routed_room == room => {
+            let message = decode_client_payload(message)?;
             if let Some(local_stream) = participants.get_mut(&player_id)
                 && let Err(error) = write_client_message(local_stream, &message)
             {
@@ -305,12 +309,18 @@ fn forward_local_server_to_relay(
                 let relay_message = match host_relay_delivery(&message, &broadcast_dedupe) {
                     HostRelayDelivery::Broadcast => RelayClientMessage::HostBroadcast {
                         room: room.clone(),
-                        message,
+                        message: match encode_payload(&message) {
+                            Ok(message) => message,
+                            Err(_) => continue,
+                        },
                     },
                     HostRelayDelivery::Direct => RelayClientMessage::HostToClient {
                         room: room.clone(),
                         player_id,
-                        message,
+                        message: match encode_payload(&message) {
+                            Ok(message) => message,
+                            Err(_) => continue,
+                        },
                     },
                     HostRelayDelivery::Skip => continue,
                 };
@@ -366,7 +376,10 @@ fn forward_local_client_to_relay(
                     RelayClientMessage::ClientToHost {
                         room: room.clone(),
                         player_id,
-                        message,
+                        message: match encode_payload(&message) {
+                            Ok(message) => message,
+                            Err(_) => break,
+                        },
                     },
                 )
                 .is_err()
@@ -380,7 +393,10 @@ fn forward_local_client_to_relay(
                     RelayClientMessage::ClientToHost {
                         room: room.clone(),
                         player_id,
-                        message: ClientMessage::Leave,
+                        message: match encode_payload(&ClientMessage::Leave) {
+                            Ok(message) => message,
+                            Err(_) => break,
+                        },
                     },
                 );
                 break;
@@ -391,7 +407,10 @@ fn forward_local_client_to_relay(
                     RelayClientMessage::ClientToHost {
                         room: room.clone(),
                         player_id,
-                        message: ClientMessage::Leave,
+                        message: match encode_payload(&ClientMessage::Leave) {
+                            Ok(message) => message,
+                            Err(_) => break,
+                        },
                     },
                 );
                 break;
@@ -453,13 +472,14 @@ fn wait_for_join_welcome(
     websocket: &mut RelaySocket,
     local_stream: &mut TcpStream,
 ) -> Result<PlayerId> {
-    let mut pending_messages = Vec::new();
+    let mut pending_messages = Vec::<ServerMessage>::new();
     loop {
         match websocket.read().context("failed to read join response")? {
             Message::Text(text) => match decode_relay_message(&text)? {
                 RelayServerMessage::HostToClient {
                     player_id, message, ..
                 } => {
+                    let message = decode_server_payload(message)?;
                     if matches!(message, ServerMessage::Welcome { .. }) {
                         write_server_message(local_stream, &message)?;
                         for pending_message in pending_messages {
@@ -471,7 +491,7 @@ fn wait_for_join_welcome(
                     }
                 }
                 RelayServerMessage::HostBroadcast { message, .. } => {
-                    pending_messages.push(message);
+                    pending_messages.push(decode_server_payload(message)?);
                 }
                 RelayServerMessage::Error { message } => {
                     write_server_message(
@@ -580,6 +600,18 @@ fn websocket_disconnect_error(error: &WebSocketError) -> bool {
 
 fn decode_relay_message(text: &str) -> Result<RelayServerMessage> {
     serde_json::from_str(text).context("failed to decode relay message")
+}
+
+fn encode_payload(message: &impl Serialize) -> Result<Value> {
+    serde_json::to_value(message).context("failed to encode relay payload")
+}
+
+fn decode_client_payload(message: Value) -> Result<ClientMessage> {
+    serde_json::from_value(message).context("failed to decode client relay payload")
+}
+
+fn decode_server_payload(message: Value) -> Result<ServerMessage> {
+    serde_json::from_value(message).context("failed to decode server relay payload")
 }
 
 #[cfg(test)]
