@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::game::mods::ActiveModConfig;
+use crate::game::{ai::AiDifficulty, mods::ActiveModConfig};
 
 pub fn version_mismatch_message(host_version: &str, client_version: &str) -> String {
     format!(
@@ -39,6 +39,14 @@ pub enum ClientMessage {
         ready: bool,
     },
     StartCountdown,
+    AddAi,
+    RemoveLobbyPlayer {
+        player_id: PlayerId,
+    },
+    SetAiDifficulty {
+        player_id: Option<PlayerId>,
+        difficulty: AiDifficultySnapshot,
+    },
     KeyInput {
         sequence: ClientSequence,
         key: ProtocolKey,
@@ -65,6 +73,31 @@ pub enum PlayerKind {
     Bot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiDifficultySnapshot {
+    Easy,
+    Hard,
+}
+
+impl From<AiDifficultySnapshot> for AiDifficulty {
+    fn from(value: AiDifficultySnapshot) -> Self {
+        match value {
+            AiDifficultySnapshot::Easy => Self::Easy,
+            AiDifficultySnapshot::Hard => Self::Hard,
+        }
+    }
+}
+
+impl From<AiDifficulty> for AiDifficultySnapshot {
+    fn from(value: AiDifficulty) -> Self {
+        match value {
+            AiDifficulty::Easy => Self::Easy,
+            AiDifficulty::Hard => Self::Hard,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LobbyPlayer {
     pub id: PlayerId,
@@ -73,6 +106,8 @@ pub struct LobbyPlayer {
     pub color: AssignedColor,
     pub ready: bool,
     pub connected: bool,
+    pub ai_difficulty: Option<AiDifficultySnapshot>,
+    pub ai_wpm: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,6 +366,8 @@ mod tests {
                 color: AssignedColor::Cyan,
                 ready: false,
                 connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
             }],
         };
 

@@ -5,13 +5,46 @@ TypeKart is a terminal typing racer with kart-style item effects. Players race a
 ## Race Flow
 
 1. The host creates a race.
-2. Joiners enter the lobby and press `Enter` to ready up.
-3. The host presses `Space` to start.
+2. Joiners enter the lobby and press `Enter` to ready up when they want to join the next race.
+3. The host presses `Space` to start with the ready racers.
 4. A countdown appears beside each player's marker.
 5. The race starts when the countdown ends.
 6. Results appear after every racer finishes, all active racers disconnect, or the post-first-place timeout expires.
 
 In single player, press `Space` to start the countdown.
+
+## Pre-Race Lobby Controls
+
+Before a race starts, the footer shows the main lifecycle command and `? help`. Press `?` to show or hide a centered command overlay instead of expanding the footer.
+
+```text
+Space start | ? help | Esc quit
+```
+
+Host command overlay:
+
+```text
+Key / Command       Action
+Space / start       Start countdown
+Up / Down           Select lobby racer
+A                   Add AI racer
+X                   Remove selected AI or kick human
+E / H               Set selected AI to Easy / Hard
+?                   Hide this help
+Esc / quit          Leave
+```
+
+- `A` adds one AI racer using the current AI difficulty.
+- `X` removes the selected AI racer. In multiplayer, it kicks the selected human joiner. The host cannot be removed.
+- `E` sets the selected AI to Easy. If a human is selected, it changes the default difficulty for newly added AIs.
+- `H` sets the selected AI to Hard. If a human is selected, it changes the default difficulty for newly added AIs.
+- `Space` starts the countdown once the lobby is ready.
+
+Joiners use:
+
+```text
+Enter ready | ? help | Esc quit
+```
 
 ## Typing Rules
 

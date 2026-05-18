@@ -1,4 +1,4 @@
-//! Ratatui rendering for the local typing prototype.
+//! Ratatui rendering for the local typing game.
 //!
 //! Rendering is intentionally a read-only view over game state. If the display
 //! needs a value, it should derive it from `Track` and `PlayerState` rather than
@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::{
@@ -47,6 +47,8 @@ pub struct TypingScreen<'a> {
     pub race_phase: RacePhase,
     pub icon_mode: IconMode,
     pub ai_racers: &'a [AiRacer],
+    pub selected_ai_index: Option<usize>,
+    pub show_help: bool,
     pub events: &'a EventLog,
 }
 
@@ -181,6 +183,10 @@ pub enum VisibleRacerMarker {
 
 pub fn render(frame: &mut Frame<'_>, screen: TypingScreen<'_>) {
     let area = frame.size();
+    frame.render_widget(Clear, area);
+
+    let show_help = screen.show_help;
+    let race_phase = screen.race_phase;
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -191,12 +197,16 @@ pub fn render(frame: &mut Frame<'_>, screen: TypingScreen<'_>) {
         .split(area);
 
     frame.render_widget(header(screen.track, screen.player), root[0]);
-    frame.render_widget(help_view(), root[2]);
+    frame.render_widget(footer_view(screen.race_phase, screen.show_help), root[2]);
 
     if area.width >= WIDE_LAYOUT_MIN_WIDTH {
         render_wide(frame, root[1], screen);
     } else {
         render_narrow(frame, root[1], screen);
+    }
+
+    if show_help {
+        render_local_help_overlay(frame, area, race_phase);
     }
 }
 
@@ -240,7 +250,12 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
     );
     frame.render_widget(stats_view(screen.player), right[0]);
     frame.render_widget(
-        player_list(screen.track, screen.player, screen.ai_racers),
+        player_list(
+            screen.track,
+            screen.player,
+            screen.ai_racers,
+            screen.selected_ai_index,
+        ),
         right[1],
     );
     frame.render_widget(event_feed(screen.events), right[2]);
@@ -274,7 +289,12 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
     );
     frame.render_widget(stats_view(screen.player), rows[1]);
     frame.render_widget(
-        player_list(screen.track, screen.player, screen.ai_racers),
+        player_list(
+            screen.track,
+            screen.player,
+            screen.ai_racers,
+            screen.selected_ai_index,
+        ),
         rows[2],
     );
     frame.render_widget(
@@ -1136,25 +1156,37 @@ fn stats_view<'a>(player: &PlayerState) -> Paragraph<'a> {
     Paragraph::new(stats).block(Block::default().title("Stats").borders(Borders::ALL))
 }
 
-fn player_list<'a>(track: &Track, player: &PlayerState, ai_racers: &[AiRacer]) -> Paragraph<'a> {
+fn player_list<'a>(
+    track: &Track,
+    player: &PlayerState,
+    ai_racers: &[AiRacer],
+    selected_ai_index: Option<usize>,
+) -> Paragraph<'a> {
     let mut standings = Vec::with_capacity(ai_racers.len() + 1);
     standings.push(PlayerListRow {
         name: "you".to_string(),
         completed_words: player.stats.completed_words,
         input_chars: player.input.chars().count(),
         finished: player.is_finished(),
+        selected: false,
     });
-    standings.extend(ai_racers.iter().map(|ai| PlayerListRow {
-        name: format!(
-            "{} ({} {:.0})",
-            ai.name,
-            ai.difficulty.name(),
-            ai.words_per_minute
-        ),
-        completed_words: ai.player.stats.completed_words,
-        input_chars: ai.player.input.chars().count(),
-        finished: ai.player.is_finished(),
-    }));
+    standings.extend(
+        ai_racers
+            .iter()
+            .enumerate()
+            .map(|(index, ai)| PlayerListRow {
+                name: format!(
+                    "{} ({} {:.0})",
+                    ai.name,
+                    ai.difficulty.name(),
+                    ai.words_per_minute
+                ),
+                completed_words: ai.player.stats.completed_words,
+                input_chars: ai.player.input.chars().count(),
+                finished: ai.player.is_finished(),
+                selected: selected_ai_index == Some(index),
+            }),
+    );
     standings.sort_by(|a, b| {
         b.finished
             .cmp(&a.finished)
@@ -1167,7 +1199,8 @@ fn player_list<'a>(track: &Track, player: &PlayerState, ai_racers: &[AiRacer]) -
         .enumerate()
         .map(|(index, row)| {
             Line::from(format!(
-                "{}. {:<12} {}/{} words",
+                "{}{}. {:<12} {}/{} words",
+                if row.selected { ">" } else { " " },
                 index + 1,
                 row.name,
                 row.completed_words,
@@ -1184,6 +1217,7 @@ struct PlayerListRow {
     completed_words: usize,
     input_chars: usize,
     finished: bool,
+    selected: bool,
 }
 
 fn event_feed<'a>(events: &'a EventLog) -> Paragraph<'a> {
@@ -1335,9 +1369,67 @@ impl RaceResultRow {
     }
 }
 
-fn help_view<'a>() -> Paragraph<'a> {
-    Paragraph::new("Space between words. Backspace fixes typos. Ctrl-R restarts. Esc quits.")
-        .block(Block::default().borders(Borders::TOP))
+fn footer_view<'a>(race_phase: RacePhase, show_help: bool) -> Paragraph<'a> {
+    let text = if show_help {
+        "? hide help | Esc quit"
+    } else {
+        match race_phase {
+            RacePhase::WaitingForHost => "Space start | ? help | Esc quit",
+            RacePhase::Countdown { .. } => "Countdown active | ? help | Esc quit",
+            RacePhase::Racing => "Type words | Backspace fixes | ? help | Esc quit",
+        }
+    };
+    Paragraph::new(text).block(Block::default().borders(Borders::TOP))
+}
+
+fn render_local_help_overlay(frame: &mut Frame<'_>, area: Rect, race_phase: RacePhase) {
+    let overlay = centered_rect(area, 72, 12);
+    let lines = match race_phase {
+        RacePhase::WaitingForHost | RacePhase::Countdown { .. } => vec![
+            Line::from(vec![
+                Span::styled("Key", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw("          "),
+                Span::styled("Action", Style::default().add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from("Space        Start countdown"),
+            Line::from("Up / Down    Select AI racer"),
+            Line::from("A            Add AI racer"),
+            Line::from("X            Remove selected AI"),
+            Line::from("E / H        Set selected AI to Easy / Hard"),
+            Line::from("?            Hide this help"),
+            Line::from("Esc          Quit"),
+        ],
+        RacePhase::Racing => vec![
+            Line::from(vec![
+                Span::styled("Key", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw("          "),
+                Span::styled("Action", Style::default().add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from("Letters      Type the current word"),
+            Line::from("Space        Submit completed word"),
+            Line::from("Backspace    Fix typos"),
+            Line::from("Ctrl-R       Restart race"),
+            Line::from("?            Hide this help"),
+            Line::from("Esc          Quit"),
+        ],
+    };
+
+    frame.render_widget(Clear, overlay);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().title("Commands").borders(Borders::ALL)),
+        overlay,
+    );
+}
+
+fn centered_rect(area: Rect, max_width: u16, height: u16) -> Rect {
+    let width = max_width.min(area.width.saturating_sub(2)).max(20);
+    let height = height.min(area.height.saturating_sub(2)).max(6);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
 }
 
 #[cfg(test)]

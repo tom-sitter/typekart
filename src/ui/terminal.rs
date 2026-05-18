@@ -92,6 +92,7 @@ fn run_loop(
     mut session: LocalSession,
     icon_mode: IconMode,
 ) -> Result<LocalSession> {
+    let mut show_help = false;
     loop {
         terminal.draw(|frame| {
             render(
@@ -107,6 +108,8 @@ fn run_loop(
                     race_phase: session.race_phase,
                     icon_mode,
                     ai_racers: &session.ai_racers,
+                    selected_ai_index: session.selected_ai_index(),
+                    show_help,
                     events: &session.events,
                 },
             );
@@ -118,8 +121,8 @@ fn run_loop(
             continue;
         }
 
-        // Crossterm can report resize, mouse, focus, and paste events. Milestone
-        // 1 only cares about key presses, so non-key events are ignored.
+        // Crossterm can report resize, mouse, focus, and paste events. The game
+        // loop only cares about key presses, so non-key events are ignored.
         let Event::Key(key_event) = event::read()? else {
             continue;
         };
@@ -130,6 +133,19 @@ fn run_loop(
 
         if should_quit(key_event) {
             return Ok(session);
+        }
+
+        if key_event.code == KeyCode::Char('?') {
+            show_help = !show_help;
+            terminal.clear()?;
+            continue;
+        }
+
+        if !session.race_phase.is_racing()
+            && let Some(action) = local_lobby_action(key_event)
+        {
+            session.apply_action(action, Instant::now());
+            continue;
         }
 
         if let Some(action) = local_action(key_event) {
@@ -148,6 +164,34 @@ fn should_quit(key_event: KeyEvent) -> bool {
     key_event.code == KeyCode::Esc
         || (key_event.code == KeyCode::Char('c')
             && key_event.modifiers.contains(KeyModifiers::CONTROL))
+}
+
+fn local_lobby_action(key_event: KeyEvent) -> Option<LocalAction> {
+    match key_event.code {
+        KeyCode::Up => Some(LocalAction::SelectPreviousRacer),
+        KeyCode::Down => Some(LocalAction::SelectNextRacer),
+        KeyCode::Char('a') | KeyCode::Char('A')
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            Some(LocalAction::AddAi)
+        }
+        KeyCode::Char('x') | KeyCode::Char('X')
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            Some(LocalAction::RemoveSelectedRacer)
+        }
+        KeyCode::Char('e') | KeyCode::Char('E')
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            Some(LocalAction::SetSelectedAiDifficulty(AiDifficulty::Easy))
+        }
+        KeyCode::Char('h') | KeyCode::Char('H')
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            Some(LocalAction::SetSelectedAiDifficulty(AiDifficulty::Hard))
+        }
+        _ => None,
+    }
 }
 
 fn local_action(key_event: KeyEvent) -> Option<LocalAction> {

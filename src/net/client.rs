@@ -1,7 +1,4 @@
-//! Minimal TCP join client for Milestone 4.
-//!
-//! The current client performs the first protocol handshake and prints lobby
-//! snapshots. Later slices will send key input and render race snapshots.
+//! TCP join client and terminal UI for multiplayer races.
 
 use std::{
     collections::VecDeque,
@@ -25,15 +22,17 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use super::log::{NetworkLog, SharedNetworkLog, push_network_log, write_network_log};
 use super::protocol::{
-    AssignedColor, ClientMessage, ClientSequence, ImpactCueSnapshotKind, ItemCuePlacementSnapshot,
-    LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId, PlayerSnapshot, ProtocolKey,
-    RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
+    AiDifficultySnapshot, AssignedColor, ClientMessage, ClientSequence, ImpactCueSnapshotKind,
+    ItemCuePlacementSnapshot, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
+    PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultRow, RaceResultStatus, RaceSnapshot,
+    ServerMessage,
 };
+use super::relay::RoomCode;
 use super::transport::{read_server_message, write_client_message};
 use crate::ui::render::IconMode;
 
@@ -46,8 +45,15 @@ pub struct JoinConfig {
     pub server: SocketAddr,
     pub name: String,
     pub icon_mode: IconMode,
+    pub online_room: Option<OnlineRoomInfo>,
     pub debug_log: Option<PathBuf>,
     pub shared_log: Option<SharedNetworkLog>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OnlineRoomInfo {
+    pub relay: String,
+    pub room: RoomCode,
 }
 
 pub fn run_join(config: JoinConfig) -> Result<()> {
@@ -98,7 +104,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                 player_id
             }
             Some(ServerMessage::Error { message }) => {
-                println!("Server rejected join: {message}");
+                println!("Could not join: {}", join_rejection_message(&message));
                 push_network_log(&log, format!("client rejected: {message}"));
                 if let (Some(path), Some(log)) = (config.debug_log.as_ref(), log.as_ref()) {
                     write_network_log(path, log)?;
@@ -126,14 +132,12 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
             }
         };
 
-    println!("Use the footer for phase-specific commands. Esc or Ctrl-C leaves.");
-    println!("After the race starts, typing is sent one key at a time.");
-
     let phase = Arc::new(Mutex::new(NetworkRacePhase::WaitingForHost));
     let reader_phase = Arc::clone(&phase);
     let view_state = Arc::new(Mutex::new(NetworkViewState::new(
         player_id,
         config.icon_mode,
+        config.online_room,
     )));
     let reader_view_state = Arc::clone(&view_state);
     let reader_log = log.clone();
@@ -157,6 +161,9 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                     );
                     let mut state = reader_view_state.lock().expect("client view poisoned");
                     state.lobby_players = players;
+                    if state.selected_lobby_index >= state.lobby_players.len() {
+                        state.selected_lobby_index = state.lobby_players.len().saturating_sub(1);
+                    }
                     state.host_id = Some(host_id);
                     state.mod_config = Some(mod_config);
                     state.lobby_events = events;
@@ -176,10 +183,13 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
                 }
                 Ok(Some(ServerMessage::Error { message })) => {
                     push_network_log(&reader_log, format!("client received error: {message}"));
-                    reader_view_state
-                        .lock()
-                        .expect("client view poisoned")
-                        .push_message(format!("Server error: {message}"));
+                    let terminal_error = is_terminal_server_error(&message);
+                    let mut state = reader_view_state.lock().expect("client view poisoned");
+                    state.push_message(server_error_display_message(&message));
+                    if terminal_error {
+                        state.disconnected = true;
+                        break;
+                    }
                 }
                 Ok(Some(ServerMessage::RaceResults { placements, rows })) => {
                     push_network_log(
@@ -213,8 +223,10 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
         }
 
         let mut state = reader_view_state.lock().expect("client view poisoned");
-        state.disconnected = true;
-        state.push_message("Disconnected from server".to_string());
+        if !state.disconnected {
+            state.disconnected = true;
+            state.push_message("Disconnected from server".to_string());
+        }
         push_network_log(&reader_log, "client disconnected from server");
     });
 
@@ -244,9 +256,31 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
             break;
         }
 
+        if key_event.code == KeyCode::Char('?') {
+            let mut state = view_state.lock().expect("client view poisoned");
+            state.show_help = !state.show_help;
+            drop(state);
+            terminal.clear()?;
+            continue;
+        }
+
         if *phase.lock().expect("client phase poisoned") == NetworkRacePhase::Racing {
-            if send_race_key(&mut stream, key_event, &mut sequence, &log)? {
+            let is_racer = view_state
+                .lock()
+                .expect("client view poisoned")
+                .is_local_player_in_current_race();
+            if is_racer && send_race_key(&mut stream, key_event, &mut sequence, &log)? {
                 break;
+            }
+            continue;
+        }
+
+        if matches!(key_event.code, KeyCode::Up | KeyCode::Down) {
+            let mut state = view_state.lock().expect("client view poisoned");
+            match key_event.code {
+                KeyCode::Up => state.select_previous_lobby_player(),
+                KeyCode::Down => state.select_next_lobby_player(),
+                _ => {}
             }
             continue;
         }
@@ -257,6 +291,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
             &mut lobby_command,
             state.is_host(),
             state.current_phase(),
+            state.selected_lobby_player(),
             &log,
         )? {
             break;
@@ -273,10 +308,41 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
     Ok(())
 }
 
+fn join_rejection_message(message: &str) -> String {
+    if message.contains("already in use") {
+        if message.contains("--name") {
+            message.to_string()
+        } else {
+            format!("{message}. Choose a different --name.")
+        }
+    } else if message.starts_with("Lobby is full") || message.contains(" is full:") {
+        format!("{message}. Wait for the next race or ask the host to remove a racer.")
+    } else if message.contains("was not found") {
+        format!("{message}. Check the room code and make sure the host is still online.")
+    } else {
+        message.to_string()
+    }
+}
+
+fn is_terminal_server_error(message: &str) -> bool {
+    message.starts_with("Game closed:") || message.starts_with("Room closed:")
+}
+
+fn server_error_display_message(message: &str) -> String {
+    if message.starts_with("Game closed:") {
+        message.to_string()
+    } else if let Some(reason) = message.strip_prefix("Room closed:") {
+        format!("Game closed:{reason}")
+    } else {
+        format!("Server error: {message}")
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NetworkViewState {
     player_id: PlayerId,
     icon_mode: IconMode,
+    online_room: Option<OnlineRoomInfo>,
     lobby_players: Vec<LobbyPlayer>,
     host_id: Option<PlayerId>,
     mod_config: Option<ModConfigSnapshot>,
@@ -285,14 +351,17 @@ struct NetworkViewState {
     result_rows: Vec<RaceResultRow>,
     lobby_events: Vec<String>,
     messages: VecDeque<String>,
+    selected_lobby_index: usize,
+    show_help: bool,
     disconnected: bool,
 }
 
 impl NetworkViewState {
-    fn new(player_id: PlayerId, icon_mode: IconMode) -> Self {
+    fn new(player_id: PlayerId, icon_mode: IconMode, online_room: Option<OnlineRoomInfo>) -> Self {
         Self {
             player_id,
             icon_mode,
+            online_room,
             lobby_players: Vec::new(),
             host_id: None,
             mod_config: None,
@@ -301,6 +370,8 @@ impl NetworkViewState {
             result_rows: Vec::new(),
             lobby_events: Vec::new(),
             messages: VecDeque::new(),
+            selected_lobby_index: 0,
+            show_help: false,
             disconnected: false,
         }
     }
@@ -317,11 +388,41 @@ impl NetworkViewState {
         self.host_id == Some(self.player_id)
     }
 
+    fn selected_lobby_player(&self) -> Option<&LobbyPlayer> {
+        self.lobby_players.get(self.selected_lobby_index)
+    }
+
+    fn select_previous_lobby_player(&mut self) {
+        if self.lobby_players.is_empty() {
+            self.selected_lobby_index = 0;
+        } else {
+            self.selected_lobby_index = self.selected_lobby_index.saturating_sub(1);
+        }
+    }
+
+    fn select_next_lobby_player(&mut self) {
+        if self.lobby_players.is_empty() {
+            self.selected_lobby_index = 0;
+        } else {
+            self.selected_lobby_index =
+                (self.selected_lobby_index + 1).min(self.lobby_players.len() - 1);
+        }
+    }
+
     fn current_phase(&self) -> NetworkRacePhase {
         self.race_snapshot
             .as_ref()
             .map(|snapshot| snapshot.phase)
             .unwrap_or(NetworkRacePhase::WaitingForHost)
+    }
+
+    fn is_local_player_in_current_race(&self) -> bool {
+        self.race_snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .players
+                .iter()
+                .any(|player| player.id == self.player_id)
+        })
     }
 
     fn apply_race_snapshot(&mut self, snapshot: RaceSnapshot) {
@@ -331,6 +432,9 @@ impl NetworkViewState {
                 self.race_snapshot = None;
                 self.placements.clear();
                 self.result_rows.clear();
+                if self.selected_lobby_index >= self.lobby_players.len() {
+                    self.selected_lobby_index = self.lobby_players.len().saturating_sub(1);
+                }
             }
             NetworkRacePhase::Countdown { .. }
             | NetworkRacePhase::Racing
@@ -370,6 +474,12 @@ impl NetworkTerminal {
         Ok(())
     }
 
+    fn clear(&mut self) -> Result<()> {
+        self.terminal
+            .clear()
+            .context("failed to clear network terminal")
+    }
+
     fn restore(&mut self) -> Result<()> {
         if self.restored {
             return Ok(());
@@ -404,6 +514,7 @@ fn handle_lobby_key(
     lobby_command: &mut String,
     is_host: bool,
     phase: NetworkRacePhase,
+    selected_player: Option<&LobbyPlayer>,
     log: &Option<SharedNetworkLog>,
 ) -> Result<bool> {
     if space_starts_countdown(is_host, phase)
@@ -413,6 +524,61 @@ fn handle_lobby_key(
         send_client_message(stream, &ClientMessage::StartCountdown)?;
         push_network_log(log, "client sent start countdown");
         return Ok(false);
+    }
+
+    if is_host
+        && lobby_command.is_empty()
+        && matches!(
+            phase,
+            NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
+        )
+    {
+        match key_event.code {
+            KeyCode::Char('a') | KeyCode::Char('A')
+                if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+            {
+                send_client_message(stream, &ClientMessage::AddAi)?;
+                push_network_log(log, "client sent add ai");
+                return Ok(false);
+            }
+            KeyCode::Char('x') | KeyCode::Char('X')
+                if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+            {
+                if let Some(player) = selected_player {
+                    send_client_message(
+                        stream,
+                        &ClientMessage::RemoveLobbyPlayer {
+                            player_id: player.id,
+                        },
+                    )?;
+                    push_network_log(log, format!("client sent remove player={}", player.id.0));
+                }
+                return Ok(false);
+            }
+            KeyCode::Char('e') | KeyCode::Char('E')
+                if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+            {
+                send_ai_difficulty_command(
+                    stream,
+                    selected_player,
+                    AiDifficultySnapshot::Easy,
+                    log,
+                )?;
+                return Ok(false);
+            }
+            KeyCode::Char('h') | KeyCode::Char('H')
+                if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+            {
+                send_ai_difficulty_command(
+                    stream,
+                    selected_player,
+                    AiDifficultySnapshot::Hard,
+                    log,
+                )?;
+                return Ok(false);
+            }
+            _ => {}
+        }
     }
 
     if is_enter_key(key_event) {
@@ -444,6 +610,29 @@ fn handle_lobby_key(
         }
         _ => Ok(false),
     }
+}
+
+fn send_ai_difficulty_command(
+    stream: &mut std::net::TcpStream,
+    selected_player: Option<&LobbyPlayer>,
+    difficulty: AiDifficultySnapshot,
+    log: &Option<SharedNetworkLog>,
+) -> Result<()> {
+    let player_id = selected_player
+        .filter(|player| player.kind == PlayerKind::Bot)
+        .map(|player| player.id);
+    send_client_message(
+        stream,
+        &ClientMessage::SetAiDifficulty {
+            player_id,
+            difficulty,
+        },
+    )?;
+    push_network_log(
+        log,
+        format!("client sent ai difficulty={difficulty:?} player={player_id:?}"),
+    );
+    Ok(())
 }
 
 fn is_enter_key(key_event: KeyEvent) -> bool {
@@ -591,6 +780,8 @@ fn log_client_snapshot(log: &Option<SharedNetworkLog>, snapshot: &RaceSnapshot) 
 
 fn render_network(frame: &mut Frame<'_>, state: &NetworkViewState, lobby_command: &str) {
     let area = frame.size();
+    frame.render_widget(Clear, area);
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -606,6 +797,9 @@ fn render_network(frame: &mut Frame<'_>, state: &NetworkViewState, lobby_command
         None => render_lobby(frame, rows[1], state),
     }
     frame.render_widget(network_footer(state, lobby_command), rows[2]);
+    if state.show_help {
+        render_network_help_overlay(frame, area, state.is_host(), state.current_phase());
+    }
 }
 
 fn network_header<'a>(state: &NetworkViewState) -> Paragraph<'a> {
@@ -620,7 +814,7 @@ fn network_header<'a>(state: &NetworkViewState) -> Paragraph<'a> {
         "connected"
     };
 
-    Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             "TypeKart Network",
             Style::default().add_modifier(Modifier::BOLD),
@@ -631,8 +825,18 @@ fn network_header<'a>(state: &NetworkViewState) -> Paragraph<'a> {
         Span::raw(phase),
         Span::raw("    "),
         Span::styled(connection, connection_style(state.disconnected)),
-    ]))
-    .block(Block::default().borders(Borders::BOTTOM))
+    ];
+    if let Some(room) = &state.online_room {
+        spans.extend([
+            Span::raw("    "),
+            Span::styled(
+                format!("room {} via {}", room.room.display(), room.relay),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+
+    Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::BOTTOM))
 }
 
 fn render_lobby(frame: &mut Frame<'_>, area: Rect, state: &NetworkViewState) {
@@ -648,8 +852,18 @@ fn render_lobby(frame: &mut Frame<'_>, area: Rect, state: &NetworkViewState) {
     let players = state
         .lobby_players
         .iter()
-        .map(|player| {
+        .enumerate()
+        .map(|(index, player)| {
+            let selected = index == state.selected_lobby_index;
+            let ai_details = match (player.ai_difficulty, player.ai_wpm) {
+                (Some(difficulty), Some(wpm)) => {
+                    format!(" {} {wpm}wpm", ai_difficulty_label(difficulty))
+                }
+                (Some(difficulty), None) => format!(" {}", ai_difficulty_label(difficulty)),
+                _ => String::new(),
+            };
             Line::from(vec![
+                Span::raw(if selected { "> " } else { "  " }),
                 Span::styled("● ", Style::default().fg(assigned_color(player.color))),
                 Span::styled(
                     player.name.clone(),
@@ -658,8 +872,9 @@ fn render_lobby(frame: &mut Frame<'_>, area: Rect, state: &NetworkViewState) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(format!(
-                    "  {}{}{}",
+                    "  {}{}{}{}",
                     if player.ready { "ready" } else { "not ready" },
+                    ai_details,
                     if player.connected {
                         ""
                     } else {
@@ -680,7 +895,14 @@ fn render_lobby(frame: &mut Frame<'_>, area: Rect, state: &NetworkViewState) {
         body[0],
     );
     frame.render_widget(mod_config_view(state.mod_config.as_ref()), body[1]);
-    frame.render_widget(messages_view(state), body[2]);
+    frame.render_widget(messages_view(state, body[2].height), body[2]);
+}
+
+fn ai_difficulty_label(difficulty: AiDifficultySnapshot) -> &'static str {
+    match difficulty {
+        AiDifficultySnapshot::Easy => "easy",
+        AiDifficultySnapshot::Hard => "hard",
+    }
 }
 
 fn render_race(
@@ -705,7 +927,10 @@ fn render_race(
     frame.render_widget(track_view(state, snapshot, columns[0].width), columns[0]);
     frame.render_widget(race_status_view(state, snapshot), right[0]);
     frame.render_widget(mod_config_view(Some(&snapshot.mod_config)), right[1]);
-    frame.render_widget(messages_and_events_view(state, snapshot), right[2]);
+    frame.render_widget(
+        messages_and_events_view(state, snapshot, right[2].height),
+        right[2],
+    );
 }
 
 fn track_view<'a>(
@@ -718,7 +943,10 @@ fn track_view<'a>(
         .iter()
         .find(|player| player.id == state.player_id);
     let width = usize::from(area_width.saturating_sub(2)).max(1);
-    let current_word_index = local.map(|player| player.word_index).unwrap_or(0);
+    let current_word_index = local
+        .map(|player| player.word_index)
+        .or_else(|| snapshot.players.first().map(|player| player.word_index))
+        .unwrap_or(0);
     let window = NetworkTrackWindow::new(&snapshot.track_words, current_word_index, width);
     let mut lines = network_bonus_lines(&window, snapshot);
     lines.push(network_track_word_line(&window, local));
@@ -1616,44 +1844,52 @@ fn network_player_marker_char(player: &PlayerSnapshot) -> char {
 fn messages_and_events_view<'a>(
     state: &'a NetworkViewState,
     snapshot: &'a RaceSnapshot,
+    area_height: u16,
 ) -> Paragraph<'a> {
+    let max_lines = block_inner_height(area_height);
     let mut lines = snapshot
         .events
         .iter()
         .rev()
-        .take(5)
+        .take(max_lines)
         .map(|event| Line::from(event.as_str()))
         .collect::<Vec<_>>();
+    let remaining = max_lines.saturating_sub(lines.len());
     lines.extend(
         state
             .messages
             .iter()
             .rev()
-            .take(4)
+            .take(remaining)
             .map(|message| Line::from(message.as_str())),
     );
 
     Paragraph::new(lines).block(Block::default().title("Events").borders(Borders::ALL))
 }
 
-fn messages_view<'a>(state: &'a NetworkViewState) -> Paragraph<'a> {
+fn messages_view<'a>(state: &'a NetworkViewState, area_height: u16) -> Paragraph<'a> {
+    let max_lines = block_inner_height(area_height);
     let mut lines = state
         .lobby_events
         .iter()
         .rev()
-        .take(8)
+        .take(max_lines)
         .map(|event| Line::from(event.as_str()))
         .collect::<Vec<_>>();
+    let remaining = max_lines.saturating_sub(lines.len());
     lines.extend(
         state
             .messages
             .iter()
             .rev()
-            .take(4)
+            .take(remaining)
             .map(|message| Line::from(message.as_str())),
     );
-    let lines = lines;
     Paragraph::new(lines).block(Block::default().title("Events").borders(Borders::ALL))
+}
+
+fn block_inner_height(area_height: u16) -> usize {
+    area_height.saturating_sub(2) as usize
 }
 
 fn mod_config_view<'a>(mod_config: Option<&'a ModConfigSnapshot>) -> Paragraph<'a> {
@@ -1685,13 +1921,10 @@ fn short_hash(hash: &str) -> String {
 
 fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragraph<'a> {
     let phase = state.current_phase();
-    let text = match phase {
-        NetworkRacePhase::Countdown { .. } => "Countdown active. Esc/Ctrl-C leaves.",
-        NetworkRacePhase::Racing => "Type letters, Space, and Backspace. Esc/Ctrl-C leaves.",
-        _ => "",
-    };
-    let line = if text.is_empty() {
-        let commands = lifecycle_command_help(state.is_host(), phase);
+    let line = if state.show_help {
+        Line::from("? hide help | Esc/Ctrl-C leaves")
+    } else if phase_accepts_typed_commands(state.is_host(), phase) {
+        let commands = primary_command_help(state.is_host(), phase);
         Line::from(vec![
             Span::raw("Command: "),
             Span::styled(
@@ -1701,21 +1934,116 @@ fn network_footer<'a>(state: &NetworkViewState, lobby_command: &str) -> Paragrap
             Span::raw(commands),
         ])
     } else {
-        Line::from(text)
+        Line::from(primary_command_help(state.is_host(), phase))
     };
 
     Paragraph::new(line).block(Block::default().borders(Borders::TOP))
 }
 
-fn lifecycle_command_help(is_host: bool, phase: NetworkRacePhase) -> &'static str {
+fn primary_command_help(is_host: bool, phase: NetworkRacePhase) -> &'static str {
     match phase {
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost if is_host => {
-            "    Space starts when everyone is ready | quit"
+            "    Space start | ? help | quit"
         }
-        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => "    Enter ready | quit",
-        NetworkRacePhase::Finished if is_host => "    lobby | rematch | start | Space | quit",
-        NetworkRacePhase::Finished => "    quit",
-        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => "",
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {
+            "    Enter ready | ? help | quit"
+        }
+        NetworkRacePhase::Finished if is_host => "    Space rematch | lobby | ? help | quit",
+        NetworkRacePhase::Finished => "    ? help | quit",
+        NetworkRacePhase::Countdown { .. } => "Countdown active | ? help | Esc/Ctrl-C leaves",
+        NetworkRacePhase::Racing => "Type words | Backspace fixes | ? help | Esc/Ctrl-C leaves",
+    }
+}
+
+fn render_network_help_overlay(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    is_host: bool,
+    phase: NetworkRacePhase,
+) {
+    let overlay = centered_rect(area, 74, 14);
+    let lines = network_help_lines(is_host, phase);
+    frame.render_widget(Clear, overlay);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().title("Commands").borders(Borders::ALL)),
+        overlay,
+    );
+}
+
+fn network_help_lines(is_host: bool, phase: NetworkRacePhase) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "Key / Command",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("       "),
+        Span::styled("Action", Style::default().add_modifier(Modifier::BOLD)),
+    ])];
+
+    match phase {
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost if is_host => {
+            lines.extend([
+                Line::from("Space / start       Start countdown"),
+                Line::from("Up / Down           Select lobby racer"),
+                Line::from("A                   Add AI racer"),
+                Line::from("X                   Remove selected AI or kick human"),
+                Line::from("E / H               Set selected AI to Easy / Hard"),
+                Line::from("?                   Hide this help"),
+                Line::from("Esc / quit          Leave"),
+            ]);
+        }
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {
+            lines.extend([
+                Line::from("Enter / ready       Ready up"),
+                Line::from("unready             Mark yourself not ready"),
+                Line::from("?                   Hide this help"),
+                Line::from("Esc / quit          Leave"),
+            ]);
+        }
+        NetworkRacePhase::Finished if is_host => {
+            lines.extend([
+                Line::from("Space / start       Start rematch countdown"),
+                Line::from("lobby               Return racers to lobby"),
+                Line::from("rematch / restart   Return racers to lobby"),
+                Line::from("?                   Hide this help"),
+                Line::from("Esc / quit          Leave"),
+            ]);
+        }
+        NetworkRacePhase::Finished => {
+            lines.extend([
+                Line::from("?                   Hide this help"),
+                Line::from("Esc / quit          Leave"),
+            ]);
+        }
+        NetworkRacePhase::Countdown { .. } => {
+            lines.extend([
+                Line::from("Input locked        Wait for countdown"),
+                Line::from("?                   Hide this help"),
+                Line::from("Esc / Ctrl-C        Leave"),
+            ]);
+        }
+        NetworkRacePhase::Racing => {
+            lines.extend([
+                Line::from("Letters             Type current word"),
+                Line::from("Space               Submit completed word"),
+                Line::from("Backspace           Fix typos"),
+                Line::from("?                   Hide this help"),
+                Line::from("Esc / Ctrl-C        Leave"),
+            ]);
+        }
+    }
+
+    lines
+}
+
+fn centered_rect(area: Rect, max_width: u16, height: u16) -> Rect {
+    let width = max_width.min(area.width.saturating_sub(2)).max(20);
+    let height = height.min(area.height.saturating_sub(2)).max(6);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
     }
 }
 
@@ -1754,10 +2082,11 @@ fn format_phase(phase: NetworkRacePhase) -> String {
 mod tests {
     use super::{
         AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, NetworkViewState, PlayerId,
-        PlayerSnapshot, display_word_number, enter_sets_ready, lifecycle_command_help,
-        lifecycle_command_message, network_bonus_column, network_minimap_column,
-        network_racer_label, network_track_word_line, phase_accepts_typed_commands,
-        space_starts_countdown, stream_index_for_word_char, visible_network_bonus_point,
+        PlayerSnapshot, display_word_number, enter_sets_ready, join_rejection_message,
+        lifecycle_command_message, network_bonus_column, network_help_lines,
+        network_minimap_column, network_racer_label, network_track_word_line,
+        phase_accepts_typed_commands, primary_command_help, space_starts_countdown,
+        stream_index_for_word_char, visible_network_bonus_point,
     };
     use crate::net::protocol::{
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
@@ -1893,7 +2222,8 @@ mod tests {
 
     #[test]
     fn waiting_snapshot_returns_network_view_to_lobby() {
-        let mut state = NetworkViewState::new(PlayerId(1), crate::ui::render::IconMode::Ascii);
+        let mut state =
+            NetworkViewState::new(PlayerId(1), crate::ui::render::IconMode::Ascii, None);
         let mut snapshot = snapshot_with_bonus(0);
         state.apply_race_snapshot(snapshot.clone());
         assert!(state.race_snapshot.is_some());
@@ -1904,6 +2234,17 @@ mod tests {
         assert!(state.race_snapshot.is_none());
         assert!(state.placements.is_empty());
         assert!(state.result_rows.is_empty());
+    }
+
+    #[test]
+    fn lobby_observer_can_hold_race_snapshot_without_being_racer() {
+        let mut state =
+            NetworkViewState::new(PlayerId(9), crate::ui::render::IconMode::Ascii, None);
+
+        state.apply_race_snapshot(snapshot_with_bonus(0));
+
+        assert!(state.race_snapshot.is_some());
+        assert!(!state.is_local_player_in_current_race());
     }
 
     #[test]
@@ -1928,13 +2269,15 @@ mod tests {
 
     #[test]
     fn lifecycle_help_hides_irrelevant_commands() {
-        assert!(lifecycle_command_help(true, NetworkRacePhase::WaitingForHost).contains("Space"));
-        assert!(lifecycle_command_help(false, NetworkRacePhase::WaitingForHost).contains("Enter"));
-        assert!(!lifecycle_command_help(true, NetworkRacePhase::Finished).contains("ready"));
-        assert!(lifecycle_command_help(true, NetworkRacePhase::Finished).contains("lobby"));
+        assert!(primary_command_help(true, NetworkRacePhase::WaitingForHost).contains("Space"));
+        assert!(primary_command_help(false, NetworkRacePhase::WaitingForHost).contains("Enter"));
+        assert!(!primary_command_help(true, NetworkRacePhase::Finished).contains("ready"));
+        let finished_host_help =
+            format!("{:?}", network_help_lines(true, NetworkRacePhase::Finished));
+        assert!(finished_host_help.contains("lobby"));
         assert_eq!(
-            lifecycle_command_help(false, NetworkRacePhase::Finished),
-            "    quit"
+            primary_command_help(false, NetworkRacePhase::Finished),
+            "    ? help | quit"
         );
         assert!(!phase_accepts_typed_commands(
             true,
@@ -1958,6 +2301,28 @@ mod tests {
             NetworkRacePhase::WaitingForHost,
             ""
         ));
+    }
+
+    #[test]
+    fn join_rejection_messages_add_user_guidance() {
+        assert_eq!(
+            join_rejection_message("Name 'tom' is already in use"),
+            "Name 'tom' is already in use. Choose a different --name."
+        );
+        assert!(
+            join_rejection_message("Lobby is full: 6/6 connected players")
+                .contains("ask the host to remove a racer")
+        );
+        assert!(
+            join_rejection_message("Room vivid-grape-lemon was not found")
+                .contains("make sure the host is still online")
+        );
+        assert!(
+            join_rejection_message(
+                "Version mismatch: host is 0.1.0, client is 0.2.0. Install the same TypeKart version as the host."
+            )
+            .contains("Install the same TypeKart version")
+        );
     }
 
     fn words<const N: usize>(words: [&str; N]) -> Vec<String> {

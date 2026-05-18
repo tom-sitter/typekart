@@ -391,6 +391,12 @@ fn cleanup_connection(state: &Arc<Mutex<RelayState>>, room: &RoomCode, role: Con
             if let Some(room_state) = state.rooms.get_mut(room) {
                 room_state.participants.remove(&player_id);
                 room_state.last_activity = Instant::now();
+                let _ = room_state
+                    .host
+                    .send(RelayServerMessage::ParticipantDisconnected {
+                        room: room.clone(),
+                        player_id,
+                    });
                 println!(
                     "Relay participant disconnected: room={} player={}",
                     room.display(),
@@ -712,6 +718,59 @@ mod tests {
             RelayServerMessage::RoomClosed { .. }
         ));
         assert!(!state.lock().unwrap().rooms.contains_key(&room));
+    }
+
+    #[test]
+    fn relay_notifies_host_when_participant_disconnects() {
+        let state = Arc::new(Mutex::new(RelayState::default()));
+        let (host_tx, host_rx) = mpsc::channel();
+        let (joiner_tx, _joiner_rx) = mpsc::channel();
+        let Some((room, _)) = handle_relay_message(
+            RelayClientMessage::CreateRoom {
+                host_version: "test".to_string(),
+            },
+            &state,
+            &host_tx,
+            &RelayLimits::default(),
+        )
+        .unwrap() else {
+            panic!("host should create a room");
+        };
+        let _ = host_rx.recv().unwrap();
+        let Some((_, ConnectionRole::Participant(player_id))) = handle_relay_message(
+            RelayClientMessage::JoinRoom {
+                room: room.clone(),
+                name: "joiner".to_string(),
+                client_version: "test".to_string(),
+            },
+            &state,
+            &joiner_tx,
+            &RelayLimits::default(),
+        )
+        .unwrap() else {
+            panic!("joiner should enter room");
+        };
+        let _ = host_rx.recv().unwrap();
+
+        cleanup_connection(&state, &room, ConnectionRole::Participant(player_id));
+
+        assert!(matches!(
+            host_rx.recv().unwrap(),
+            RelayServerMessage::ParticipantDisconnected {
+                room: disconnected_room,
+                player_id: disconnected_player,
+            } if disconnected_room == room && disconnected_player == player_id
+        ));
+        assert!(
+            !state
+                .lock()
+                .unwrap()
+                .rooms
+                .get(&room)
+                .unwrap()
+                .participants
+                .contains_key(&player_id)
+        );
     }
 
     #[test]

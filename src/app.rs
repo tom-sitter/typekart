@@ -22,7 +22,7 @@ use crate::game::{
     words::{WordSetRegistry, WordSetSelection},
 };
 use crate::net::{
-    client::{JoinConfig, run_join},
+    client::{JoinConfig, OnlineRoomInfo, run_join},
     log::{NetworkLog, write_network_log},
     online::{
         OnlineHostBridgeConfig, OnlineJoinProxyConfig, run_online_host_bridge,
@@ -124,6 +124,7 @@ pub fn host(
         server,
         name,
         icon_mode,
+        online_room: None,
         debug_log: None,
         shared_log: network_log.clone(),
     });
@@ -187,21 +188,26 @@ pub fn host_online(
     let local_server = ready_receiver
         .recv_timeout(Duration::from_secs(2))
         .context("host server did not start")?;
+    let (room_sender, room_receiver) = mpsc::channel();
     let bridge_relay = relay.clone();
     thread::spawn(move || {
         if let Err(error) = run_online_host_bridge(OnlineHostBridgeConfig {
             relay: bridge_relay,
             local_server,
-            ready_signal: None,
+            ready_signal: Some(room_sender),
         }) {
             eprintln!("Online host bridge stopped: {error:#}");
         }
     });
+    let room = room_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .context("online host bridge did not create a room")?;
 
     let result = run_join(JoinConfig {
         server: loopback_server_addr(local_server),
         name,
         icon_mode,
+        online_room: Some(OnlineRoomInfo { relay, room }),
         debug_log: None,
         shared_log: network_log.clone(),
     });
@@ -243,6 +249,7 @@ pub fn join(
         server,
         name,
         icon_mode,
+        online_room: None,
         debug_log,
         shared_log: None,
     })
@@ -260,13 +267,17 @@ pub fn join_online(
     let proxy_room = room.clone();
     let proxy_name = name.clone();
     thread::spawn(move || {
-        if let Err(error) = run_online_join_proxy(OnlineJoinProxyConfig {
+        let result = run_online_join_proxy(OnlineJoinProxyConfig {
             relay: proxy_relay,
             room: proxy_room,
             name: proxy_name,
             ready_signal: ready_sender,
-        }) {
-            eprintln!("Online join proxy stopped: {error:#}");
+        });
+        match result {
+            Err(error) if !is_expected_online_join_rejection(&error) => {
+                eprintln!("Online join proxy stopped: {error:#}");
+            }
+            _ => {}
         }
     });
 
@@ -278,7 +289,13 @@ pub fn join_online(
         server: local_server,
         name,
         icon_mode,
+        online_room: Some(OnlineRoomInfo { relay, room }),
         debug_log,
         shared_log: None,
     })
+}
+
+fn is_expected_online_join_rejection(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    message.contains("relay rejected join") || message.contains("room closed while joining")
 }

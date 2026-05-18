@@ -504,7 +504,7 @@ Current responsibilities:
 - Bind a TCP listener.
 - Accept joiners.
 - Validate lobby capacity.
-- Reject duplicate active display names.
+- Assign unique display names by appending a numeric suffix when a joiner requests a duplicate active name.
 - Assign player ids and colors.
 - Track connected clients.
 - Track lobby readiness.

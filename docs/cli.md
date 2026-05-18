@@ -85,6 +85,12 @@ typekart host --name host --ai-racers 4 --ai-difficulty easy
 typekart host-lan --name host --ai-racers 4 --ai-difficulty hard
 ```
 
+The host can also add, remove, and retune AI racers from the lobby before starting:
+
+```text
+Press ? in the lobby for: ↑/↓ select | A add AI | X remove/kick | E easy | H hard
+```
+
 Use ASCII-safe item markers:
 
 ```sh

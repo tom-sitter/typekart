@@ -1,7 +1,6 @@
 //! Local terminal session state.
 //!
-//! Multiplayer will eventually have server snapshots and remote players. For
-//! Milestone 3, this type coordinates local typing, bonus claims, items, timed
+//! This type coordinates local typing, AI racers, bonus claims, items, timed
 //! effects, and display-facing event history.
 
 use std::{
@@ -51,6 +50,7 @@ pub struct LocalSession {
     ai_racer_count: usize,
     ai_difficulty: AiDifficulty,
     item_registry: ItemRegistry,
+    selected_ai_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +226,11 @@ pub enum LocalAction {
     Typing(KeyAction),
     ActivateItem,
     ActivateModifiedItem,
+    SelectPreviousRacer,
+    SelectNextRacer,
+    AddAi,
+    RemoveSelectedRacer,
+    SetSelectedAiDifficulty(AiDifficulty),
     // A full local reset: new track, new player state, new bonus layout.
     Restart,
 }
@@ -244,6 +249,14 @@ fn build_ai_racers(count: usize, difficulty: AiDifficulty, now: Instant) -> Vec<
             AiRacer::new(id, difficulty, words_per_minute, now)
         })
         .collect()
+}
+
+fn next_local_ai_id(ai_racers: &[AiRacer]) -> usize {
+    let mut id = 1;
+    while ai_racers.iter().any(|ai| ai.id == id) {
+        id += 1;
+    }
+    id
 }
 
 impl LocalSession {
@@ -292,6 +305,7 @@ impl LocalSession {
             ai_racer_count,
             ai_difficulty,
             item_registry,
+            selected_ai_index: 0,
         }
     }
 
@@ -335,6 +349,7 @@ impl LocalSession {
             ai_racer_count: 0,
             ai_difficulty: AiDifficulty::Easy,
             item_registry,
+            selected_ai_index: 0,
         }
     }
 
@@ -355,6 +370,11 @@ impl LocalSession {
             LocalAction::Typing(action) => self.apply_typing_action(action, now),
             LocalAction::ActivateItem => self.activate_item(ItemUse::Normal, now),
             LocalAction::ActivateModifiedItem => self.activate_item(ItemUse::Modified, now),
+            LocalAction::SelectPreviousRacer
+            | LocalAction::SelectNextRacer
+            | LocalAction::AddAi
+            | LocalAction::RemoveSelectedRacer
+            | LocalAction::SetSelectedAiDifficulty(_) => {}
             LocalAction::Restart => self.restart(now),
         }
         self.update_race_status(now);
@@ -368,6 +388,26 @@ impl LocalSession {
             }
             (RacePhase::WaitingForHost, LocalAction::Typing(KeyAction::Space)) => {
                 self.start_countdown(now);
+                true
+            }
+            (RacePhase::WaitingForHost, LocalAction::SelectPreviousRacer) => {
+                self.select_previous_ai();
+                true
+            }
+            (RacePhase::WaitingForHost, LocalAction::SelectNextRacer) => {
+                self.select_next_ai();
+                true
+            }
+            (RacePhase::WaitingForHost, LocalAction::AddAi) => {
+                self.add_ai_racer(now);
+                true
+            }
+            (RacePhase::WaitingForHost, LocalAction::RemoveSelectedRacer) => {
+                self.remove_selected_ai(now);
+                true
+            }
+            (RacePhase::WaitingForHost, LocalAction::SetSelectedAiDifficulty(difficulty)) => {
+                self.set_selected_ai_difficulty(difficulty, now);
                 true
             }
             (RacePhase::WaitingForHost | RacePhase::Countdown { .. }, _) => true,
@@ -408,6 +448,9 @@ impl LocalSession {
         self.track = track;
         self.player = player;
         self.ai_racers = ai_racers;
+        self.selected_ai_index = self
+            .selected_ai_index
+            .min(self.ai_racers.len().saturating_sub(1));
         self.bonuses = bonuses;
         self.bonus_attempt = None;
         self.attack_warning = None;
@@ -422,6 +465,91 @@ impl LocalSession {
             format!(
                 "restart words={} ai_racers={} difficulty={:?}",
                 self.word_count, self.ai_racer_count, self.ai_difficulty
+            ),
+        );
+    }
+
+    pub fn selected_ai_index(&self) -> Option<usize> {
+        (!self.ai_racers.is_empty()).then_some(self.selected_ai_index)
+    }
+
+    fn select_previous_ai(&mut self) {
+        self.selected_ai_index = self.selected_ai_index.saturating_sub(1);
+    }
+
+    fn select_next_ai(&mut self) {
+        if !self.ai_racers.is_empty() {
+            self.selected_ai_index = (self.selected_ai_index + 1).min(self.ai_racers.len() - 1);
+        }
+    }
+
+    fn add_ai_racer(&mut self, now: Instant) {
+        if self.ai_racers.len() >= MAX_AI_RACERS {
+            self.events.push("AI roster is full");
+            return;
+        }
+
+        self.ai_racer_count += 1;
+        let id = next_local_ai_id(&self.ai_racers);
+        let mut rng = thread_rng();
+        let words_per_minute = rng.gen_range(self.ai_difficulty.wpm_range());
+        let ai = AiRacer::new(id, self.ai_difficulty, words_per_minute, now);
+        let name = ai.name.clone();
+        self.ai_racers.push(ai);
+        self.selected_ai_index = self.ai_racers.len() - 1;
+        self.events.push(format!("{name} added"));
+        self.run_log.push(
+            now,
+            format!(
+                "{name} added difficulty={} wpm={:.0}",
+                self.ai_difficulty.name(),
+                words_per_minute
+            ),
+        );
+    }
+
+    fn remove_selected_ai(&mut self, now: Instant) {
+        if self.ai_racers.is_empty() {
+            self.events.push("No AI selected");
+            return;
+        }
+
+        let ai = self.ai_racers.remove(self.selected_ai_index);
+        self.ai_racer_count = self.ai_racer_count.saturating_sub(1);
+        self.selected_ai_index = self
+            .selected_ai_index
+            .min(self.ai_racers.len().saturating_sub(1));
+        self.events.push(format!("{} removed", ai.name));
+        self.run_log.push(now, format!("{} removed", ai.name));
+    }
+
+    fn set_selected_ai_difficulty(&mut self, difficulty: AiDifficulty, now: Instant) {
+        self.ai_difficulty = difficulty;
+        if self.ai_racers.is_empty() {
+            self.events
+                .push(format!("New AI difficulty {}", difficulty.name()));
+            self.run_log
+                .push(now, format!("default ai difficulty={}", difficulty.name()));
+            return;
+        }
+
+        let Some(ai) = self.ai_racers.get_mut(self.selected_ai_index) else {
+            return;
+        };
+        let mut rng = thread_rng();
+        ai.difficulty = difficulty;
+        ai.words_per_minute = rng.gen_range(difficulty.wpm_range());
+        ai.char_budget = 0.0;
+        ai.last_update = now;
+        self.events
+            .push(format!("{} set to {}", ai.name, difficulty.name()));
+        self.run_log.push(
+            now,
+            format!(
+                "{} difficulty={} wpm={:.0}",
+                ai.name,
+                difficulty.name(),
+                ai.words_per_minute
             ),
         );
     }
@@ -1876,6 +2004,35 @@ mod tests {
         );
 
         assert_eq!(session.ai_racers.len(), 6);
+    }
+
+    #[test]
+    fn local_lobby_can_add_remove_and_retune_ai_racers() {
+        let now = Instant::now();
+        let mut session = LocalSession::new(
+            track(&["one", "two"]),
+            PlayerState::new(now),
+            word_list(),
+            0,
+            AiDifficulty::Easy,
+            ItemRegistry::builtin(),
+            test_active_mod_config(),
+        );
+
+        session.apply_action(LocalAction::AddAi, now);
+        assert_eq!(session.ai_racers.len(), 1);
+        assert_eq!(session.selected_ai_index(), Some(0));
+
+        session.apply_action(
+            LocalAction::SetSelectedAiDifficulty(AiDifficulty::Hard),
+            now,
+        );
+        assert_eq!(session.ai_racers[0].difficulty, AiDifficulty::Hard);
+        assert!(session.ai_racers[0].words_per_minute >= 55.0);
+
+        session.apply_action(LocalAction::RemoveSelectedRacer, now);
+        assert!(session.ai_racers.is_empty());
+        assert_eq!(session.selected_ai_index(), None);
     }
 
     #[test]

@@ -30,11 +30,11 @@ Use the same `--ascii` setting on host and joiners when validating ASCII fallbac
 
 - Host appears in the lobby.
 - Joiners appear with unique colors.
-- Duplicate names are rejected.
+- Duplicate names receive a numeric suffix.
 - Full lobby join attempts show a clear rejection.
-- Joiners can press `Enter` to ready up in lobby/waiting phases.
+- Joiners can press `Enter` to ready up for the next race.
 - Typed `ready` and `unready` remain supported as fallback lobby commands.
-- Host can start with `Space` or `start` once connected players are ready.
+- Host can start with `Space` or `start` once at least two connected racers are ready.
 - Footer commands change by phase and do not show irrelevant race/result commands.
 - Lobby Events show joins, ready changes, disconnects, countdown start/cancel, and rematch transitions.
 

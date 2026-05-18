@@ -8,10 +8,10 @@
 use std::{
     collections::HashMap,
     io::{BufReader, ErrorKind},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -26,6 +26,7 @@ use super::{
 };
 
 type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
+const RELAY_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone)]
 pub struct OnlineHostBridgeConfig {
@@ -51,22 +52,25 @@ pub fn run_online_host_bridge(config: OnlineHostBridgeConfig) -> Result<()> {
         },
     )?;
     let room = wait_for_created_room(&mut websocket)?;
-    println!("Online room: {}", room.display());
-    println!(
-        "Join command: typekart join --name PLAYER --relay {} --room {}",
-        config.relay,
-        room.display()
-    );
     if let Some(ready_signal) = config.ready_signal {
         let _ = ready_signal.send(room.clone());
+    } else {
+        println!("Online room: {}", room.display());
+        println!(
+            "Join command: typekart join --name PLAYER --relay {} --room {}",
+            config.relay,
+            room.display()
+        );
     }
     set_plain_nonblocking(&mut websocket)?;
 
     let (outbound_tx, outbound_rx) = mpsc::channel();
     let mut participants = HashMap::<PlayerId, TcpStream>::new();
+    let mut last_keepalive = Instant::now();
 
     loop {
         drain_relay_outbound(&mut websocket, &outbound_rx)?;
+        send_keepalive_if_due(&mut websocket, &mut last_keepalive)?;
         match websocket.read() {
             Ok(Message::Text(text)) => {
                 let message = decode_relay_message(&text)?;
@@ -124,12 +128,14 @@ pub fn run_online_join_proxy(config: OnlineJoinProxyConfig) -> Result<()> {
         .context("failed to clone local join stream for reading")?;
     let room_for_reader = config.room.clone();
     let (outbound_tx, outbound_rx) = mpsc::channel();
+    let mut last_keepalive = Instant::now();
     thread::spawn(move || {
         forward_local_client_to_relay(read_stream, room_for_reader, relay_player_id, outbound_tx);
     });
 
     loop {
         drain_relay_outbound(&mut websocket, &outbound_rx)?;
+        send_keepalive_if_due(&mut websocket, &mut last_keepalive)?;
         match websocket.read() {
             Ok(Message::Text(text)) => {
                 let message = decode_relay_message(&text)?;
@@ -235,6 +241,15 @@ fn handle_host_relay_message(
                     .context("failed to forward relay client message to local host")?;
             }
         }
+        RelayServerMessage::ParticipantDisconnected {
+            room: disconnected_room,
+            player_id,
+        } if &disconnected_room == room => {
+            if let Some(mut local_stream) = participants.remove(&player_id) {
+                let _ = write_client_message(&mut local_stream, &ClientMessage::Leave);
+                let _ = local_stream.shutdown(Shutdown::Both);
+            }
+        }
         RelayServerMessage::Error { message } => {
             eprintln!("Relay error: {message}");
         }
@@ -296,8 +311,28 @@ fn forward_local_client_to_relay(
                     break;
                 }
             }
-            Ok(None) => break,
-            Err(_) => continue,
+            Ok(None) => {
+                let _ = send_relay_channel(
+                    &outbound_tx,
+                    RelayClientMessage::ClientToHost {
+                        room: room.clone(),
+                        player_id,
+                        message: ClientMessage::Leave,
+                    },
+                );
+                break;
+            }
+            Err(_) => {
+                let _ = send_relay_channel(
+                    &outbound_tx,
+                    RelayClientMessage::ClientToHost {
+                        room: room.clone(),
+                        player_id,
+                        message: ClientMessage::Leave,
+                    },
+                );
+                break;
+            }
         }
     }
 }
@@ -365,8 +400,13 @@ fn wait_for_join_welcome(
                     return Ok(player_id);
                 }
                 RelayServerMessage::Error { message } => {
-                    write_server_message(local_stream, &ServerMessage::Error { message })?;
-                    bail!("relay rejected join");
+                    write_server_message(
+                        local_stream,
+                        &ServerMessage::Error {
+                            message: message.clone(),
+                        },
+                    )?;
+                    bail!("relay rejected join: {message}");
                 }
                 RelayServerMessage::RoomClosed { reason } => {
                     write_server_message(
@@ -415,6 +455,16 @@ fn drain_relay_outbound(
     Ok(())
 }
 
+fn send_keepalive_if_due(websocket: &mut RelaySocket, last_keepalive: &mut Instant) -> Result<()> {
+    if last_keepalive.elapsed() >= RELAY_KEEPALIVE_INTERVAL {
+        websocket
+            .send(Message::Ping(Vec::new()))
+            .context("failed to send relay keepalive ping")?;
+        *last_keepalive = Instant::now();
+    }
+    Ok(())
+}
+
 fn send_relay_channel(
     outbound_tx: &Sender<RelayClientMessage>,
     message: RelayClientMessage,
@@ -438,6 +488,8 @@ fn decode_relay_message(text: &str) -> Result<RelayServerMessage> {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
+        io::BufReader,
         net::{SocketAddr, TcpStream},
         sync::mpsc,
         thread,
@@ -445,8 +497,8 @@ mod tests {
     };
 
     use super::{
-        OnlineHostBridgeConfig, OnlineJoinProxyConfig, join_version, run_online_host_bridge,
-        run_online_join_proxy,
+        OnlineHostBridgeConfig, OnlineJoinProxyConfig, handle_host_relay_message, join_version,
+        run_online_host_bridge, run_online_join_proxy,
     };
     use crate::{
         game::{
@@ -454,10 +506,11 @@ mod tests {
             words::WordSetDefinition,
         },
         net::{
-            protocol::{ClientMessage, ServerMessage},
+            protocol::{ClientMessage, PlayerId, ServerMessage},
+            relay::{RelayServerMessage, RoomCode},
             relay_server::{RelayConfig, run_relay},
             server::{HostConfig, run_host},
-            transport::{read_server_message, write_client_message},
+            transport::{read_client_message, read_server_message, write_client_message},
         },
     };
 
@@ -529,6 +582,37 @@ mod tests {
         assert!(matches!(welcome, ServerMessage::Welcome { .. }));
 
         write_client_message(&mut client, &ClientMessage::Leave).unwrap();
+    }
+
+    #[test]
+    fn host_bridge_turns_relay_participant_disconnect_into_local_leave() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let participant_stream = TcpStream::connect(address).unwrap();
+        let (host_side_stream, _) = listener.accept().unwrap();
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let player_id = PlayerId(2);
+        let (outbound_tx, _outbound_rx) = mpsc::channel();
+        let mut participants = HashMap::from([(player_id, participant_stream)]);
+
+        handle_host_relay_message(
+            RelayServerMessage::ParticipantDisconnected {
+                room: room.clone(),
+                player_id,
+            },
+            &room,
+            address,
+            &outbound_tx,
+            &mut participants,
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(host_side_stream);
+        assert_eq!(
+            read_client_message(&mut reader).unwrap(),
+            Some(ClientMessage::Leave)
+        );
+        assert!(!participants.contains_key(&player_id));
     }
 
     fn spawn_test_relay() -> SocketAddr {

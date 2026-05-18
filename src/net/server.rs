@@ -1,13 +1,9 @@
-//! Minimal TCP host for Milestone 4.
-//!
-//! The host currently supports a persistent lobby connection. Joiners can stay
-//! connected, receive lobby snapshots, and send simple readiness updates. Race
-//! snapshots and key input will be layered on this socket structure next.
+//! Authoritative TCP host for multiplayer races.
 
 use std::{
     collections::HashMap,
     io::{self, BufRead, BufReader},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -108,6 +104,8 @@ struct HostState {
     bonuses: BonusState,
     item_registry: ItemRegistry,
     active_mod_config: ActiveModConfig,
+    max_players: usize,
+    ai_difficulty: AiDifficulty,
     bonus_attempts: HashMap<PlayerId, NetworkBonusAttempt>,
     spent_bonus_gaps: HashMap<PlayerId, usize>,
     player_effects: HashMap<PlayerId, NetworkPlayerEffects>,
@@ -122,6 +120,7 @@ struct HostState {
 
 #[derive(Debug, Clone)]
 struct NetworkAiRacer {
+    difficulty: AiDifficulty,
     words_per_minute: f64,
     char_budget: f64,
     last_update: Instant,
@@ -204,6 +203,8 @@ pub fn run_host(config: HostConfig) -> Result<()> {
             color: COLOR_ROTATION[0],
             ready: true,
             connected: true,
+            ai_difficulty: None,
+            ai_wpm: None,
         });
         next_player_id = 2;
     }
@@ -224,6 +225,8 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         bonuses,
         item_registry: config.item_registry,
         active_mod_config: config.active_mod_config,
+        max_players: config.max_players,
+        ai_difficulty: config.ai_difficulty,
         bonus_attempts: HashMap::new(),
         spent_bonus_gaps: HashMap::new(),
         player_effects: HashMap::new(),
@@ -254,9 +257,9 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 continue;
             }
         };
-        let player_name = join_hello.name;
+        let requested_player_name = join_hello.name;
 
-        let (player_id, assigned_color) = {
+        let (player_id, assigned_color, player_name) = {
             let mut state = state.lock().expect("host state poisoned");
             if join_hello.client_version != env!("CARGO_PKG_VERSION") {
                 send_server_message(
@@ -272,7 +275,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                     &state.debug_log,
                     format!(
                         "join rejected: version mismatch name={} host_version={} client_version={}",
-                        player_name,
+                        requested_player_name,
                         env!("CARGO_PKG_VERSION"),
                         join_hello.client_version
                     ),
@@ -301,22 +304,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 continue;
             }
 
-            if state.players.iter().any(|player| {
-                player.connected && player.name.eq_ignore_ascii_case(player_name.trim())
-            }) {
-                send_server_message(
-                    stream,
-                    &ServerMessage::Error {
-                        message: format!("Name '{player_name}' is already in use"),
-                    },
-                )?;
-                push_network_log(
-                    &state.debug_log,
-                    format!("join rejected: duplicate name={player_name}"),
-                );
-                continue;
-            }
-
+            let player_name = unique_player_name(&requested_player_name, &state.players);
             let player_id = first_available_player_id(&state.players, next_player_id);
             let assigned_color = first_available_color(&state.players);
             let write_stream = match welcome_joiner(&stream, player_id, assigned_color) {
@@ -331,14 +319,11 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 player_id,
                 stream: write_stream,
             });
-            state.players.push(LobbyPlayer {
-                id: player_id,
-                name: player_name.clone(),
-                kind: PlayerKind::Human,
-                color: assigned_color,
-                ready: false,
-                connected: true,
-            });
+            state.players.push(new_human_lobby_player(
+                player_id,
+                player_name.clone(),
+                assigned_color,
+            ));
             if matches!(
                 state.phase,
                 NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
@@ -361,7 +346,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
             print_lobby_snapshot(&state.players);
             broadcast_lobby_snapshot(&mut state)?;
 
-            (player_id, assigned_color)
+            (player_id, assigned_color, player_name)
         };
 
         server_println!(
@@ -397,6 +382,7 @@ fn add_network_ai_racers(
             player_id,
             NetworkAiRacer {
                 words_per_minute: rng.gen_range(ai_difficulty.wpm_range()),
+                difficulty: ai_difficulty,
                 char_budget: 0.0,
                 last_update: now,
             },
@@ -408,6 +394,10 @@ fn add_network_ai_racers(
             color,
             ready: true,
             connected: true,
+            ai_difficulty: Some(ai_difficulty.into()),
+            ai_wpm: ai_racers
+                .get(&player_id)
+                .map(|racer| racer.words_per_minute.round() as u32),
         });
     }
     ai_racers
@@ -478,6 +468,240 @@ fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
     print_lobby_snapshot(&state.players);
     if let Err(error) = broadcast_lobby_snapshot(&mut state) {
         server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+    }
+}
+
+fn lobby_can_manage_roster(state: &HostState) -> bool {
+    matches!(
+        state.phase,
+        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
+    )
+}
+
+fn add_lobby_ai_racer(state: &mut HostState) -> Result<()> {
+    if !lobby_can_manage_roster(state) {
+        bail!("AI racers can only be changed in the lobby");
+    }
+    if connected_player_count(&state.players) >= state.max_players {
+        bail!("Lobby is full");
+    }
+
+    let player_id = first_available_player_id(&state.players, 2);
+    let color = first_available_color(&state.players);
+    let name = next_ai_name(&state.players);
+    let now = Instant::now();
+    let mut rng = thread_rng();
+    let words_per_minute = rng.gen_range(state.ai_difficulty.wpm_range());
+
+    state
+        .race
+        .add_player(RacePlayerId(player_id.0), name.clone(), color.into(), now);
+    state.ai_racers.insert(
+        player_id,
+        NetworkAiRacer {
+            difficulty: state.ai_difficulty,
+            words_per_minute,
+            char_budget: 0.0,
+            last_update: now,
+        },
+    );
+    state.players.push(LobbyPlayer {
+        id: player_id,
+        name: name.clone(),
+        kind: PlayerKind::Bot,
+        color,
+        ready: true,
+        connected: true,
+        ai_difficulty: Some(state.ai_difficulty.into()),
+        ai_wpm: Some(words_per_minute.round() as u32),
+    });
+    push_event(state, format!("{name} added"));
+    push_network_log(
+        &state.debug_log,
+        format!(
+            "ai added player={} difficulty={} wpm={:.0}",
+            player_id.0,
+            state.ai_difficulty.name(),
+            words_per_minute
+        ),
+    );
+
+    Ok(())
+}
+
+fn remove_lobby_player(state: &mut HostState, player_id: PlayerId) -> Result<()> {
+    if !lobby_can_manage_roster(state) {
+        bail!("Racers can only be removed in the lobby");
+    }
+    if player_id == PlayerId(1) {
+        bail!("Host cannot be removed");
+    }
+
+    let Some(player) = state.players.iter().find(|player| player.id == player_id) else {
+        bail!("Selected racer is no longer in the lobby");
+    };
+    let name = player.name.clone();
+    let kind = player.kind;
+
+    if kind == PlayerKind::Human {
+        for client in state
+            .clients
+            .iter_mut()
+            .filter(|client| client.player_id == player_id)
+        {
+            let _ = write_server_message(
+                &mut client.stream,
+                &ServerMessage::Error {
+                    message: "Kicked by host".to_string(),
+                },
+            );
+            let _ = client.stream.shutdown(Shutdown::Both);
+        }
+        state.clients.retain(|client| client.player_id != player_id);
+    }
+
+    state.players.retain(|player| player.id != player_id);
+    state
+        .race
+        .players
+        .retain(|player| player.id != RacePlayerId(player_id.0));
+    state.ai_racers.remove(&player_id);
+    state.bonus_attempts.remove(&player_id);
+    state.spent_bonus_gaps.remove(&player_id);
+    state.player_effects.remove(&player_id);
+    push_event(
+        state,
+        match kind {
+            PlayerKind::Human => format!("{name} kicked"),
+            PlayerKind::Bot => format!("{name} removed"),
+        },
+    );
+    push_network_log(
+        &state.debug_log,
+        format!(
+            "lobby removed player={} name={name} kind={kind:?}",
+            player_id.0
+        ),
+    );
+
+    Ok(())
+}
+
+fn set_lobby_ai_difficulty(
+    state: &mut HostState,
+    player_id: Option<PlayerId>,
+    difficulty: AiDifficulty,
+) -> Result<()> {
+    if !lobby_can_manage_roster(state) {
+        bail!("AI difficulty can only be changed in the lobby");
+    }
+
+    state.ai_difficulty = difficulty;
+    let Some(player_id) = player_id else {
+        push_event(
+            state,
+            format!("New AI difficulty set to {}", difficulty.name()),
+        );
+        push_network_log(
+            &state.debug_log,
+            format!("default ai difficulty={}", difficulty.name()),
+        );
+        return Ok(());
+    };
+
+    let Some(ai) = state.ai_racers.get_mut(&player_id) else {
+        push_event(
+            state,
+            format!("New AI difficulty set to {}", difficulty.name()),
+        );
+        push_network_log(
+            &state.debug_log,
+            format!("default ai difficulty={}", difficulty.name()),
+        );
+        return Ok(());
+    };
+
+    let mut rng = thread_rng();
+    ai.difficulty = difficulty;
+    ai.words_per_minute = rng.gen_range(difficulty.wpm_range());
+    let words_per_minute = ai.words_per_minute;
+    ai.char_budget = 0.0;
+    ai.last_update = Instant::now();
+    let _ = ai;
+    if let Some(player) = state
+        .players
+        .iter_mut()
+        .find(|player| player.id == player_id)
+    {
+        player.ai_difficulty = Some(difficulty.into());
+        player.ai_wpm = Some(words_per_minute.round() as u32);
+        let name = player.name.clone();
+        let _ = player;
+        push_event(state, format!("{name} set to {}", difficulty.name()));
+        push_network_log(
+            &state.debug_log,
+            format!(
+                "ai difficulty player={} difficulty={} wpm={:.0}",
+                player_id.0,
+                difficulty.name(),
+                words_per_minute
+            ),
+        );
+    }
+
+    Ok(())
+}
+
+fn next_ai_name(players: &[LobbyPlayer]) -> String {
+    let mut index = 1;
+    loop {
+        let name = format!("ai-{index}");
+        if !players
+            .iter()
+            .any(|player| player.name.eq_ignore_ascii_case(&name))
+        {
+            return name;
+        }
+        index += 1;
+    }
+}
+
+fn unique_player_name(requested_name: &str, players: &[LobbyPlayer]) -> String {
+    let base_name = requested_name.trim();
+    if !connected_name_exists(base_name, players) {
+        return base_name.to_string();
+    }
+
+    let mut suffix = 2;
+    loop {
+        let candidate = format!("{base_name}{suffix}");
+        if !connected_name_exists(&candidate, players) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+fn connected_name_exists(name: &str, players: &[LobbyPlayer]) -> bool {
+    players
+        .iter()
+        .any(|player| player.connected && player.name.eq_ignore_ascii_case(name))
+}
+
+fn new_human_lobby_player(
+    id: PlayerId,
+    name: impl Into<String>,
+    color: AssignedColor,
+) -> LobbyPlayer {
+    LobbyPlayer {
+        id,
+        name: name.into(),
+        kind: PlayerKind::Human,
+        color,
+        ready: id == PlayerId(1),
+        connected: true,
+        ai_difficulty: None,
+        ai_wpm: None,
     }
 }
 
@@ -560,6 +784,15 @@ fn connected_player_count(players: &[LobbyPlayer]) -> usize {
     players.iter().filter(|player| player.connected).count()
 }
 
+fn current_race_connected_player_count(state: &HostState) -> usize {
+    state
+        .race
+        .players
+        .iter()
+        .filter(|player| player.connected)
+        .count()
+}
+
 fn first_available_player_id(players: &[LobbyPlayer], start_at: u64) -> PlayerId {
     let mut id = start_at;
     while players.iter().any(|player| player.id == PlayerId(id)) {
@@ -592,19 +825,6 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         match message {
             ClientMessage::SetReady { ready } => {
                 let mut state = state.lock().expect("host state poisoned");
-                if !matches!(
-                    state.phase,
-                    NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
-                ) {
-                    push_network_log(
-                        &state.debug_log,
-                        format!(
-                            "ignored ready={} from player={} phase={:?}",
-                            ready, player_id.0, state.phase
-                        ),
-                    );
-                    continue;
-                }
                 if let Some(player) = state
                     .players
                     .iter_mut()
@@ -636,6 +856,39 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                         "Ignoring start request from non-host player {}",
                         player_id.0
                     );
+                }
+            }
+            ClientMessage::AddAi if player_id == PlayerId(1) => {
+                let mut state = state.lock().expect("host state poisoned");
+                if let Err(error) = add_lobby_ai_racer(&mut state) {
+                    push_event(&mut state, error.to_string());
+                }
+                print_lobby_snapshot(&state.players);
+                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
+                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+                }
+            }
+            ClientMessage::RemoveLobbyPlayer { player_id: target } if player_id == PlayerId(1) => {
+                let mut state = state.lock().expect("host state poisoned");
+                if let Err(error) = remove_lobby_player(&mut state, target) {
+                    push_event(&mut state, error.to_string());
+                }
+                print_lobby_snapshot(&state.players);
+                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
+                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+                }
+            }
+            ClientMessage::SetAiDifficulty {
+                player_id: target,
+                difficulty,
+            } if player_id == PlayerId(1) => {
+                let mut state = state.lock().expect("host state poisoned");
+                if let Err(error) = set_lobby_ai_difficulty(&mut state, target, difficulty.into()) {
+                    push_event(&mut state, error.to_string());
+                }
+                print_lobby_snapshot(&state.players);
+                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
+                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
                 }
             }
             ClientMessage::RestartRace => {
@@ -685,6 +938,28 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
     }
 
     let mut state = state.lock().expect("host state poisoned");
+    let was_race_screen_phase = matches!(
+        state.phase,
+        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing | NetworkRacePhase::Finished
+    );
+    if handle_player_disconnect(&mut state, player_id, std::time::Instant::now()) {
+        return;
+    }
+    print_lobby_snapshot(&state.players);
+    if let Err(error) = broadcast_lobby_snapshot(&mut state) {
+        server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+    }
+    if was_race_screen_phase && let Err(error) = broadcast_race_snapshot(&mut state) {
+        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+    }
+    if state.phase == NetworkRacePhase::Finished
+        && let Err(error) = broadcast_race_results_once(&mut state)
+    {
+        server_eprintln!("Failed to broadcast race results: {error:#}");
+    }
+}
+
+fn handle_player_disconnect(state: &mut HostState, player_id: PlayerId, now: Instant) -> bool {
     if let Some(player) = state
         .players
         .iter_mut()
@@ -694,7 +969,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         player.connected = false;
         player.ready = false;
         server_println!("{name} disconnected");
-        push_event(&mut state, format!("{name} disconnected"));
+        push_event(state, format!("{name} disconnected"));
         push_network_log(&state.debug_log, format!("{name} disconnected"));
     }
     if let Some(player) = state
@@ -709,23 +984,43 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
     state.spent_bonus_gaps.remove(&player_id);
     state.player_effects.remove(&player_id);
     state.clients.retain(|client| client.player_id != player_id);
-    let was_race_screen_phase = matches!(
-        state.phase,
-        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing | NetworkRacePhase::Finished
-    );
-    reconcile_phase_after_disconnect(&mut state, std::time::Instant::now());
-    cleanup_disconnected_waiting_players(&mut state);
-    print_lobby_snapshot(&state.players);
-    if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-        server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
+
+    if player_id == PlayerId(1) {
+        close_game_for_joiners(state, "Game closed: host left");
+        return true;
     }
-    if was_race_screen_phase && let Err(error) = broadcast_race_snapshot(&mut state) {
-        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+
+    reconcile_phase_after_disconnect(state, now);
+    cleanup_disconnected_waiting_players(state);
+    false
+}
+
+fn close_game_for_joiners(state: &mut HostState, message: &str) {
+    push_event(state, message.to_string());
+    push_network_log(&state.debug_log, message);
+
+    let message = ServerMessage::Error {
+        message: message.to_string(),
+    };
+    for client in &mut state.clients {
+        if let Err(error) = write_server_message(&mut client.stream, &message) {
+            server_eprintln!(
+                "Failed to send close message to player {}: {error:#}",
+                client.player_id.0
+            );
+        }
+        let _ = client.stream.shutdown(Shutdown::Both);
     }
-    if state.phase == NetworkRacePhase::Finished
-        && let Err(error) = broadcast_race_results_once(&mut state)
-    {
-        server_eprintln!("Failed to broadcast race results: {error:#}");
+    state.clients.clear();
+
+    for player in &mut state.players {
+        if player.kind == PlayerKind::Human {
+            player.connected = false;
+            player.ready = false;
+        }
+    }
+    for player in &mut state.race.players {
+        player.connected = false;
     }
 }
 
@@ -781,13 +1076,14 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
     let should_start = {
         let mut state = state.lock().expect("host state poisoned");
         match state.phase {
-            NetworkRacePhase::WaitingForHost | NetworkRacePhase::Lobby => {}
-            NetworkRacePhase::Finished => {
+            NetworkRacePhase::WaitingForHost
+            | NetworkRacePhase::Lobby
+            | NetworkRacePhase::Finished => {
                 if let Err(error) = reset_race_from_lobby(&mut state) {
-                    server_eprintln!("Failed to prepare rematch: {error:#}");
+                    server_eprintln!("Failed to prepare race: {error:#}");
                     push_network_log(
                         &state.debug_log,
-                        format!("failed to prepare rematch: {error:#}"),
+                        format!("failed to prepare race: {error:#}"),
                     );
                     return;
                 }
@@ -798,13 +1094,8 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
             }
         }
 
-        if connected_player_count(&state.players) < 2 {
-            server_println!("Cannot start: at least two connected players are required");
-            return;
-        }
-
-        if !all_connected_players_ready(&state.players) {
-            server_println!("Cannot start: all connected players must be ready");
+        if current_race_connected_player_count(&state) < 2 {
+            server_println!("Cannot start: at least two ready connected racers are required");
             return;
         }
 
@@ -833,7 +1124,11 @@ fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
         .context("failed to generate rematch track")?;
     state.race = RaceState::new(track);
     let now = Instant::now();
-    for player in state.players.iter().filter(|player| player.connected) {
+    for player in state
+        .players
+        .iter()
+        .filter(|player| player.connected && player.ready)
+    {
         state.race.add_player(
             RacePlayerId(player.id.0),
             player.name.clone(),
@@ -2035,13 +2330,6 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
     });
 }
 
-fn all_connected_players_ready(players: &[LobbyPlayer]) -> bool {
-    players
-        .iter()
-        .filter(|player| player.connected)
-        .all(|player| player.ready)
-}
-
 fn reconcile_phase_after_disconnect(state: &mut HostState, now: Instant) {
     match state.phase {
         NetworkRacePhase::Countdown { .. } => {
@@ -2126,9 +2414,6 @@ fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
 
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
-        if !client_is_in_current_race(&state.race, client.player_id) {
-            continue;
-        }
         if let Err(error) = write_server_message(&mut client.stream, &snapshot) {
             server_eprintln!(
                 "Failed to send race snapshot to player {}: {error:#}",
@@ -2188,9 +2473,6 @@ fn broadcast_race_results(state: &mut HostState) -> Result<()> {
 
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
-        if !client_is_in_current_race(&state.race, client.player_id) {
-            continue;
-        }
         if let Err(error) = write_server_message(&mut client.stream, &results) {
             server_eprintln!(
                 "Failed to send race results to player {}: {error:#}",
@@ -2206,6 +2488,7 @@ fn broadcast_race_results(state: &mut HostState) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
     race.players
         .iter()
@@ -2582,13 +2865,15 @@ mod tests {
 
     use super::{
         AssignedColor, ConnectedClient, HostState, NetworkAiRacer, NetworkRacePhase,
-        POST_FIRST_FINISH_TIMEOUT, PlayerId, activate_network_pickup, add_network_ai_racers,
-        advance_network_ai_racers, all_connected_players_ready, apply_network_banana_to_player,
+        POST_FIRST_FINISH_TIMEOUT, PlayerId, activate_network_pickup, add_lobby_ai_racer,
+        add_network_ai_racers, advance_network_ai_racers, apply_network_banana_to_player,
         apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
-        build_race_result_rows, build_race_snapshot, cleanup_disconnected_waiting_players,
-        client_is_in_current_race, connected_player_count, first_available_color,
-        handle_client_messages, push_event, read_join_hello, reconcile_phase_after_disconnect,
-        reset_race_from_lobby, return_to_lobby_for_rematch, update_host_ready, update_race_status,
+        broadcast_race_snapshot, build_race_result_rows, build_race_snapshot,
+        cleanup_disconnected_waiting_players, client_is_in_current_race, connected_player_count,
+        first_available_color, handle_client_messages, handle_player_disconnect,
+        new_human_lobby_player, push_event, read_join_hello, reconcile_phase_after_disconnect,
+        remove_lobby_player, reset_race_from_lobby, return_to_lobby_for_rematch,
+        set_lobby_ai_difficulty, unique_player_name, update_host_ready, update_race_status,
         validate_host_capacity, welcome_joiner,
     };
     use crate::game::{
@@ -2624,6 +2909,8 @@ mod tests {
                 color: AssignedColor::Red,
                 ready: false,
                 connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
             }
         });
 
@@ -2672,6 +2959,24 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_human_names_get_numbered_suffixes() {
+        let players = vec![
+            lobby_player(PlayerId(1), "tom", PlayerKind::Human, true),
+            lobby_player(PlayerId(2), "Tom2", PlayerKind::Human, true),
+            lobby_player(PlayerId(3), "tom3", PlayerKind::Human, false),
+        ];
+
+        assert_eq!(unique_player_name("tom", &players), "tom3");
+        assert_eq!(unique_player_name("alex", &players), "alex");
+    }
+
+    #[test]
+    fn first_human_joiner_is_host_and_starts_ready() {
+        assert!(new_human_lobby_player(PlayerId(1), "host", AssignedColor::Cyan).ready);
+        assert!(!new_human_lobby_player(PlayerId(2), "joiner", AssignedColor::Red).ready);
+    }
+
+    #[test]
     fn lobby_snapshot_broadcasts_to_connected_clients() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -2692,6 +2997,8 @@ mod tests {
                 bonuses: test_bonus_state(),
                 item_registry: ItemRegistry::builtin(),
                 active_mod_config: test_active_mod_config(),
+                max_players: 6,
+                ai_difficulty: AiDifficulty::Easy,
                 bonus_attempts: HashMap::new(),
                 spent_bonus_gaps: HashMap::new(),
                 player_effects: HashMap::new(),
@@ -2749,6 +3056,8 @@ mod tests {
                 bonuses: test_bonus_state(),
                 item_registry: ItemRegistry::builtin(),
                 active_mod_config: test_active_mod_config(),
+                max_players: 6,
+                ai_difficulty: AiDifficulty::Easy,
                 bonus_attempts: HashMap::new(),
                 spent_bonus_gaps: HashMap::new(),
                 player_effects: HashMap::new(),
@@ -2803,8 +3112,10 @@ mod tests {
                 name: "host".to_string(),
                 kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
-                ready: false,
+                ready: true,
                 connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
             },
             LobbyPlayer {
                 id: PlayerId(2),
@@ -2813,6 +3124,8 @@ mod tests {
                 color: AssignedColor::Red,
                 ready: false,
                 connected: false,
+                ai_difficulty: None,
+                ai_wpm: None,
             },
         ];
 
@@ -2857,6 +3170,7 @@ mod tests {
         state.ai_racers.insert(
             PlayerId(2),
             NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
                 words_per_minute: 60.0,
                 char_budget: 0.0,
                 last_update: now,
@@ -2878,6 +3192,7 @@ mod tests {
         state.ai_racers.insert(
             PlayerId(2),
             NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
                 words_per_minute: 120.0,
                 char_budget: 0.0,
                 last_update: now,
@@ -2909,6 +3224,7 @@ mod tests {
         state.ai_racers.insert(
             PlayerId(2),
             NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
                 words_per_minute: 120.0,
                 char_budget: 4.0,
                 last_update: now - Duration::from_secs(10),
@@ -2942,6 +3258,7 @@ mod tests {
         state.ai_racers.insert(
             PlayerId(2),
             NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
                 words_per_minute: 60.0,
                 char_budget: 0.0,
                 last_update: now,
@@ -2972,6 +3289,7 @@ mod tests {
         state.ai_racers.insert(
             PlayerId(2),
             NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
                 words_per_minute: 60.0,
                 char_budget: 0.0,
                 last_update: now,
@@ -3007,6 +3325,7 @@ mod tests {
         state.ai_racers.insert(
             PlayerId(2),
             NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
                 words_per_minute: 60.0,
                 char_budget: 3.0,
                 last_update: now,
@@ -3059,6 +3378,53 @@ mod tests {
     }
 
     #[test]
+    fn joiner_disconnect_is_removed_from_waiting_lobby_with_event() {
+        let mut state = test_host_state(NetworkRacePhase::WaitingForHost);
+
+        let closed_game =
+            handle_player_disconnect(&mut state, PlayerId(2), std::time::Instant::now());
+
+        assert!(!closed_game);
+        assert_eq!(state.players.len(), 1);
+        assert_eq!(state.race.players.len(), 1);
+        assert!(state.players.iter().all(|player| player.id != PlayerId(2)));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event == "alex disconnected")
+        );
+    }
+
+    #[test]
+    fn host_disconnect_sends_game_closed_to_joiners() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut remote_client = std::net::TcpStream::connect(address).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+        let mut state = test_host_state(NetworkRacePhase::WaitingForHost);
+        state.clients.push(ConnectedClient {
+            player_id: PlayerId(2),
+            stream: server_stream,
+        });
+
+        let closed_game =
+            handle_player_disconnect(&mut state, PlayerId(1), std::time::Instant::now());
+
+        let mut reader = BufReader::new(&mut remote_client);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+
+        assert!(closed_game);
+        assert!(state.clients.is_empty());
+        assert!(matches!(
+            decode_server_message(line.trim_end()).unwrap(),
+            ServerMessage::Error { ref message } if message == "Game closed: host left"
+        ));
+        assert!(state.players.iter().all(|player| !player.connected));
+    }
+
+    #[test]
     fn rematch_rebuilds_race_from_connected_lobby_players() {
         let mut state = test_host_state(NetworkRacePhase::Finished);
         state.placements = vec![PlayerId(2), PlayerId(1)];
@@ -3070,6 +3436,8 @@ mod tests {
             color: AssignedColor::Green,
             ready: true,
             connected: true,
+            ai_difficulty: None,
+            ai_wpm: None,
         });
 
         reset_race_from_lobby(&mut state).unwrap();
@@ -3089,6 +3457,19 @@ mod tests {
     }
 
     #[test]
+    fn race_rebuild_excludes_unready_lobby_players() {
+        let mut state = test_host_state(NetworkRacePhase::WaitingForHost);
+        state.players[0].ready = true;
+        state.players[1].ready = false;
+
+        reset_race_from_lobby(&mut state).unwrap();
+
+        assert!(client_is_in_current_race(&state.race, PlayerId(1)));
+        assert!(!client_is_in_current_race(&state.race, PlayerId(2)));
+        assert!(state.players.iter().any(|player| player.id == PlayerId(2)));
+    }
+
+    #[test]
     fn late_joiner_is_not_part_of_current_race_until_rematch() {
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.players.push(LobbyPlayer {
@@ -3098,6 +3479,8 @@ mod tests {
             color: AssignedColor::Green,
             ready: true,
             connected: true,
+            ai_difficulty: None,
+            ai_wpm: None,
         });
 
         assert!(!client_is_in_current_race(&state.race, PlayerId(3)));
@@ -3130,6 +3513,7 @@ mod tests {
         state.ai_racers.insert(
             PlayerId(2),
             NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
                 words_per_minute: 60.0,
                 char_budget: 5.0,
                 last_update: now - Duration::from_secs(5),
@@ -3150,6 +3534,50 @@ mod tests {
     }
 
     #[test]
+    fn host_can_add_remove_and_retune_ai_in_lobby() {
+        let mut state = test_host_state(NetworkRacePhase::WaitingForHost);
+
+        add_lobby_ai_racer(&mut state).unwrap();
+
+        let ai_player = state
+            .players
+            .iter()
+            .find(|player| player.kind == PlayerKind::Bot)
+            .unwrap()
+            .clone();
+        assert!(state.ai_racers.contains_key(&ai_player.id));
+        assert!(client_is_in_current_race(&state.race, ai_player.id));
+
+        set_lobby_ai_difficulty(&mut state, Some(ai_player.id), AiDifficulty::Hard).unwrap();
+
+        let ai_player = state
+            .players
+            .iter()
+            .find(|player| player.id == ai_player.id)
+            .unwrap();
+        assert_eq!(ai_player.ai_difficulty, Some(AiDifficulty::Hard.into()));
+        assert!(state.ai_racers.get(&ai_player.id).unwrap().words_per_minute >= 55.0);
+
+        let ai_player_id = ai_player.id;
+        remove_lobby_player(&mut state, ai_player_id).unwrap();
+
+        assert!(!state.ai_racers.contains_key(&ai_player_id));
+        assert!(!state.players.iter().any(|player| player.id == ai_player_id));
+        assert!(!client_is_in_current_race(&state.race, ai_player_id));
+    }
+
+    #[test]
+    fn host_can_kick_joiner_in_lobby_but_not_self() {
+        let mut state = test_host_state(NetworkRacePhase::WaitingForHost);
+
+        assert!(remove_lobby_player(&mut state, PlayerId(1)).is_err());
+        remove_lobby_player(&mut state, PlayerId(2)).unwrap();
+
+        assert!(!state.players.iter().any(|player| player.id == PlayerId(2)));
+        assert!(!client_is_in_current_race(&state.race, PlayerId(2)));
+    }
+
+    #[test]
     fn host_ready_command_updates_host_player() {
         let state = Arc::new(Mutex::new(HostState {
             clients: Vec::new(),
@@ -3158,8 +3586,10 @@ mod tests {
                 name: "host".to_string(),
                 kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
-                ready: false,
+                ready: true,
                 connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
             }],
             race: test_race_state(),
             ai_racers: HashMap::new(),
@@ -3167,6 +3597,8 @@ mod tests {
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
+            max_players: 6,
+            ai_difficulty: AiDifficulty::Easy,
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -3186,17 +3618,6 @@ mod tests {
     }
 
     #[test]
-    fn connected_players_must_all_be_ready_before_countdown() {
-        let mut players = test_players(false);
-        players[0].ready = true;
-
-        assert!(!all_connected_players_ready(&players));
-
-        players[1].connected = false;
-        assert!(all_connected_players_ready(&players));
-    }
-
-    #[test]
     fn race_snapshot_includes_phase_players_and_recent_events() {
         let mut state = HostState {
             clients: Vec::new(),
@@ -3207,6 +3628,8 @@ mod tests {
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
+            max_players: 6,
+            ai_difficulty: AiDifficulty::Easy,
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -3250,6 +3673,8 @@ mod tests {
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
+            max_players: 6,
+            ai_difficulty: AiDifficulty::Easy,
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -3281,6 +3706,34 @@ mod tests {
         assert_eq!(alex.word_index, 0);
         assert_eq!(alex.input, "o");
         assert_eq!(alex.typo_index, None);
+    }
+
+    #[test]
+    fn race_snapshots_are_broadcast_to_lobby_observers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let observer_stream = stream.try_clone().unwrap();
+            let mut state = test_host_state(NetworkRacePhase::Racing);
+            state.clients.push(ConnectedClient {
+                player_id: PlayerId(9),
+                stream: observer_stream,
+            });
+            broadcast_race_snapshot(&mut state).unwrap();
+        });
+
+        let client = std::net::TcpStream::connect(address).unwrap();
+        let mut reader = BufReader::new(client);
+        let mut snapshot_line = String::new();
+        reader.read_line(&mut snapshot_line).unwrap();
+
+        assert!(matches!(
+            decode_server_message(snapshot_line.trim_end()).unwrap(),
+            ServerMessage::RaceSnapshot(_)
+        ));
+        server.join().unwrap();
     }
 
     #[test]
@@ -3526,6 +3979,8 @@ mod tests {
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
+            max_players: 6,
+            ai_difficulty: AiDifficulty::Easy,
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -3564,6 +4019,8 @@ mod tests {
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
+            max_players: 6,
+            ai_difficulty: AiDifficulty::Easy,
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -3654,6 +4111,8 @@ mod tests {
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
+            max_players: 6,
+            ai_difficulty: AiDifficulty::Easy,
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),
@@ -3719,6 +4178,19 @@ mod tests {
         writeln!(client, "{hello}").unwrap();
     }
 
+    fn lobby_player(id: PlayerId, name: &str, kind: PlayerKind, connected: bool) -> LobbyPlayer {
+        LobbyPlayer {
+            id,
+            name: name.to_string(),
+            kind,
+            color: AssignedColor::Cyan,
+            ready: false,
+            connected,
+            ai_difficulty: None,
+            ai_wpm: None,
+        }
+    }
+
     fn test_players(joiner_ready: bool) -> Vec<LobbyPlayer> {
         vec![
             LobbyPlayer {
@@ -3726,8 +4198,10 @@ mod tests {
                 name: "host".to_string(),
                 kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
-                ready: false,
+                ready: true,
                 connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
             },
             LobbyPlayer {
                 id: PlayerId(2),
@@ -3736,6 +4210,8 @@ mod tests {
                 color: AssignedColor::Red,
                 ready: joiner_ready,
                 connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
             },
         ]
     }
@@ -3811,6 +4287,8 @@ mod tests {
             bonuses: test_bonus_state(),
             item_registry: ItemRegistry::builtin(),
             active_mod_config: test_active_mod_config(),
+            max_players: 6,
+            ai_difficulty: AiDifficulty::Easy,
             bonus_attempts: HashMap::new(),
             spent_bonus_gaps: HashMap::new(),
             player_effects: HashMap::new(),

@@ -61,7 +61,7 @@ enum Command {
         #[arg(long)]
         debug_log: Option<PathBuf>,
     },
-    /// Host an online multiplayer lobby through a WebSocket relay.
+    /// Host an online multiplayer lobby
     Host {
         /// Display name for the host player.
         #[arg(long)]
@@ -140,7 +140,7 @@ enum Command {
         #[arg(long = "ascii")]
         ascii_icons: bool,
     },
-    /// Join an online multiplayer lobby through a WebSocket relay.
+    /// Join an online multiplayer lobby
     Join {
         /// Display name for this player.
         #[arg(long)]

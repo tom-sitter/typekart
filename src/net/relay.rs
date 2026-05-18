@@ -133,6 +133,10 @@ pub enum RelayServerMessage {
     RoomClosed {
         reason: String,
     },
+    ParticipantDisconnected {
+        room: RoomCode,
+        player_id: PlayerId,
+    },
 }
 
 #[cfg(test)]

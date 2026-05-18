@@ -52,13 +52,17 @@ If joiners cannot connect, check that the host firewall allows inbound traffic o
 
 - The host starts ready.
 - Joiners press `Enter` to ready or unready.
-- The host presses `Space` to start once connected racers are ready.
+- The host can use `Up` and `Down` to select lobby rows.
+- The host can press `A` to add an AI racer.
+- The host can press `X` to remove the selected AI racer or kick the selected human joiner.
+- The host can press `E` or `H` to set Easy or Hard AI difficulty for the selected AI. If a human is selected, this changes the default difficulty for newly added AIs.
+- The host presses `Space` to start with ready connected racers. Unready players stay in the lobby and can ready for the next race.
 - During countdown, input is locked and the track text is grey.
 - If too few connected racers remain during countdown, the game returns to the lobby.
-- Players who join while a race is active wait in the lobby and can join the next race.
+- Players who join or ready up while a race is active can watch the current race from the lobby and join the next race.
 - After results, the host can return to the lobby or start a rematch with connected lobby players.
 
-Typed lifecycle commands are still supported as fallbacks when visible in the footer.
+The footer shows the primary phase command plus `? help`. Press `?` to show or hide a centered command overlay with lobby management controls and typed command fallbacks.
 
 ## Version Compatibility
 
@@ -77,7 +81,16 @@ The host can add server-owned AI racers:
 typekart host --name host --ai-racers 4 --ai-difficulty easy
 ```
 
-AI racers participate in the authoritative host simulation, can collect items, and appear to all clients.
+The host can also add, remove, and retune AI racers from the lobby before the race starts. AI racers participate in the authoritative host simulation, can collect items, and appear to all clients.
+
+## Kicking Players
+
+The host can kick a human joiner from the lobby by selecting that player and pressing `X`.
+
+- Duplicate connected player names receive a numeric suffix.
+- Disconnected players do not reserve their old name.
+- The host cannot kick themselves.
+- Kicks are only available before the countdown or race starts.
 
 ## Diagnostics
 
