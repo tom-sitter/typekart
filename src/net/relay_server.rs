@@ -969,6 +969,22 @@ mod tests {
     }
 
     #[test]
+    fn health_check_request_matches_only_plain_health_http() {
+        assert!(super::is_health_check_request(
+            "GET /healthz HTTP/1.1\r\nHost: relay\r\n\r\n"
+        ));
+        assert!(super::is_health_check_request(
+            "HEAD /healthz HTTP/1.1\r\nHost: relay\r\n\r\n"
+        ));
+        assert!(!super::is_health_check_request(
+            "GET / HTTP/1.1\r\nHost: relay\r\n\r\n"
+        ));
+        assert!(!super::is_health_check_request(
+            "GET /healthz HTTP/1.1\r\nHost: relay\r\nUpgrade: websocket\r\n\r\n"
+        ));
+    }
+
+    #[test]
     fn idle_room_sweeper_removes_stale_rooms_without_new_messages() {
         let state = Arc::new(Mutex::new(RelayState::default()));
         let (host_tx, host_rx) = mpsc::channel();
