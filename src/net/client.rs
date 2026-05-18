@@ -295,7 +295,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
         }
 
         if starts_rename_mode(state.current_phase(), &lobby_command, key_event) {
-            rename_input = Some(state.local_player_name().unwrap_or_default());
+            rename_input = Some(rename_prefill(state.local_player_name().as_deref()));
             continue;
         }
 
@@ -597,6 +597,20 @@ fn starts_rename_mode(phase: NetworkRacePhase, lobby_command: &str, key_event: K
         )
         && matches!(key_event.code, KeyCode::Char('n') | KeyCode::Char('N'))
         && (key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT)
+}
+
+fn rename_prefill(current_name: Option<&str>) -> String {
+    current_name
+        .filter(|name| !is_default_anonymous_name(name))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn is_default_anonymous_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix("anonymous") else {
+        return false;
+    };
+    suffix.is_empty() || suffix.chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn handle_rename_key(
@@ -2264,7 +2278,7 @@ mod tests {
         PlayerSnapshot, display_word_number, enter_sets_ready, host_cancel_key,
         join_rejection_message, lifecycle_command_message, network_bonus_column,
         network_help_lines, network_minimap_column, network_racer_label, network_track_word_line,
-        phase_accepts_typed_commands, primary_command_help, space_starts_countdown,
+        phase_accepts_typed_commands, primary_command_help, rename_prefill, space_starts_countdown,
         starts_rename_mode, stream_index_for_word_char, visible_network_bonus_point,
     };
     use crate::net::protocol::{
@@ -2466,6 +2480,15 @@ mod tests {
             key
         ));
         assert!(!starts_rename_mode(NetworkRacePhase::Racing, "", key));
+    }
+
+    #[test]
+    fn rename_prefill_starts_blank_for_default_anonymous_names() {
+        assert_eq!(rename_prefill(Some("anonymous")), "");
+        assert_eq!(rename_prefill(Some("anonymous2")), "");
+        assert_eq!(rename_prefill(Some("anonymous42")), "");
+        assert_eq!(rename_prefill(Some("anonymous-racer")), "anonymous-racer");
+        assert_eq!(rename_prefill(Some("tom")), "tom");
     }
 
     #[test]
