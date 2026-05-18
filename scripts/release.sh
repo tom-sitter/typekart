@@ -183,5 +183,6 @@ Next steps:
   2. Wait for the GitHub release workflow to publish archives and checksums.
   3. Publish the Homebrew tap update:
      scripts/update-homebrew-tap.sh $version --push
-  4. Update Scoop and WinGet manifests from typekart-checksums.txt.
+  4. Update WinGet manifests:
+     scripts/update-winget-manifests.sh $version
 EOF

@@ -55,7 +55,7 @@ Use [LAN Validation Checklist](lan-validation-checklist.md) for structured manua
 - `src/ui`: terminal rendering and local session loop.
 - `src/net`: LAN protocol, host server, client, relay protocol, relay server, and online loopback adapters.
 - `docs`: user, operator, and maintainer documentation.
-- `packaging`: package-manager templates.
+- `packaging`: Homebrew and WinGet package templates.
 - `scripts`: release and packaging helpers.
 
 For a deeper walkthrough, read [Codebase Tour](codebase-tour.md).
@@ -74,6 +74,12 @@ After a GitHub release exists, update the Homebrew tap with:
 
 ```sh
 scripts/update-homebrew-tap.sh 0.1.0
+```
+
+Update WinGet manifests with:
+
+```sh
+scripts/update-winget-manifests.sh 0.1.0
 ```
 
 Maintainer packaging details are in [Distribution Notes](install/distribution.md).

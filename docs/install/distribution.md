@@ -37,7 +37,11 @@ After the GitHub release finishes, publish the Homebrew tap update:
 scripts/update-homebrew-tap.sh 0.1.0 --push
 ```
 
-Then copy the Windows SHA-256 value from `typekart-checksums.txt` into the Scoop and WinGet manifests under `packaging/`.
+Then update the WinGet manifests from the published release checksums:
+
+```sh
+scripts/update-winget-manifests.sh 0.1.0
+```
 
 To regenerate notes without cutting a release:
 
@@ -74,35 +78,27 @@ brew style tom-sitter/tap/typekart
 brew test tom-sitter/tap/typekart
 ```
 
-## Scoop
-
-Create a Scoop bucket repository, then add `packaging/scoop/typekart.json` as `bucket/typekart.json`.
-
-Users will install with:
-
-```powershell
-scoop bucket add typekart https://github.com/tom-sitter/scoop-bucket
-scoop install typekart
-```
-
-Before publishing the bucket, replace:
-
-- `REPLACE_WITH_WINDOWS_SHA256`
-
 ## WinGet
 
 Use the manifests under `packaging/winget/` as the starting point for a pull request to `microsoft/winget-pkgs`.
 
-Before submitting, replace:
+After each GitHub release, update the manifests with:
 
-- `REPLACE_WITH_WINDOWS_SHA256_UPPERCASE`
-- publisher details if the package should use an organization or personal name
-
-Validate with:
-
-```powershell
-winget validate .\packaging\winget
+```sh
+scripts/update-winget-manifests.sh 0.1.0
 ```
+
+To copy the updated files into a local `microsoft/winget-pkgs` checkout and validate them:
+
+```sh
+scripts/update-winget-manifests.sh 0.1.0 --winget-pkgs-dir ../winget-pkgs --validate
+```
+
+The script fills:
+
+- `PackageVersion`
+- `InstallerUrl`
+- `InstallerSha256`
 
 ## Direct Archive Install
 

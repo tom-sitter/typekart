@@ -101,5 +101,5 @@ cat <<'EOF'
 
 - Online play requires a relay that players can reach.
 - The relay is in-memory; restarting it closes active rooms.
-- Package-manager manifests are provided as templates and need checksums from this release before publishing.
+- WinGet manifests should be updated from this release's checksum file before submitting to microsoft/winget-pkgs.
 EOF

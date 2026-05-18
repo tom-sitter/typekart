@@ -36,15 +36,6 @@ brew tap tom-sitter/tap
 brew install typekart
 ```
 
-Scoop and WinGet packaging manifests are kept under `packaging/` as release targets.
-
-Scoop, after the bucket is published:
-
-```powershell
-scoop bucket add typekart https://github.com/tom-sitter/scoop-bucket
-scoop install typekart
-```
-
 WinGet, after the package is accepted:
 
 ```powershell
