@@ -67,6 +67,7 @@ Maintainer release and package-manager notes are in [docs/install/distribution.m
 - [Modding guide](docs/modding.md)
 - [Relay deployment](docs/relay-deployment.md)
 - [Development guide](docs/development.md)
+- [Contributing guide](CONTRIBUTING.md)
 
 ## Quick Start
 

@@ -1,0 +1,87 @@
+name: Bug report
+description: Report something that is broken, confusing, or not working as expected.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing TypeKart. Clear reproduction steps and terminal details help keep beta fixes focused.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected to happen instead.
+      placeholder: I started a multiplayer race and...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the exact commands you ran when possible.
+      placeholder: |
+        1. Run `typekart ...`
+        2. Press ...
+        3. See ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Error output or screenshot
+      description: Paste terminal output, attach a screenshot, or describe the visible problem.
+      render: text
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Game mode
+      options:
+        - Solo race
+        - AI race
+        - Internet multiplayer
+        - LAN multiplayer
+        - Renderer gallery
+        - Install or startup
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: TypeKart version
+      description: Run `typekart --version` or include the Git commit if you built from source.
+      placeholder: typekart 0.1.3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS Apple Silicon
+        - macOS Intel
+        - Windows x64
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal app
+      description: Include terminal, shell, and relevant settings if the issue is visual or input-related.
+      placeholder: Terminal.app + zsh, Windows Terminal + PowerShell, iTerm2, Alacritty, etc.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that may help, including room setup, network type, terminal size, or whether `--ascii` changes the behavior.

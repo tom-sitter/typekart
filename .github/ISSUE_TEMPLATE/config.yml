@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Gameplay guide
+    url: https://github.com/tom-sitter/typekart/blob/main/docs/gameplay.md
+    about: Read the race flow, controls, typing rules, bonus words, and item effects.
+  - name: Multiplayer guide
+    url: https://github.com/tom-sitter/typekart/blob/main/docs/multiplayer.md
+    about: Read setup notes for internet and LAN multiplayer.

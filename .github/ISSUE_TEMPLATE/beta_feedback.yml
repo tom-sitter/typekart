@@ -1,0 +1,77 @@
+name: Beta feedback
+description: Share playtest feedback, first-run friction, balance notes, or onboarding issues.
+title: "[Beta feedback]: "
+labels: ["beta-feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for impressions that are not a single reproducible bug. Notes about installation, first race, multiplayer setup, readability, and item balance are especially useful during beta.
+
+  - type: textarea
+    id: experience
+    attributes:
+      label: What did you try?
+      description: Tell us which commands or modes you used.
+      placeholder: I installed from GitHub Releases, ran `typekart play --ai-racers 3`, then tried hosting...
+    validations:
+      required: true
+
+  - type: textarea
+    id: worked
+    attributes:
+      label: What worked well?
+      description: Include moments that felt clear, fun, fast, or easy to understand.
+    validations:
+      required: true
+
+  - type: textarea
+    id: friction
+    attributes:
+      label: What was confusing or frustrating?
+      description: Include anything that made you stop, search docs, resize the terminal, or restart.
+    validations:
+      required: true
+
+  - type: textarea
+    id: balance
+    attributes:
+      label: Gameplay and balance notes
+      description: Optional notes about item effects, AI difficulty, race length, bonus words, typing rules, or multiplayer pacing.
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Main mode tested
+      options:
+        - Solo race
+        - AI race
+        - Internet multiplayer
+        - LAN multiplayer
+        - Renderer gallery
+        - Install or startup only
+        - Mixed
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: TypeKart version
+      description: Run `typekart --version` or include the Git commit if you built from source.
+      placeholder: typekart 0.1.3
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and terminal
+      description: Include operating system, terminal app, and shell if you know them.
+      placeholder: macOS Apple Silicon, iTerm2, zsh
+
+  - type: textarea
+    id: suggestions
+    attributes:
+      label: Suggestions
+      description: Optional ideas for docs, onboarding, controls, accessibility, or future features.
