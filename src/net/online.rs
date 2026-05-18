@@ -244,15 +244,12 @@ fn handle_host_relay_message(
             )?;
 
             if matches!(welcome, ServerMessage::Welcome { .. }) {
-                let reader_stream = local_stream
-                    .try_clone()
-                    .context("failed to clone local participant stream for forwarding")?;
                 let room_for_reader = room.clone();
                 let outbound_tx = outbound_tx.clone();
                 let broadcast_dedupe = Arc::clone(broadcast_dedupe);
                 thread::spawn(move || {
                     forward_local_server_to_relay(
-                        reader_stream,
+                        local_reader,
                         room_for_reader,
                         pending_player_id,
                         outbound_tx,
@@ -296,13 +293,12 @@ fn handle_host_relay_message(
 }
 
 fn forward_local_server_to_relay(
-    stream: TcpStream,
+    mut reader: BufReader<TcpStream>,
     room: RoomCode,
     player_id: PlayerId,
     outbound_tx: Sender<RelayClientMessage>,
     broadcast_dedupe: Arc<Mutex<HostBroadcastDedupe>>,
 ) {
-    let mut reader = BufReader::new(stream);
     loop {
         match read_server_message(&mut reader) {
             Ok(Some(message)) => {
@@ -457,14 +453,25 @@ fn wait_for_join_welcome(
     websocket: &mut RelaySocket,
     local_stream: &mut TcpStream,
 ) -> Result<PlayerId> {
+    let mut pending_messages = Vec::new();
     loop {
         match websocket.read().context("failed to read join response")? {
             Message::Text(text) => match decode_relay_message(&text)? {
                 RelayServerMessage::HostToClient {
                     player_id, message, ..
                 } => {
-                    write_server_message(local_stream, &message)?;
-                    return Ok(player_id);
+                    if matches!(message, ServerMessage::Welcome { .. }) {
+                        write_server_message(local_stream, &message)?;
+                        for pending_message in pending_messages {
+                            write_server_message(local_stream, &pending_message)?;
+                        }
+                        return Ok(player_id);
+                    } else {
+                        pending_messages.push(message);
+                    }
+                }
+                RelayServerMessage::HostBroadcast { message, .. } => {
+                    pending_messages.push(message);
                 }
                 RelayServerMessage::Error { message } => {
                     write_server_message(
@@ -655,7 +662,7 @@ mod tests {
         let mut client =
             TcpStream::connect(proxy_addr).expect("test client should connect to join proxy");
         client
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("read timeout should be configurable");
         write_client_message(
             &mut client,
@@ -671,8 +678,122 @@ mod tests {
             .expect("welcome should decode")
             .expect("welcome should arrive");
         assert!(matches!(welcome, ServerMessage::Welcome { .. }));
+        let lobby = read_server_message(&mut reader)
+            .expect("initial lobby should decode")
+            .expect("initial lobby should arrive");
+        assert!(
+            matches!(lobby, ServerMessage::LobbySnapshot { ref players, .. } if players.iter().any(|player| player.name == "alex"))
+        );
 
         write_client_message(&mut client, &ClientMessage::Leave).unwrap();
+    }
+
+    #[test]
+    fn online_bridge_forwards_countdown_snapshot_to_joiner() {
+        let relay_addr = spawn_test_relay();
+        let local_host = spawn_test_host();
+        let relay_url = format!("ws://{relay_addr}");
+
+        let mut host_client =
+            TcpStream::connect(local_host).expect("host client should connect to local host");
+        host_client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("host read timeout should be configurable");
+        write_client_message(
+            &mut host_client,
+            &ClientMessage::Hello {
+                name: "host".to_string(),
+                client_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        )
+        .expect("host hello should be accepted");
+        let mut host_reader = BufReader::new(host_client.try_clone().unwrap());
+        assert!(matches!(
+            read_server_message(&mut host_reader)
+                .expect("host welcome should decode")
+                .expect("host welcome should arrive"),
+            ServerMessage::Welcome { .. }
+        ));
+
+        let (room_tx, room_rx) = mpsc::channel();
+        {
+            let relay_url = relay_url.clone();
+            thread::spawn(move || {
+                let _ = run_online_host_bridge(OnlineHostBridgeConfig {
+                    relay: relay_url,
+                    local_server: local_host,
+                    ready_signal: Some(room_tx),
+                });
+            });
+        }
+        let room = room_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("online host bridge should create a room");
+
+        let (proxy_tx, proxy_rx) = mpsc::channel();
+        {
+            let relay_url = relay_url.clone();
+            thread::spawn(move || {
+                let _ = run_online_join_proxy(OnlineJoinProxyConfig {
+                    relay: relay_url,
+                    room,
+                    name: "joiner".to_string(),
+                    ready_signal: proxy_tx,
+                });
+            });
+        }
+        let proxy_addr = proxy_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("online join proxy should start");
+
+        let mut join_client =
+            TcpStream::connect(proxy_addr).expect("join client should connect to proxy");
+        join_client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("join read timeout should be configurable");
+        write_client_message(
+            &mut join_client,
+            &ClientMessage::Hello {
+                name: "joiner".to_string(),
+                client_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        )
+        .expect("join hello should be accepted");
+        let mut join_reader = BufReader::new(join_client.try_clone().unwrap());
+        assert!(matches!(
+            read_server_message(&mut join_reader)
+                .expect("join welcome should decode")
+                .expect("join welcome should arrive"),
+            ServerMessage::Welcome { .. }
+        ));
+        assert!(matches!(
+            read_server_message(&mut join_reader)
+                .expect("join lobby should decode")
+                .expect("join lobby should arrive"),
+            ServerMessage::LobbySnapshot { ref players, .. }
+                if players.iter().any(|player| player.name == "joiner")
+        ));
+
+        write_client_message(&mut join_client, &ClientMessage::SetReady { ready: true })
+            .expect("joiner ready should be forwarded");
+        let ready_lobby = read_server_message(&mut join_reader)
+            .expect("ready lobby should decode")
+            .expect("ready lobby should arrive");
+        assert!(matches!(ready_lobby, ServerMessage::LobbySnapshot { .. }));
+
+        write_client_message(&mut host_client, &ClientMessage::StartCountdown)
+            .expect("host start should be accepted");
+        let countdown = read_server_message(&mut join_reader)
+            .expect("countdown should decode")
+            .expect("countdown should arrive");
+        assert!(matches!(
+            countdown,
+            ServerMessage::RaceSnapshot(snapshot)
+                if matches!(snapshot.phase, crate::net::protocol::NetworkRacePhase::Countdown { remaining_seconds: 3 })
+        ));
+
+        write_client_message(&mut join_client, &ClientMessage::Leave).unwrap();
+        write_client_message(&mut host_client, &ClientMessage::Leave).unwrap();
     }
 
     #[test]
