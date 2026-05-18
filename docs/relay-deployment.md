@@ -116,6 +116,8 @@ For cloud deployment, expose container port `8080` to your platform's HTTP/WebSo
 ## Fly.io
 
 The repository includes `fly.toml` for a single-machine relay deployment.
+It runs the relay on `0.0.0.0:8080` and configures Fly to check
+`GET /healthz`.
 
 First-time setup:
 
@@ -150,6 +152,9 @@ The Fly deployment must run exactly one machine because relay rooms are in memor
 ```sh
 fly status -a your-typekart-relay-name
 ```
+
+The relay answers `GET /healthz` with `200 OK` before the WebSocket handshake.
+Game traffic still uses WebSocket upgrade requests on the same port.
 
 ## Render
 

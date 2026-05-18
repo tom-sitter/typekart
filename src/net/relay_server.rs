@@ -5,6 +5,7 @@
 
 use std::{
     collections::HashMap,
+    io::Write,
     net::{SocketAddr, TcpListener},
     sync::{
         Arc, Mutex,
@@ -102,11 +103,15 @@ pub fn run_relay(config: RelayConfig) -> Result<()> {
 }
 
 fn handle_connection(
-    stream: std::net::TcpStream,
+    mut stream: std::net::TcpStream,
     state: Arc<Mutex<RelayState>>,
     limits: RelayLimits,
 ) -> Result<()> {
     let peer = stream.peer_addr().ok();
+    if handle_http_health_check(&mut stream)? {
+        return Ok(());
+    }
+
     let mut websocket = accept(stream).context("failed to accept websocket connection")?;
     websocket
         .get_mut()
@@ -172,6 +177,53 @@ fn handle_connection(
         println!("Relay client disconnected: {peer}");
     }
     Ok(())
+}
+
+fn handle_http_health_check(stream: &mut std::net::TcpStream) -> Result<bool> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .context("failed to set relay health-check read timeout")?;
+    let mut buffer = [0_u8; 1024];
+    let bytes = match stream.peek(&mut buffer) {
+        Ok(bytes) => bytes,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            stream
+                .set_read_timeout(None)
+                .context("failed to clear relay health-check read timeout")?;
+            return Ok(false);
+        }
+        Err(error) => return Err(error).context("failed to inspect relay connection"),
+    };
+    stream
+        .set_read_timeout(None)
+        .context("failed to clear relay health-check read timeout")?;
+
+    let request = String::from_utf8_lossy(&buffer[..bytes]);
+    if is_health_check_request(&request) {
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+            )
+            .context("failed to write relay health-check response")?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn is_health_check_request(request: &str) -> bool {
+    let first_line = request.lines().next().unwrap_or_default();
+    let is_health_path =
+        first_line.starts_with("GET /healthz ") || first_line.starts_with("HEAD /healthz ");
+    let is_websocket_upgrade = request
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case("Upgrade: websocket"));
+    is_health_path && !is_websocket_upgrade
 }
 
 fn drain_outbound(
