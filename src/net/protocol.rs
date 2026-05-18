@@ -137,6 +137,7 @@ pub struct PlayerSnapshot {
     pub connected: bool,
     pub shielded: bool,
     pub starred: bool,
+    pub inked: bool,
     pub boosted: bool,
     pub stunned: bool,
     pub impact_remaining_ms: u64,
@@ -161,6 +162,7 @@ pub struct ImpactCueSnapshot {
 pub enum ImpactCueSnapshotKind {
     Banana,
     BlueShell,
+    SquidInk,
     ShieldBlock,
 }
 
@@ -270,6 +272,7 @@ pub enum ItemCuePlacementSnapshot {
 pub enum ItemCueSnapshotKind {
     Banana { direction: AttackDirectionSnapshot },
     BlueShell { direction: AttackDirectionSnapshot },
+    SquidInk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,6 +426,7 @@ mod tests {
                 connected: true,
                 shielded: false,
                 starred: true,
+                inked: false,
                 boosted: false,
                 stunned: false,
                 impact_remaining_ms: 0,
@@ -457,6 +461,7 @@ mod tests {
                 connected: true,
                 shielded: false,
                 starred: false,
+                inked: false,
                 boosted: false,
                 stunned: false,
                 impact_remaining_ms: 0,

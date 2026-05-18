@@ -95,6 +95,7 @@ Items currently activate automatically when obtained.
 | Shield | Protects the racer from the next blockable attack until it expires or is consumed. |
 | Star Power | Temporarily discards incorrect keys without adding typo input. Correct keys are still required to advance. |
 | Blue Shell | Targets first place and reverses the affected racer's next word. |
+| Squid Ink | Hits every unfinished racer within five words and hides their upcoming words until they finish their current word. |
 
 ## Visual Indicators
 
@@ -107,7 +108,9 @@ Unicode icons are enabled by default. Use `--ascii` if a terminal renders emoji 
 | Star icon on marker | Star Power is active. |
 | `🍌 >>` or `<< 🍌` | Banana fired ahead or behind. |
 | Blue shell cue | Blue Shell fired. |
+| Squid icon cue | Squid Ink fired. |
 | Yellow blink | Banana impact. |
 | Blue blink | Blue Shell impact. |
+| Black blink | Squid Ink impact. |
 
 ASCII fallback keeps plain text markers for terminals without reliable Unicode support.

@@ -533,6 +533,7 @@ fn visible_item_cue(
             AttackDirection::Ahead | AttackDirection::Overlap => ItemCuePlacement::After,
             AttackDirection::Behind => ItemCuePlacement::Before,
         },
+        ItemCueKind::SquidInk => ItemCuePlacement::After,
     };
     let label = match icon_mode {
         IconMode::Ascii => cue.ascii_label,
@@ -886,6 +887,7 @@ fn marker_style(color: Color, impact_cue: Option<ImpactCue>, now: std::time::Ins
         match impact_cue.map(|cue| cue.kind) {
             Some(ImpactCueKind::Banana) => base.bg(Color::Yellow).fg(Color::Black),
             Some(ImpactCueKind::BlueShell) => base.bg(Color::Blue).fg(Color::White),
+            Some(ImpactCueKind::SquidInk) => base.bg(Color::Black).fg(Color::White),
             Some(ImpactCueKind::ShieldBlock) => base.bg(Color::Cyan).fg(Color::Black),
             None => base,
         }
@@ -1061,7 +1063,7 @@ fn track_word_line(
             let column = visible.start_col + offset;
             if let Some(cell) = cells.get_mut(column) {
                 *cell = TrackCell {
-                    ch,
+                    ch: visible_word_char(player, visible.index, ch),
                     style: base_word_style(visible.state, player, race_phase),
                 };
             }
@@ -1078,6 +1080,14 @@ fn track_word_line(
             .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
             .collect::<Vec<_>>(),
     )
+}
+
+fn visible_word_char(player: &PlayerState, word_index: usize, ch: char) -> char {
+    if player.is_inked() && word_index > player.word_index {
+        '█'
+    } else {
+        ch
+    }
 }
 
 fn base_word_style(state: WordRenderState, player: &PlayerState, race_phase: RacePhase) -> Style {

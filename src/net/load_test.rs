@@ -398,6 +398,7 @@ fn load_delta(sequence: u64) -> RaceDeltaSnapshot {
             connected: true,
             shielded: false,
             starred: false,
+            inked: false,
             boosted: false,
             stunned: false,
             impact_remaining_ms: 0,

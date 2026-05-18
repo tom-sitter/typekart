@@ -112,6 +112,7 @@ pub struct ImpactCue {
 pub enum ImpactCueKind {
     Banana,
     BlueShell,
+    SquidInk,
     ShieldBlock,
 }
 
@@ -162,6 +163,7 @@ impl ItemCue {
                 Self::banana(direction, now, &ItemRegistry::builtin())
             }
             ItemCueKind::BlueShell { direction } => Self::blue_shell(direction, now),
+            ItemCueKind::SquidInk => Self::squid_ink(now, &ItemRegistry::builtin()),
         }
     }
 
@@ -197,6 +199,16 @@ impl ItemCue {
         }
     }
 
+    fn squid_ink(now: Instant, item_registry: &ItemRegistry) -> Self {
+        let effect = item_registry.squid_ink_effect();
+        Self {
+            kind: ItemCueKind::SquidInk,
+            until: now + Duration::from_millis(effect.cue_ms),
+            ascii_label: " ink ".to_string(),
+            unicode_label: " 🦑 ".to_string(),
+        }
+    }
+
     pub fn is_visible(&self, now: Instant) -> bool {
         self.until > now
     }
@@ -206,6 +218,7 @@ impl ItemCue {
 pub enum ItemCueKind {
     Banana { direction: AttackDirection },
     BlueShell { direction: AttackDirection },
+    SquidInk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -830,6 +843,7 @@ impl LocalSession {
             HeldItem::Banana => self.ai_use_banana(ai_index, now),
             HeldItem::Star => self.activate_ai_star(ai_index, now),
             HeldItem::BlueShell => self.use_blue_shell(Some(ai_index), now),
+            HeldItem::SquidInk => self.use_ai_squid_ink(ai_index, now),
         }
     }
 
@@ -903,6 +917,43 @@ impl LocalSession {
         ai.player.active_effects.push(ActiveEffect::Star {
             until: now + Duration::from_millis(self.item_registry.star_effect().duration_ms),
         });
+    }
+
+    fn use_ai_squid_ink(&mut self, ai_index: usize, now: Instant) {
+        let Some(ai) = self.ai_racers.get(ai_index) else {
+            return;
+        };
+        let attacker_name = ai.name.clone();
+        let attacker_word_index = ai.player.word_index;
+        let targets = self.squid_ink_targets_excluding_ai(ai_index, now);
+        if let Some(ai) = self.ai_racers.get_mut(ai_index) {
+            ai.item_cue = Some(ItemCue::squid_ink(now, &self.item_registry));
+        }
+        self.run_log.push(
+            now,
+            format!(
+                "{attacker_name} squid ink fired from word={attacker_word_index}; candidates={}",
+                self.racer_positions_summary(&targets, now)
+            ),
+        );
+
+        let mut hit_count = 0;
+        for target in targets {
+            if target.id == 0 {
+                if self.apply_squid_ink_to_player(now) {
+                    hit_count += 1;
+                    self.events
+                        .push(format!("{attacker_name} inked you with Squid Ink"));
+                }
+            } else if self.apply_squid_ink_to_ai(target.id, now) {
+                hit_count += 1;
+            }
+        }
+
+        if hit_count == 0 {
+            self.events
+                .push(format!("{attacker_name} missed Squid Ink"));
+        }
     }
 
     fn use_blue_shell(&mut self, attacker_ai_index: Option<usize>, now: Instant) {
@@ -1039,6 +1090,17 @@ impl LocalSession {
             });
         }
         applied
+    }
+
+    fn squid_ink_targets_excluding_ai(&self, ai_index: usize, now: Instant) -> Vec<RacerPosition> {
+        let Some(attacker) = self.ai_racers.get(ai_index) else {
+            return Vec::new();
+        };
+        let range_words = self.item_registry.squid_ink_effect().range_words;
+        self.racer_positions_excluding_ai(ai_index, now)
+            .into_iter()
+            .filter(|racer| attacker.player.word_index.abs_diff(racer.word_index) <= range_words)
+            .collect()
     }
 
     fn racer_positions_excluding_ai(&self, ai_index: usize, now: Instant) -> Vec<RacerPosition> {
@@ -1487,6 +1549,7 @@ impl LocalSession {
             HeldItem::Mushroom => self.activate_mushroom(now),
             HeldItem::Star => self.activate_star(now),
             HeldItem::BlueShell => self.use_blue_shell(None, now),
+            HeldItem::SquidInk => self.use_squid_ink(now),
             HeldItem::Banana => {
                 let racers = self
                     .ai_racers
@@ -1534,6 +1597,92 @@ impl LocalSession {
                 }
             }
         }
+    }
+
+    fn use_squid_ink(&mut self, now: Instant) {
+        let range_words = self.item_registry.squid_ink_effect().range_words;
+        let targets = self
+            .ai_racers
+            .iter()
+            .filter(|ai| !ai.player.is_finished())
+            .filter(|ai| self.player.word_index.abs_diff(ai.player.word_index) <= range_words)
+            .map(|ai| RacerPosition {
+                id: ai.id,
+                word_index: ai.player.word_index,
+            })
+            .collect::<Vec<_>>();
+        self.player_item_cue = Some(ItemCue::squid_ink(now, &self.item_registry));
+        self.run_log.push(
+            now,
+            format!(
+                "player squid ink fired from word={}; candidates={}",
+                self.player.word_index,
+                self.racer_positions_summary(&targets, now)
+            ),
+        );
+
+        let mut hit_count = 0;
+        for target in targets {
+            if self.apply_squid_ink_to_ai(target.id, now) {
+                hit_count += 1;
+            }
+        }
+
+        if hit_count == 0 {
+            self.events.push("Missed Squid Ink");
+            self.run_log
+                .push(now, "player squid ink missed: no racer in range");
+        } else {
+            self.events
+                .push(format!("Squid Ink hit {hit_count} racer(s)"));
+        }
+    }
+
+    fn apply_squid_ink_to_player(&mut self, now: Instant) -> bool {
+        if self.player.has_active_shield(now) {
+            self.player
+                .active_effects
+                .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
+            self.player_impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::ShieldBlock,
+                until: now + Duration::from_millis(700),
+            });
+            self.events.push("Blocked Squid Ink");
+            return false;
+        }
+
+        self.player.inked_word_index = Some(self.player.word_index);
+        self.player_impact_cue = Some(ImpactCue {
+            kind: ImpactCueKind::SquidInk,
+            until: now
+                + Duration::from_millis(self.item_registry.squid_ink_effect().impact_blink_ms),
+        });
+        true
+    }
+
+    fn apply_squid_ink_to_ai(&mut self, ai_id: usize, now: Instant) -> bool {
+        let Some(ai) = self.ai_racers.iter_mut().find(|ai| ai.id == ai_id) else {
+            return false;
+        };
+        if ai.player.has_active_shield(now) {
+            ai.player
+                .active_effects
+                .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
+            ai.impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::ShieldBlock,
+                until: now + Duration::from_millis(700),
+            });
+            self.events.push(format!("{} blocked Squid Ink", ai.name));
+            return false;
+        }
+
+        ai.player.inked_word_index = Some(ai.player.word_index);
+        ai.impact_cue = Some(ImpactCue {
+            kind: ImpactCueKind::SquidInk,
+            until: now
+                + Duration::from_millis(self.item_registry.squid_ink_effect().impact_blink_ms),
+        });
+        true
     }
 
     fn activate_star(&mut self, now: Instant) {
@@ -2689,6 +2838,58 @@ mod tests {
                 .entries()
                 .any(|entry| entry == "ai-1 blocked Blue Shell")
         );
+    }
+
+    #[test]
+    fn squid_ink_hits_all_ai_racers_in_range() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three", "four"]);
+        let player = PlayerState::new(now);
+        let mut session =
+            LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
+        let mut near_ai = AiRacer::new(1, AiDifficulty::Easy, 80.0, now);
+        near_ai.player.word_index = 1;
+        let mut far_ai = AiRacer::new(2, AiDifficulty::Easy, 80.0, now);
+        far_ai.player.word_index = 6;
+        session.ai_racers.push(near_ai);
+        session.ai_racers.push(far_ai);
+        session.player.held_item = Some(HeldItem::SquidInk);
+
+        session.apply_action(LocalAction::ActivateItem, now);
+
+        assert!(session.ai_racers[0].player.is_inked());
+        assert!(!session.ai_racers[1].player.is_inked());
+        assert!(matches!(
+            session.ai_racers[0].impact_cue.map(|cue| cue.kind),
+            Some(ImpactCueKind::SquidInk)
+        ));
+        assert!(matches!(
+            session.player_item_cue.as_ref().map(|cue| cue.kind),
+            Some(ItemCueKind::SquidInk)
+        ));
+    }
+
+    #[test]
+    fn squid_ink_expires_when_current_word_is_completed() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let mut player = PlayerState::new(now);
+        player.inked_word_index = Some(0);
+        let mut session =
+            LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
+
+        for action in [
+            KeyAction::Char('o'),
+            KeyAction::Char('n'),
+            KeyAction::Char('e'),
+            KeyAction::Space,
+        ] {
+            session.apply_action(LocalAction::Typing(action), now);
+        }
+        session.tick(now);
+
+        assert!(!session.player.is_inked());
+        assert_eq!(session.player.inked_word_index, None);
     }
 
     #[test]

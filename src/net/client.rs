@@ -1492,7 +1492,7 @@ fn network_track_word_line<'a>(
             let column = word.start_col + char_index;
             if let Some(cell) = cells.get_mut(column) {
                 *cell = NetworkTrackCell {
-                    ch,
+                    ch: network_visible_word_char(local, word.index, ch),
                     style: network_word_char_style(window, word, char_index, local),
                 };
             }
@@ -1509,6 +1509,14 @@ fn network_track_word_line<'a>(
             .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
             .collect::<Vec<_>>(),
     )
+}
+
+fn network_visible_word_char(local: Option<&PlayerSnapshot>, word_index: usize, ch: char) -> char {
+    if local.is_some_and(|player| player.inked && word_index > player.word_index) {
+        '█'
+    } else {
+        ch
+    }
 }
 
 fn network_word_override(player: &PlayerSnapshot, word_index: usize) -> Option<&str> {
@@ -1905,6 +1913,7 @@ fn network_marker_style(player: &PlayerSnapshot, color: Color) -> Style {
         match cue.kind {
             ImpactCueSnapshotKind::Banana => base.bg(Color::Yellow).fg(Color::Black),
             ImpactCueSnapshotKind::BlueShell => base.bg(Color::Blue).fg(Color::White),
+            ImpactCueSnapshotKind::SquidInk => base.bg(Color::Black).fg(Color::White),
             ImpactCueSnapshotKind::ShieldBlock => base.bg(Color::Cyan).fg(Color::Black),
         }
     } else if player.impact_remaining_ms > 0 {
@@ -2594,6 +2603,7 @@ mod tests {
             connected: true,
             shielded: false,
             starred: false,
+            inked: false,
             boosted: false,
             stunned: false,
             impact_remaining_ms: 0,

@@ -182,6 +182,19 @@ fn hash_item_registry(item_registry: &ItemRegistry) -> ModHash {
         if let Some(shield) = item.effect.shield {
             fields.push(shield.duration_ms.to_string());
         }
+        if let Some(star) = item.effect.star {
+            fields.push(star.duration_ms.to_string());
+        }
+        if let Some(blue_shell) = item.effect.blue_shell {
+            fields.push(blue_shell.affected_words.to_string());
+        }
+        if let Some(squid_ink) = item.effect.squid_ink {
+            fields.extend([
+                squid_ink.range_words.to_string(),
+                squid_ink.impact_blink_ms.to_string(),
+                squid_ink.cue_ms.to_string(),
+            ]);
+        }
         if let Some(banana_display) = &item.display.banana {
             fields.extend([
                 banana_display.ascii_ahead.clone(),

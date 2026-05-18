@@ -14,6 +14,7 @@ pub enum HeldItem {
     Banana,
     Star,
     BlueShell,
+    SquidInk,
 }
 
 impl HeldItem {
@@ -23,6 +24,7 @@ impl HeldItem {
             Self::Banana => "Banana",
             Self::Star => "Star Power",
             Self::BlueShell => "Blue Shell",
+            Self::SquidInk => "Squid Ink",
         }
     }
 }
@@ -60,6 +62,7 @@ pub struct ItemEffectConfig {
     pub shield: Option<ShieldEffectConfig>,
     pub star: Option<StarEffectConfig>,
     pub blue_shell: Option<BlueShellEffectConfig>,
+    pub squid_ink: Option<SquidInkEffectConfig>,
 }
 
 impl ItemEffectConfig {
@@ -71,6 +74,7 @@ impl ItemEffectConfig {
                 shield: None,
                 star: None,
                 blue_shell: None,
+                squid_ink: None,
             },
             ItemPickup::Held(HeldItem::Banana) => Self {
                 mushroom: None,
@@ -78,6 +82,7 @@ impl ItemEffectConfig {
                 shield: None,
                 star: None,
                 blue_shell: None,
+                squid_ink: None,
             },
             ItemPickup::Held(HeldItem::Star) => Self {
                 mushroom: None,
@@ -85,6 +90,7 @@ impl ItemEffectConfig {
                 shield: None,
                 star: Some(StarEffectConfig::default()),
                 blue_shell: None,
+                squid_ink: None,
             },
             ItemPickup::Held(HeldItem::BlueShell) => Self {
                 mushroom: None,
@@ -92,6 +98,15 @@ impl ItemEffectConfig {
                 shield: None,
                 star: None,
                 blue_shell: Some(BlueShellEffectConfig::default()),
+                squid_ink: None,
+            },
+            ItemPickup::Held(HeldItem::SquidInk) => Self {
+                mushroom: None,
+                banana: None,
+                shield: None,
+                star: None,
+                blue_shell: None,
+                squid_ink: Some(SquidInkEffectConfig::default()),
             },
             ItemPickup::Shield => Self {
                 mushroom: None,
@@ -99,6 +114,7 @@ impl ItemEffectConfig {
                 shield: Some(ShieldEffectConfig::default()),
                 star: None,
                 blue_shell: None,
+                squid_ink: None,
             },
         }
     }
@@ -173,6 +189,23 @@ impl Default for BlueShellEffectConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct SquidInkEffectConfig {
+    pub range_words: usize,
+    pub impact_blink_ms: u64,
+    pub cue_ms: u64,
+}
+
+impl Default for SquidInkEffectConfig {
+    fn default() -> Self {
+        Self {
+            range_words: 5,
+            impact_blink_ms: 1_200,
+            cue_ms: 1_500,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemDisplayConfig {
     pub banana: Option<BananaDisplayConfig>,
@@ -187,6 +220,7 @@ impl ItemDisplayConfig {
             ItemPickup::Held(HeldItem::Mushroom)
             | ItemPickup::Held(HeldItem::Star)
             | ItemPickup::Held(HeldItem::BlueShell)
+            | ItemPickup::Held(HeldItem::SquidInk)
             | ItemPickup::Shield => Self { banana: None },
         }
     }
@@ -466,6 +500,26 @@ impl ItemRegistry {
                     },
                 },
             ),
+            ItemDefinition::built_in_with_context(
+                "squid_ink",
+                "Squid Ink",
+                ItemPickup::Held(HeldItem::SquidInk),
+                ItemActivation::Held,
+                2,
+                5,
+                ItemContextWeights {
+                    standard: PositionWeights {
+                        first: 1,
+                        middle: 2,
+                        trailing: 2,
+                    },
+                    nearby_racer: PositionWeights {
+                        first: 4,
+                        middle: 6,
+                        trailing: 5,
+                    },
+                },
+            ),
         ])
         .expect("built-in item registry is valid")
     }
@@ -648,6 +702,38 @@ impl ItemRegistry {
                         override_item.id
                     );
                 }
+
+                if target.effect.squid_ink.is_some()
+                    && (effect.ink_range_words.is_some()
+                        || effect.ink_impact_blink_ms.is_some()
+                        || effect.ink_cue_ms.is_some())
+                {
+                    let mut squid_ink = target.effect.squid_ink.unwrap_or_default();
+                    if let Some(range_words) = effect.ink_range_words {
+                        squid_ink.range_words = range_words;
+                    }
+                    if let Some(impact_blink_ms) = effect.ink_impact_blink_ms {
+                        squid_ink.impact_blink_ms = impact_blink_ms;
+                    }
+                    if let Some(cue_ms) = effect.ink_cue_ms {
+                        squid_ink.cue_ms = cue_ms;
+                    }
+                    if squid_ink.range_words == 0 {
+                        bail!(
+                            "item '{}' squid ink range_words must be greater than zero",
+                            override_item.id
+                        );
+                    }
+                    target.effect.squid_ink = Some(squid_ink);
+                } else if effect.ink_range_words.is_some()
+                    || effect.ink_impact_blink_ms.is_some()
+                    || effect.ink_cue_ms.is_some()
+                {
+                    bail!(
+                        "item '{}' does not support squid ink effect config",
+                        override_item.id
+                    );
+                }
             }
 
             if let Some(display) = override_item.display {
@@ -745,6 +831,14 @@ impl ItemRegistry {
             .unwrap_or_default()
     }
 
+    pub fn squid_ink_effect(&self) -> SquidInkEffectConfig {
+        self.items
+            .iter()
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::SquidInk))
+            .and_then(|item| item.effect.squid_ink)
+            .unwrap_or_default()
+    }
+
     pub fn roll_pickup(&self, rng: &mut impl Rng, context: ItemRollContext) -> Option<ItemPickup> {
         let candidates = self
             .items
@@ -819,6 +913,9 @@ struct ItemPackEffectConfig {
     cue_ms: Option<u64>,
     duration_ms: Option<u64>,
     affected_words: Option<usize>,
+    ink_range_words: Option<usize>,
+    ink_impact_blink_ms: Option<u64>,
+    ink_cue_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -945,7 +1042,7 @@ mod tests {
             .sum::<u32>();
 
         assert_eq!(shield.standard_weight, 1);
-        assert_eq!(total_weight, 8);
+        assert_eq!(total_weight, 10);
     }
 
     #[test]
@@ -963,7 +1060,7 @@ mod tests {
             .sum::<u32>();
 
         assert_eq!(shield.nearby_racer_weight, 3);
-        assert_eq!(total_weight, 14);
+        assert_eq!(total_weight, 19);
     }
 
     #[test]
@@ -1261,6 +1358,14 @@ mod tests {
                     {
                         "id": "blue_shell",
                         "effect": { "affected_words": 2 }
+                    },
+                    {
+                        "id": "squid_ink",
+                        "effect": {
+                            "ink_range_words": 7,
+                            "ink_impact_blink_ms": 800,
+                            "ink_cue_ms": 600
+                        }
                     }
                 ]
             }"#,
@@ -1278,6 +1383,9 @@ mod tests {
         assert_eq!(registry.shield_effect().duration_ms, 3000);
         assert_eq!(registry.star_effect().duration_ms, 7500);
         assert_eq!(registry.blue_shell_effect().affected_words, 2);
+        assert_eq!(registry.squid_ink_effect().range_words, 7);
+        assert_eq!(registry.squid_ink_effect().impact_blink_ms, 800);
+        assert_eq!(registry.squid_ink_effect().cue_ms, 600);
 
         let _ = std::fs::remove_file(path);
     }

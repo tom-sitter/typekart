@@ -147,6 +147,7 @@ Effect fields are item-specific:
 - Shield: `duration_ms`.
 - Star Power: `duration_ms`.
 - Blue Shell: `affected_words`.
+- Squid Ink: `ink_range_words`, `ink_impact_blink_ms`, `ink_cue_ms`.
 
 Banana display fields:
 

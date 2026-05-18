@@ -158,6 +158,7 @@ struct NetworkItemCue {
 enum NetworkItemCueKind {
     Banana { direction: AttackDirectionSnapshot },
     BlueShell { direction: AttackDirectionSnapshot },
+    SquidInk,
 }
 
 pub fn run_host(config: HostConfig) -> Result<()> {
@@ -1651,6 +1652,7 @@ fn activate_network_pickup(
         ItemPickup::Held(HeldItem::Banana) => activate_network_banana(state, player_id, now),
         ItemPickup::Held(HeldItem::Star) => activate_network_star(state, player_id, now),
         ItemPickup::Held(HeldItem::BlueShell) => activate_network_blue_shell(state, player_id, now),
+        ItemPickup::Held(HeldItem::SquidInk) => activate_network_squid_ink(state, player_id, now),
         ItemPickup::Shield => activate_network_shield(state, player_id, now),
     }
 }
@@ -1810,6 +1812,63 @@ fn activate_network_banana(state: &mut HostState, player_id: PlayerId, now: Inst
     }
 }
 
+fn activate_network_squid_ink(state: &mut HostState, player_id: PlayerId, now: Instant) {
+    let Some(attacker) = state.race.player(RacePlayerId(player_id.0)) else {
+        return;
+    };
+    let attacker_word_index = attacker.state.word_index;
+    let attacker_name = attacker.name.clone();
+    let squid_ink = state.item_registry.squid_ink_effect();
+    let targets = state
+        .race
+        .players
+        .iter()
+        .filter(|player| player.id != attacker.id)
+        .filter(|player| player.connected)
+        .filter(|player| !player.state.is_finished())
+        .filter(|player| {
+            attacker_word_index.abs_diff(player.state.word_index) <= squid_ink.range_words
+        })
+        .map(|player| RacerPosition {
+            id: player.id.0 as usize,
+            word_index: player.state.word_index,
+        })
+        .collect::<Vec<_>>();
+
+    push_network_log(
+        &state.debug_log,
+        format!(
+            "{attacker_name} squid ink fired from word={attacker_word_index}; candidates={}",
+            network_racer_positions_summary(state, &targets, now)
+        ),
+    );
+
+    state.player_effects.entry(player_id).or_default().item_cue = Some(NetworkItemCue {
+        kind: NetworkItemCueKind::SquidInk,
+        ascii_label: " ink ".to_string(),
+        unicode_label: " 🦑 ".to_string(),
+        placement: ItemCuePlacementSnapshot::After,
+        until: now + Duration::from_millis(squid_ink.cue_ms),
+    });
+
+    let mut hit_count = 0;
+    for target in targets {
+        if apply_network_squid_ink_to_player(state, PlayerId(target.id as u64), now) {
+            hit_count += 1;
+        }
+    }
+
+    if hit_count == 0 {
+        push_event(state, format!("{attacker_name} missed Squid Ink"));
+        push_network_log(
+            &state.debug_log,
+            format!("{attacker_name} squid ink missed"),
+        );
+    } else {
+        push_event(state, format!("{attacker_name} inked {hit_count} racer(s)"));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BananaResolution {
     SpunOut,
@@ -1954,6 +2013,58 @@ fn apply_network_blue_shell_to_player(
         });
     }
     applied
+}
+
+fn apply_network_squid_ink_to_player(
+    state: &mut HostState,
+    target_id: PlayerId,
+    now: Instant,
+) -> bool {
+    let Some(target_index) = state
+        .race
+        .players
+        .iter()
+        .position(|player| player.id == RacePlayerId(target_id.0))
+    else {
+        return false;
+    };
+    let target_name = state.race.players[target_index].name.clone();
+
+    if state.race.players[target_index]
+        .state
+        .has_active_shield(now)
+    {
+        state.race.players[target_index]
+            .state
+            .active_effects
+            .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
+        state
+            .player_effects
+            .entry(target_id)
+            .or_default()
+            .impact_cue = Some(NetworkImpactCue {
+            kind: ImpactCueSnapshotKind::ShieldBlock,
+            until: now + Duration::from_millis(700),
+        });
+        push_event(state, format!("{target_name} blocked Squid Ink"));
+        push_network_log(
+            &state.debug_log,
+            format!("{target_name} blocked Squid Ink; shield consumed"),
+        );
+        return false;
+    }
+
+    let target = &mut state.race.players[target_index].state;
+    target.inked_word_index = Some(target.word_index);
+    state
+        .player_effects
+        .entry(target_id)
+        .or_default()
+        .impact_cue = Some(NetworkImpactCue {
+        kind: ImpactCueSnapshotKind::SquidInk,
+        until: now + Duration::from_millis(state.item_registry.squid_ink_effect().impact_blink_ms),
+    });
+    true
 }
 
 fn advance_network_mushrooms(state: &mut HostState, now: Instant) {
@@ -2853,6 +2964,7 @@ fn build_player_snapshots(state: &HostState, now: Instant) -> Vec<PlayerSnapshot
                 connected: player.connected,
                 shielded: player.state.has_active_shield(now),
                 starred: player.state.has_active_star(now),
+                inked: player.state.is_inked(),
                 boosted: player_has_active_mushroom_effect(player, now),
                 stunned: effects.stunned_until.is_some_and(|until| until > now),
                 impact_remaining_ms: remaining_ms(effects.impact_cue.map(|cue| cue.until), now),
@@ -2878,6 +2990,7 @@ fn build_item_cue_snapshot(cue: Option<NetworkItemCue>, now: Instant) -> Option<
             NetworkItemCueKind::BlueShell { direction } => {
                 ItemCueSnapshotKind::BlueShell { direction }
             }
+            NetworkItemCueKind::SquidInk => ItemCueSnapshotKind::SquidInk,
         },
         ascii_label: cue.ascii_label,
         unicode_label: cue.unicode_label,
@@ -4133,6 +4246,64 @@ mod tests {
     }
 
     #[test]
+    fn network_squid_ink_marks_all_targets_in_range() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.race.players[0].state.word_index = 1;
+        state.race.players[1].state.word_index = 3;
+
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::SquidInk),
+            now,
+        );
+
+        let alex = state.race.player(RacePlayerId(2)).unwrap();
+        assert!(alex.state.is_inked());
+        assert_eq!(
+            state
+                .player_effects
+                .get(&PlayerId(2))
+                .and_then(|effects| effects.impact_cue)
+                .map(|cue| cue.kind),
+            Some(ImpactCueSnapshotKind::SquidInk)
+        );
+
+        let snapshot = build_race_snapshot(&mut state);
+        assert!(snapshot.players[1].inked);
+    }
+
+    #[test]
+    fn network_squid_ink_is_blocked_by_shield() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.race.players[1]
+            .state
+            .active_effects
+            .push(ActiveEffect::Shield {
+                until: now + Duration::from_secs(5),
+            });
+
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::SquidInk),
+            now,
+        );
+
+        let alex = state.race.player(RacePlayerId(2)).unwrap();
+        assert!(!alex.state.is_inked());
+        assert!(!alex.state.has_active_shield(now));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event == "alex blocked Squid Ink")
+        );
+    }
+
+    #[test]
     fn race_status_records_finish_order_and_finishes_when_all_connected_finish() {
         let now = std::time::Instant::now();
         let mut state = HostState {
@@ -4433,6 +4604,9 @@ mod tests {
             ItemPickup::Held(HeldItem::Star) => ("star", "Star Power", ItemActivation::Held),
             ItemPickup::Held(HeldItem::BlueShell) => {
                 ("blue_shell", "Blue Shell", ItemActivation::Held)
+            }
+            ItemPickup::Held(HeldItem::SquidInk) => {
+                ("squid_ink", "Squid Ink", ItemActivation::Held)
             }
             ItemPickup::Shield => ("shield", "Shield", ItemActivation::Immediate),
         };
