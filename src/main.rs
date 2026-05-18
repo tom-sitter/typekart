@@ -192,6 +192,37 @@ enum Command {
         #[arg(long, default_value_t = 7200)]
         room_idle_timeout_secs: u64,
     },
+    /// Run a relay capacity load test.
+    #[command(name = "relay-load-test", hide = true)]
+    RelayLoadTest {
+        /// WebSocket relay URL to test.
+        #[arg(long, default_value = DEFAULT_PUBLIC_RELAY_URL)]
+        relay: String,
+        /// First concurrent game count to test.
+        #[arg(long, default_value_t = 10)]
+        start_games: usize,
+        /// Maximum concurrent game count to test.
+        #[arg(long, default_value_t = 100)]
+        max_games: usize,
+        /// Concurrent game increment for each test step.
+        #[arg(long, default_value_t = 10)]
+        step_games: usize,
+        /// Joiners per game, excluding the host.
+        #[arg(long, default_value_t = 5)]
+        joiners_per_game: usize,
+        /// Seconds to sustain each load-test step.
+        #[arg(long, default_value_t = 30)]
+        duration_secs: u64,
+        /// Host broadcast interval in milliseconds.
+        #[arg(long, default_value_t = 100)]
+        snapshot_interval_ms: u64,
+        /// Simulated joiner key input interval in milliseconds.
+        #[arg(long, default_value_t = 125)]
+        input_interval_ms: u64,
+        /// Seconds to wait for rooms to be created before each step starts joiners.
+        #[arg(long, default_value_t = 10)]
+        settle_timeout_secs: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -341,6 +372,27 @@ fn main() -> Result<()> {
                 max_message_bytes,
                 room_idle_timeout: std::time::Duration::from_secs(room_idle_timeout_secs),
             },
+        }),
+        Command::RelayLoadTest {
+            relay,
+            start_games,
+            max_games,
+            step_games,
+            joiners_per_game,
+            duration_secs,
+            snapshot_interval_ms,
+            input_interval_ms,
+            settle_timeout_secs,
+        } => net::load_test::run_relay_load_test(net::load_test::RelayLoadTestConfig {
+            relay,
+            start_games,
+            max_games,
+            step_games,
+            joiners_per_game,
+            duration: std::time::Duration::from_secs(duration_secs),
+            snapshot_interval: std::time::Duration::from_millis(snapshot_interval_ms),
+            input_interval: std::time::Duration::from_millis(input_interval_ms),
+            settle_timeout: std::time::Duration::from_secs(settle_timeout_secs),
         }),
     }
 }

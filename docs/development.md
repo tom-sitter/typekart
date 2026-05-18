@@ -23,10 +23,39 @@ cargo run -- join-lan --help
 Run the same checks used before pushing:
 
 ```sh
+scripts/check.sh
+```
+
+The script runs:
+
+```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
+
+## Relay Load Testing
+
+The hidden `relay-load-test` command opens synthetic relay rooms and joiners,
+then sends realistic host broadcasts and joiner key-input messages. It tests the
+relay path directly without terminal rendering or local game-loop overhead.
+
+Run a short local relay test:
+
+```sh
+cargo run -- relay --bind 127.0.0.1:8080
+cargo run -- relay-load-test --relay ws://127.0.0.1:8080 --start-games 5 --max-games 20 --step-games 5 --duration-secs 10
+```
+
+Run against the public relay carefully:
+
+```sh
+cargo run -- relay-load-test --start-games 10 --max-games 100 --step-games 10 --duration-secs 30
+```
+
+Each synthetic game uses one host WebSocket plus `--joiners-per-game` joiner
+WebSockets. With the default `--joiners-per-game 5`, `30` games means `180`
+relay connections.
 
 ## Local Multiplayer Testing
 
