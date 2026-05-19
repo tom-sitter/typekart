@@ -1,5 +1,5 @@
 PackageIdentifier: tom-sitter.TypeKart
-PackageVersion: 0.1.3
+PackageVersion: 0.1.4
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -7,7 +7,7 @@ NestedInstallerFiles:
     PortableCommandAlias: typekart
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/tom-sitter/typekart/releases/download/v0.1.3/typekart-x86_64-pc-windows-msvc.zip
-    InstallerSha256: AC69089377F0BF4AA56877B5721BA2063A702C4ACDDEBA210C6480D89E825395
+    InstallerUrl: https://github.com/tom-sitter/typekart/releases/download/v0.1.4/typekart-x86_64-pc-windows-msvc.zip
+    InstallerSha256: 324604641E8CEDEF7DCA9D176188BF40DD0C299628B7B9F39680D561799C5531
 ManifestType: installer
 ManifestVersion: 1.6.0
