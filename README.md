@@ -1,6 +1,9 @@
 # TypeKart
 
-TypeKart is a terminal typing racer with kart-style item effects.
+TypeKart is a terminal typing racer with kart-style item effects. Race against friends or AI players, type bonus words to gain power ups or attacks, and may the best typist win!
+
+<img width="540" height="292" alt="multiplayer-demo" src="https://github.com/user-attachments/assets/bd63227f-0369-4786-b9b1-a6567356b858" />
+
 
 ## Install
 
