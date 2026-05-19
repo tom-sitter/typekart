@@ -27,9 +27,9 @@
       },
       "effect": {
         "range_words": 10,
-        "stun_ms": 2000,
-        "impact_blink_ms": 1200,
-        "cue_ms": 1500
+        "duration_ms": 2000,
+        "impact_duration_ms": 1200,
+        "cue_duration_ms": 1500
       },
       "display": {
         "ascii_ahead": " ))>>",
@@ -66,7 +66,7 @@
       },
       "effect": {
         "duration_ms": 10000,
-        "focus_ai_wpm_boost": 10
+        "ai_wpm_boost": 10
       }
     },
     {
@@ -81,7 +81,7 @@
       },
       "effect": {
         "affected_words": 1,
-        "cyclone_stun_ms": 2500
+        "duration_ms": 2500
       }
     },
     {
@@ -95,11 +95,11 @@
         "nearby_racer": { "first": 4, "middle": 6, "trailing": 5 }
       },
       "effect": {
-        "ink_range_words": 5,
-        "ink_duration_ms": 5000,
-        "ink_impact_blink_ms": 1200,
-        "ink_cue_ms": 1500,
-        "ink_ai_wpm_multiplier_percent": 70
+        "range_words": 5,
+        "duration_ms": 5000,
+        "impact_duration_ms": 1200,
+        "cue_duration_ms": 1500,
+        "ai_wpm_multiplier_percent": 70
       }
     }
   ]

@@ -596,9 +596,20 @@ impl ItemRegistry {
             }
 
             if let Some(effect) = override_item.effect {
-                if target.effect.mushroom.is_some()
-                    && (effect.boost_words.is_some() || effect.wpm.is_some())
-                {
+                if target.effect.mushroom.is_some() {
+                    if effect.range_words.is_some()
+                        || effect.duration_ms.is_some()
+                        || effect.impact_duration_ms.is_some()
+                        || effect.cue_duration_ms.is_some()
+                        || effect.ai_wpm_boost.is_some()
+                        || effect.affected_words.is_some()
+                        || effect.ai_wpm_multiplier_percent.is_some()
+                    {
+                        bail!(
+                            "item '{}' does not support those effect config fields",
+                            override_item.id
+                        );
+                    }
                     let mut mushroom = target.effect.mushroom.unwrap_or_default();
                     if let Some(boost_words) = effect.boost_words {
                         mushroom.boost_words = boost_words;
@@ -619,31 +630,30 @@ impl ItemRegistry {
                         );
                     }
                     target.effect.mushroom = Some(mushroom);
-                } else if effect.boost_words.is_some() || effect.wpm.is_some() {
-                    bail!(
-                        "item '{}' does not support mushroom effect config",
-                        override_item.id
-                    );
-                }
-
-                if target.effect.banana.is_some()
-                    && (effect.range_words.is_some()
-                        || effect.stun_ms.is_some()
-                        || effect.impact_blink_ms.is_some()
-                        || effect.cue_ms.is_some())
-                {
+                } else if target.effect.banana.is_some() {
+                    if effect.boost_words.is_some()
+                        || effect.wpm.is_some()
+                        || effect.ai_wpm_boost.is_some()
+                        || effect.affected_words.is_some()
+                        || effect.ai_wpm_multiplier_percent.is_some()
+                    {
+                        bail!(
+                            "item '{}' does not support those effect config fields",
+                            override_item.id
+                        );
+                    }
                     let mut banana = target.effect.banana.unwrap_or_default();
                     if let Some(range_words) = effect.range_words {
                         banana.range_words = range_words;
                     }
-                    if let Some(stun_ms) = effect.stun_ms {
-                        banana.stun_ms = stun_ms;
+                    if let Some(duration_ms) = effect.duration_ms {
+                        banana.stun_ms = duration_ms;
                     }
-                    if let Some(impact_blink_ms) = effect.impact_blink_ms {
-                        banana.impact_blink_ms = impact_blink_ms;
+                    if let Some(impact_duration_ms) = effect.impact_duration_ms {
+                        banana.impact_blink_ms = impact_duration_ms;
                     }
-                    if let Some(cue_ms) = effect.cue_ms {
-                        banana.cue_ms = cue_ms;
+                    if let Some(cue_duration_ms) = effect.cue_duration_ms {
+                        banana.cue_ms = cue_duration_ms;
                     }
                     if banana.range_words == 0 {
                         bail!(
@@ -651,19 +661,28 @@ impl ItemRegistry {
                             override_item.id
                         );
                     }
+                    if banana.stun_ms == 0 {
+                        bail!(
+                            "item '{}' banana duration_ms must be greater than zero",
+                            override_item.id
+                        );
+                    }
                     target.effect.banana = Some(banana);
-                } else if effect.range_words.is_some()
-                    || effect.stun_ms.is_some()
-                    || effect.impact_blink_ms.is_some()
-                    || effect.cue_ms.is_some()
-                {
-                    bail!(
-                        "item '{}' does not support banana effect config",
-                        override_item.id
-                    );
-                }
-
-                if target.effect.shield.is_some() && effect.duration_ms.is_some() {
+                } else if target.effect.shield.is_some() {
+                    if effect.boost_words.is_some()
+                        || effect.wpm.is_some()
+                        || effect.range_words.is_some()
+                        || effect.impact_duration_ms.is_some()
+                        || effect.cue_duration_ms.is_some()
+                        || effect.ai_wpm_boost.is_some()
+                        || effect.affected_words.is_some()
+                        || effect.ai_wpm_multiplier_percent.is_some()
+                    {
+                        bail!(
+                            "item '{}' does not support those effect config fields",
+                            override_item.id
+                        );
+                    }
                     let mut shield = target.effect.shield.unwrap_or_default();
                     if let Some(duration_ms) = effect.duration_ms {
                         shield.duration_ms = duration_ms;
@@ -675,47 +694,54 @@ impl ItemRegistry {
                         );
                     }
                     target.effect.shield = Some(shield);
-                } else if effect.duration_ms.is_some() {
-                    if target.effect.focus.is_some() {
-                        let mut focus = target.effect.focus.unwrap_or_default();
-                        focus.duration_ms = effect.duration_ms.unwrap();
-                        if focus.duration_ms == 0 {
-                            bail!(
-                                "item '{}' focus duration_ms must be greater than zero",
-                                override_item.id
-                            );
-                        }
-                        target.effect.focus = Some(focus);
-                    } else {
+                } else if target.effect.focus.is_some() {
+                    if effect.boost_words.is_some()
+                        || effect.wpm.is_some()
+                        || effect.range_words.is_some()
+                        || effect.impact_duration_ms.is_some()
+                        || effect.cue_duration_ms.is_some()
+                        || effect.affected_words.is_some()
+                        || effect.ai_wpm_multiplier_percent.is_some()
+                    {
                         bail!(
-                            "item '{}' does not support duration_ms effect config",
+                            "item '{}' does not support those effect config fields",
                             override_item.id
                         );
                     }
-                }
-
-                if target.effect.focus.is_some() && effect.focus_ai_wpm_boost.is_some() {
                     let mut focus = target.effect.focus.unwrap_or_default();
-                    if let Some(boost) = effect.focus_ai_wpm_boost {
+                    if let Some(duration_ms) = effect.duration_ms {
+                        focus.duration_ms = duration_ms;
+                    }
+                    if let Some(boost) = effect.ai_wpm_boost {
                         focus.ai_wpm_boost = boost;
                     }
+                    if focus.duration_ms == 0 {
+                        bail!(
+                            "item '{}' focus duration_ms must be greater than zero",
+                            override_item.id
+                        );
+                    }
                     target.effect.focus = Some(focus);
-                } else if effect.focus_ai_wpm_boost.is_some() {
-                    bail!(
-                        "item '{}' does not support focus effect config",
-                        override_item.id
-                    );
-                }
-
-                if target.effect.cyclone.is_some()
-                    && (effect.affected_words.is_some() || effect.cyclone_stun_ms.is_some())
-                {
+                } else if target.effect.cyclone.is_some() {
+                    if effect.boost_words.is_some()
+                        || effect.wpm.is_some()
+                        || effect.range_words.is_some()
+                        || effect.impact_duration_ms.is_some()
+                        || effect.cue_duration_ms.is_some()
+                        || effect.ai_wpm_boost.is_some()
+                        || effect.ai_wpm_multiplier_percent.is_some()
+                    {
+                        bail!(
+                            "item '{}' does not support those effect config fields",
+                            override_item.id
+                        );
+                    }
                     let mut cyclone = target.effect.cyclone.unwrap_or_default();
                     if let Some(affected_words) = effect.affected_words {
                         cyclone.affected_words = affected_words;
                     }
-                    if let Some(stun_ms) = effect.cyclone_stun_ms {
-                        cyclone.stun_ms = stun_ms;
+                    if let Some(duration_ms) = effect.duration_ms {
+                        cyclone.stun_ms = duration_ms;
                     }
                     if cyclone.affected_words == 0 {
                         bail!(
@@ -725,39 +751,36 @@ impl ItemRegistry {
                     }
                     if cyclone.stun_ms == 0 {
                         bail!(
-                            "item '{}' cyclone stun_ms must be greater than zero",
+                            "item '{}' cyclone duration_ms must be greater than zero",
                             override_item.id
                         );
                     }
                     target.effect.cyclone = Some(cyclone);
-                } else if effect.affected_words.is_some() || effect.cyclone_stun_ms.is_some() {
-                    bail!(
-                        "item '{}' does not support cyclone effect config",
-                        override_item.id
-                    );
-                }
-
-                if target.effect.squid_ink.is_some()
-                    && (effect.ink_range_words.is_some()
-                        || effect.ink_duration_ms.is_some()
-                        || effect.ink_impact_blink_ms.is_some()
-                        || effect.ink_cue_ms.is_some()
-                        || effect.ink_ai_wpm_multiplier_percent.is_some())
-                {
+                } else if target.effect.squid_ink.is_some() {
+                    if effect.boost_words.is_some()
+                        || effect.wpm.is_some()
+                        || effect.ai_wpm_boost.is_some()
+                        || effect.affected_words.is_some()
+                    {
+                        bail!(
+                            "item '{}' does not support those effect config fields",
+                            override_item.id
+                        );
+                    }
                     let mut squid_ink = target.effect.squid_ink.unwrap_or_default();
-                    if let Some(range_words) = effect.ink_range_words {
+                    if let Some(range_words) = effect.range_words {
                         squid_ink.range_words = range_words;
                     }
-                    if let Some(duration_ms) = effect.ink_duration_ms {
+                    if let Some(duration_ms) = effect.duration_ms {
                         squid_ink.duration_ms = duration_ms;
                     }
-                    if let Some(impact_blink_ms) = effect.ink_impact_blink_ms {
-                        squid_ink.impact_blink_ms = impact_blink_ms;
+                    if let Some(impact_duration_ms) = effect.impact_duration_ms {
+                        squid_ink.impact_blink_ms = impact_duration_ms;
                     }
-                    if let Some(cue_ms) = effect.ink_cue_ms {
-                        squid_ink.cue_ms = cue_ms;
+                    if let Some(cue_duration_ms) = effect.cue_duration_ms {
+                        squid_ink.cue_ms = cue_duration_ms;
                     }
-                    if let Some(multiplier) = effect.ink_ai_wpm_multiplier_percent {
+                    if let Some(multiplier) = effect.ai_wpm_multiplier_percent {
                         squid_ink.ai_wpm_multiplier_percent = multiplier;
                     }
                     if squid_ink.range_words == 0 {
@@ -781,16 +804,6 @@ impl ItemRegistry {
                         );
                     }
                     target.effect.squid_ink = Some(squid_ink);
-                } else if effect.ink_range_words.is_some()
-                    || effect.ink_duration_ms.is_some()
-                    || effect.ink_impact_blink_ms.is_some()
-                    || effect.ink_cue_ms.is_some()
-                    || effect.ink_ai_wpm_multiplier_percent.is_some()
-                {
-                    bail!(
-                        "item '{}' does not support squid ink effect config",
-                        override_item.id
-                    );
                 }
             }
 
@@ -966,18 +979,12 @@ struct ItemPackEffectConfig {
     boost_words: Option<usize>,
     wpm: Option<u32>,
     range_words: Option<usize>,
-    stun_ms: Option<u64>,
-    impact_blink_ms: Option<u64>,
-    cue_ms: Option<u64>,
     duration_ms: Option<u64>,
-    focus_ai_wpm_boost: Option<u32>,
+    impact_duration_ms: Option<u64>,
+    cue_duration_ms: Option<u64>,
+    ai_wpm_boost: Option<u32>,
     affected_words: Option<usize>,
-    cyclone_stun_ms: Option<u64>,
-    ink_range_words: Option<usize>,
-    ink_duration_ms: Option<u64>,
-    ink_impact_blink_ms: Option<u64>,
-    ink_cue_ms: Option<u64>,
-    ink_ai_wpm_multiplier_percent: Option<u32>,
+    ai_wpm_multiplier_percent: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1404,9 +1411,9 @@ mod tests {
                         "id": "banana",
                         "effect": {
                             "range_words": 6,
-                            "stun_ms": 1500,
-                            "impact_blink_ms": 900,
-                            "cue_ms": 700
+                            "duration_ms": 1500,
+                            "impact_duration_ms": 900,
+                            "cue_duration_ms": 700
                         }
                     },
                     {
@@ -1417,24 +1424,24 @@ mod tests {
                         "id": "focus",
                         "effect": {
                             "duration_ms": 7500,
-                            "focus_ai_wpm_boost": 15
+                            "ai_wpm_boost": 15
                         }
                     },
                     {
                         "id": "cyclone",
                         "effect": {
                             "affected_words": 2,
-                            "cyclone_stun_ms": 3000
+                            "duration_ms": 3000
                         }
                     },
                     {
                         "id": "squid_ink",
                         "effect": {
-                            "ink_range_words": 7,
-                            "ink_duration_ms": 2500,
-                            "ink_impact_blink_ms": 800,
-                            "ink_cue_ms": 600,
-                            "ink_ai_wpm_multiplier_percent": 55
+                            "range_words": 7,
+                            "duration_ms": 2500,
+                            "impact_duration_ms": 800,
+                            "cue_duration_ms": 600,
+                            "ai_wpm_multiplier_percent": 55
                         }
                     }
                 ]

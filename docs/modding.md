@@ -75,9 +75,9 @@ Example:
       "id": "banana",
       "effect": {
         "range_words": 12,
-        "stun_ms": 2000,
-        "impact_blink_ms": 1200,
-        "cue_ms": 1500
+        "duration_ms": 2000,
+        "impact_duration_ms": 1200,
+        "cue_duration_ms": 1500
       },
       "display": {
         "ascii_ahead": " ))>>",
@@ -96,24 +96,24 @@ Example:
       "id": "focus",
       "effect": {
         "duration_ms": 10000,
-        "focus_ai_wpm_boost": 10
+        "ai_wpm_boost": 10
       }
     },
     {
       "id": "cyclone",
       "effect": {
         "affected_words": 1,
-        "cyclone_stun_ms": 2500
+        "duration_ms": 2500
       }
     },
     {
       "id": "squid_ink",
       "effect": {
-        "ink_range_words": 5,
-        "ink_duration_ms": 5000,
-        "ink_impact_blink_ms": 1200,
-        "ink_cue_ms": 1500,
-        "ink_ai_wpm_multiplier_percent": 70
+        "range_words": 5,
+        "duration_ms": 5000,
+        "impact_duration_ms": 1200,
+        "cue_duration_ms": 1500,
+        "ai_wpm_multiplier_percent": 70
       }
     }
   ]
@@ -156,11 +156,11 @@ Detailed `context_weights` shape:
 Effect fields are item-specific:
 
 - Mushroom: `boost_words`, `wpm`.
-- Banana: `range_words`, `stun_ms`, `impact_blink_ms`, `cue_ms`.
+- Banana: `range_words`, `duration_ms`, `impact_duration_ms`, `cue_duration_ms`.
 - Shield: `duration_ms`.
-- Focus: `duration_ms`, `focus_ai_wpm_boost`.
-- Cyclone: `affected_words`, `cyclone_stun_ms`.
-- Squid Ink: `ink_range_words`, `ink_duration_ms`, `ink_impact_blink_ms`, `ink_cue_ms`, `ink_ai_wpm_multiplier_percent`.
+- Focus: `duration_ms`, `ai_wpm_boost`.
+- Cyclone: `affected_words`, `duration_ms`.
+- Squid Ink: `range_words`, `duration_ms`, `impact_duration_ms`, `cue_duration_ms`, `ai_wpm_multiplier_percent`.
 
 Banana display fields:
 
