@@ -2003,14 +2003,28 @@ fn apply_network_cyclone_to_player(
         target.input.clear();
         target.typo_index = None;
         state.bonus_attempts.remove(&target_id);
+        let cyclone = state.item_registry.cyclone_effect();
+        if let Some(ai) = state.ai_racers.get_mut(&target_id) {
+            ai.char_budget = 0.0;
+        }
         state
             .player_effects
             .entry(target_id)
-            .or_default()
-            .impact_cue = Some(NetworkImpactCue {
-            kind: ImpactCueSnapshotKind::Cyclone,
-            until: now + Duration::from_millis(1_200),
-        });
+            .and_modify(|effects| {
+                effects.stunned_until = Some(now + Duration::from_millis(cyclone.stun_ms));
+                effects.impact_cue = Some(NetworkImpactCue {
+                    kind: ImpactCueSnapshotKind::Cyclone,
+                    until: now + Duration::from_millis(1_200),
+                });
+            })
+            .or_insert_with(|| NetworkPlayerEffects {
+                stunned_until: Some(now + Duration::from_millis(cyclone.stun_ms)),
+                impact_cue: Some(NetworkImpactCue {
+                    kind: ImpactCueSnapshotKind::Cyclone,
+                    until: now + Duration::from_millis(1_200),
+                }),
+                item_cue: None,
+            });
     }
     applied
 }
@@ -2249,6 +2263,19 @@ fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: In
         .player(RacePlayerId(player_id.0))
         .is_none_or(|player| player.state.is_finished())
         || player_input_is_paused(state, player_id, now);
+    let is_inked = state
+        .race
+        .player(RacePlayerId(player_id.0))
+        .is_some_and(|player| player.state.is_inked_at(now));
+    let is_focused = state
+        .race
+        .player(RacePlayerId(player_id.0))
+        .is_some_and(|player| player.state.has_active_focus(now));
+    let focus_boost_wpm = state.item_registry.focus_effect().ai_wpm_boost;
+    let ink_multiplier_percent = state
+        .item_registry
+        .squid_ink_effect()
+        .ai_wpm_multiplier_percent;
 
     let Some(ai) = state.ai_racers.get_mut(&player_id) else {
         return;
@@ -2260,7 +2287,14 @@ fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: In
         return;
     }
 
-    ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(ai.words_per_minute);
+    let effective_wpm = ai_effective_wpm(
+        ai.words_per_minute,
+        is_focused,
+        is_inked,
+        focus_boost_wpm,
+        ink_multiplier_percent,
+    );
+    ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(effective_wpm);
 
     while state
         .ai_racers
@@ -2345,6 +2379,25 @@ fn attack_direction(
 
 fn mushroom_step_interval(wpm: u32) -> Duration {
     Duration::from_secs_f64(60.0 / f64::from(wpm))
+}
+
+fn ai_effective_wpm(
+    base_wpm: f64,
+    is_focused: bool,
+    is_inked: bool,
+    focus_boost_wpm: u32,
+    ink_multiplier_percent: u32,
+) -> f64 {
+    let focused_wpm = if is_focused {
+        base_wpm + f64::from(focus_boost_wpm)
+    } else {
+        base_wpm
+    };
+    if is_inked {
+        focused_wpm * f64::from(ink_multiplier_percent) / 100.0
+    } else {
+        focused_wpm
+    }
 }
 
 fn network_banana_cue_labels(
@@ -3446,6 +3499,30 @@ mod tests {
     }
 
     #[test]
+    fn network_inked_ai_racer_hesitates_from_reduced_wpm_budget() {
+        let now = Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players[1].kind = PlayerKind::Bot;
+        state.race.players[1].state.inked_word_index = Some(0);
+        state.race.players[1].state.inked_until = Some(now + Duration::from_secs(5));
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
+                words_per_minute: 60.0,
+                char_budget: 0.0,
+                last_update: now,
+            },
+        );
+
+        advance_network_ai_racers(&mut state, now + Duration::from_secs(1));
+
+        let ai = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(ai.state.word_index, 0);
+        assert_eq!(ai.state.input, "one");
+    }
+
+    #[test]
     fn network_ai_racer_does_not_type_while_stunned() {
         let now = Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
@@ -4193,6 +4270,12 @@ mod tests {
     }
 
     #[test]
+    fn network_focused_ai_racer_gets_small_wpm_boost() {
+        assert_eq!(super::ai_effective_wpm(60.0, true, false, 10, 70), 70.0);
+        assert_eq!(super::ai_effective_wpm(60.0, false, false, 10, 70), 60.0);
+    }
+
+    #[test]
     fn network_cyclone_reverses_first_place_target_word() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
@@ -4207,6 +4290,13 @@ mod tests {
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.word_override(1), Some("owt"));
+        assert!(
+            state
+                .player_effects
+                .get(&PlayerId(2))
+                .and_then(|effects| effects.stunned_until)
+                .is_some_and(|until| until > now)
+        );
         assert!(
             state
                 .events

@@ -61,8 +61,8 @@ Use the same `--ascii` setting on host and joiners when validating ASCII fallbac
 - Banana misses are shown once in Events.
 - Banana hits show one concise attacker/target event and the target blink.
 - Shield blocks Banana and consumes the shield.
-- Focus shows the focus racer marker and discards incorrect keys without forcing backspace recovery.
-- Cyclone shows the cyclone attack cue, reverses the target's next word, and makes the target blink blue.
+- Focus shows the focus racer marker, discards incorrect keys without forcing backspace recovery, and gives AI racers a small WPM boost.
+- Cyclone shows the cyclone attack cue, briefly stuns the target, reverses the target's next word, and makes the target blink blue.
 - Shield blocks Cyclone and consumes the shield.
 - Finished racers are not valid item targets.
 - Debug logs include detailed item cause and effect, including target candidates and distances.

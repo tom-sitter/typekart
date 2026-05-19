@@ -95,13 +95,15 @@ Example:
     {
       "id": "focus",
       "effect": {
-        "duration_ms": 10000
+        "duration_ms": 10000,
+        "focus_ai_wpm_boost": 10
       }
     },
     {
       "id": "cyclone",
       "effect": {
-        "affected_words": 1
+        "affected_words": 1,
+        "cyclone_stun_ms": 2500
       }
     },
     {
@@ -110,7 +112,8 @@ Example:
         "ink_range_words": 5,
         "ink_duration_ms": 5000,
         "ink_impact_blink_ms": 1200,
-        "ink_cue_ms": 1500
+        "ink_cue_ms": 1500,
+        "ink_ai_wpm_multiplier_percent": 70
       }
     }
   ]
@@ -155,9 +158,9 @@ Effect fields are item-specific:
 - Mushroom: `boost_words`, `wpm`.
 - Banana: `range_words`, `stun_ms`, `impact_blink_ms`, `cue_ms`.
 - Shield: `duration_ms`.
-- Focus: `duration_ms`.
-- Cyclone: `affected_words`.
-- Squid Ink: `ink_range_words`, `ink_duration_ms`, `ink_impact_blink_ms`, `ink_cue_ms`.
+- Focus: `duration_ms`, `focus_ai_wpm_boost`.
+- Cyclone: `affected_words`, `cyclone_stun_ms`.
+- Squid Ink: `ink_range_words`, `ink_duration_ms`, `ink_impact_blink_ms`, `ink_cue_ms`, `ink_ai_wpm_multiplier_percent`.
 
 Banana display fields:
 

@@ -28,7 +28,7 @@ use ratatui::{
 use crate::{
     game::{
         ai::AiDifficulty,
-        bonus::{BonusChoice, BonusPoint, BonusState},
+        bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         effects::ActiveEffect,
         player::PlayerState,
         track::Track,
@@ -328,10 +328,10 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
         .map(str::to_string)
         .collect(),
     };
-    let bonuses = gallery_bonuses();
+    let mut bonuses = gallery_bonuses();
     let mut player = PlayerState::new(now - Duration::from_secs(20));
-    player.word_index = 4;
-    player.stats.completed_words = 4;
+    player.word_index = 5;
+    player.stats.completed_words = 5;
 
     let mut ai_ahead = ai_racer(1, "ahead", 6, 72.0, now);
     let mut ai_behind = ai_racer(2, "behind", 2, 68.0, now);
@@ -402,6 +402,7 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             player.word_index = 4;
             player.stats.completed_words = 4;
             player.input = String::new();
+            consume_gallery_bonus_choice(&mut bonuses, 2, now);
             ai_ahead.player.word_index = 4;
             ai_ahead.player.stats.completed_words = 4;
             ai_behind.player.word_index = 3;
@@ -467,6 +468,9 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             events.push("The leader is shielded but still in reach");
         }
         GalleryScenario::BananaHitPack => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 0, now);
             player_item_cue = Some(item_cue(
                 ItemCueKind::Banana {
                     direction: AttackDirection::Ahead,
@@ -489,6 +493,9 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             events.push("you hit ahead");
         }
         GalleryScenario::SquidInkPack => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 2, now);
             player_item_cue = Some(item_cue(ItemCueKind::SquidInk, " ink ", " 🦑 ", now));
             ai_ahead.impact_cue = Some(ImpactCue {
                 kind: ImpactCueKind::SquidInk,
@@ -508,6 +515,7 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             events.push("Future words are hidden until reached");
         }
         GalleryScenario::ItemPileup => {
+            consume_gallery_bonus_choice(&mut bonuses, 0, now);
             player.active_effects.push(ActiveEffect::Mushroom {
                 remaining_words: 2,
                 next_step_at: now + Duration::from_secs(1),
@@ -556,6 +564,9 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             events.push("sprint is typing the final word");
         }
         GalleryScenario::MushroomBoost => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 0, now);
             player.active_effects.push(ActiveEffect::Mushroom {
                 remaining_words: 2,
                 next_step_at: now + Duration::from_secs(1),
@@ -563,16 +574,25 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             });
         }
         GalleryScenario::ShieldActive => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 1, now);
             player.active_effects.push(ActiveEffect::Shield {
                 until: now + Duration::from_secs(5),
             });
         }
         GalleryScenario::FocusActive => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 0, now);
             player.active_effects.push(ActiveEffect::Focus {
                 until: now + Duration::from_secs(5),
             });
         }
         GalleryScenario::BananaAhead => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 0, now);
             player_item_cue = Some(item_cue(
                 ItemCueKind::Banana {
                     direction: AttackDirection::Ahead,
@@ -583,6 +603,9 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             ));
         }
         GalleryScenario::BananaBehind => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 0, now);
             player_item_cue = Some(item_cue(
                 ItemCueKind::Banana {
                     direction: AttackDirection::Behind,
@@ -599,6 +622,9 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             });
         }
         GalleryScenario::CycloneAhead => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 1, now);
             player_item_cue = Some(item_cue(
                 ItemCueKind::Cyclone {
                     direction: AttackDirection::Ahead,
@@ -615,6 +641,9 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             });
         }
         GalleryScenario::SquidInkCue => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            consume_gallery_bonus_choice(&mut bonuses, 2, now);
             player_item_cue = Some(item_cue(ItemCueKind::SquidInk, " ink ", " 🦑 ", now));
         }
         GalleryScenario::SquidInkImpact => {
@@ -664,6 +693,18 @@ fn gallery_bonuses() -> BonusState {
             "squid".to_string(),
         ],
     )
+}
+
+fn consume_gallery_bonus_choice(bonuses: &mut BonusState, choice_index: usize, now: Instant) {
+    if let Some(choice) = bonuses
+        .points
+        .get_mut(0)
+        .and_then(|point| point.choices.get_mut(choice_index))
+    {
+        choice.status = BonusChoiceStatus::Cooldown {
+            until: now + Duration::from_secs(4),
+        };
+    }
 }
 
 fn ai_racer(id: usize, name: &'static str, word_index: usize, wpm: f64, now: Instant) -> AiRacer {
@@ -770,7 +811,10 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::{GalleryScenario, gallery_scenarios, scenario_index_by_slug};
+    use crate::game::bonus::BonusChoiceStatus;
 
     #[test]
     fn item_gallery_covers_current_item_effects_and_rollout_states() {
@@ -811,5 +855,29 @@ mod tests {
         assert_eq!(bonuses.points[0].choices[0].word, "turbo");
         assert_eq!(bonuses.points[0].choices[1].word, "shield");
         assert_eq!(bonuses.points[0].choices[2].word, "squid");
+    }
+
+    #[test]
+    fn item_pickup_gallery_scenarios_show_consumed_bonus_choice() {
+        let state = super::scenario_state(GalleryScenario::BananaAhead, Instant::now());
+
+        assert_eq!(state.player.word_index, 4);
+        assert!(matches!(
+            state.bonuses.points[0].choices[0].status,
+            BonusChoiceStatus::Cooldown { .. }
+        ));
+    }
+
+    #[test]
+    fn non_pickup_gallery_scenarios_leave_local_player_off_bonus_gap() {
+        let state = super::scenario_state(GalleryScenario::BananaImpact, Instant::now());
+
+        assert_ne!(state.player.word_index, 4);
+        assert!(
+            state.bonuses.points[0]
+                .choices
+                .iter()
+                .all(|choice| matches!(choice.status, BonusChoiceStatus::Available))
+        );
     }
 }

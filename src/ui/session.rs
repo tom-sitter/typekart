@@ -37,6 +37,7 @@ pub struct LocalSession {
     pub bonuses: BonusState,
     pub bonus_attempt: Option<BonusAttempt>,
     pub attack_warning: Option<AttackWarning>,
+    player_stunned_until: Option<Instant>,
     pub player_impact_cue: Option<ImpactCue>,
     pub player_item_cue: Option<ItemCue>,
     pub race_status: RaceStatus,
@@ -307,6 +308,7 @@ impl LocalSession {
             bonuses,
             bonus_attempt: None,
             attack_warning: None,
+            player_stunned_until: None,
             player_impact_cue: None,
             player_item_cue: None,
             race_status: RaceStatus::default(),
@@ -351,6 +353,7 @@ impl LocalSession {
             bonuses,
             bonus_attempt: None,
             attack_warning: None,
+            player_stunned_until: None,
             player_impact_cue: None,
             player_item_cue: None,
             race_status: RaceStatus::default(),
@@ -467,6 +470,7 @@ impl LocalSession {
         self.bonuses = bonuses;
         self.bonus_attempt = None;
         self.attack_warning = None;
+        self.player_stunned_until = None;
         self.player_impact_cue = None;
         self.player_item_cue = None;
         self.race_status = RaceStatus::default();
@@ -701,7 +705,16 @@ impl LocalSession {
             return;
         }
 
-        ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(ai.words_per_minute);
+        let effective_wpm = ai_effective_wpm(
+            ai.words_per_minute,
+            ai.player.has_active_focus(now),
+            ai.player.is_inked_at(now),
+            self.item_registry.focus_effect().ai_wpm_boost,
+            self.item_registry
+                .squid_ink_effect()
+                .ai_wpm_multiplier_percent,
+        );
+        ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(effective_wpm);
         while ai.char_budget >= 1.0 && !ai.player.is_finished() {
             let Some(action) = next_ai_key(&ai.player, &self.track) else {
                 break;
@@ -1056,6 +1069,8 @@ impl LocalSession {
             self.item_registry.cyclone_effect().affected_words,
         );
         if applied {
+            self.player_stunned_until =
+                Some(now + Duration::from_millis(self.item_registry.cyclone_effect().stun_ms));
             self.player_impact_cue = Some(ImpactCue {
                 kind: ImpactCueKind::Cyclone,
                 until: now + Duration::from_millis(1_200),
@@ -1085,6 +1100,9 @@ impl LocalSession {
             self.item_registry.cyclone_effect().affected_words,
         );
         if applied {
+            ai.stunned_until =
+                Some(now + Duration::from_millis(self.item_registry.cyclone_effect().stun_ms));
+            ai.char_budget = 0.0;
             ai.impact_cue = Some(ImpactCue {
                 kind: ImpactCueKind::Cyclone,
                 until: now + Duration::from_millis(1_200),
@@ -1284,7 +1302,7 @@ impl LocalSession {
     }
 
     fn apply_typing_action(&mut self, action: KeyAction, now: Instant) {
-        if player_has_active_mushroom(&self.player) {
+        if player_has_active_mushroom(&self.player) || self.player_is_stunned(now) {
             return;
         }
 
@@ -1706,6 +1724,10 @@ impl LocalSession {
         self.advance_mushroom(now);
     }
 
+    fn player_is_stunned(&self, now: Instant) -> bool {
+        self.player_stunned_until.is_some_and(|until| until > now)
+    }
+
     fn advance_mushroom(&mut self, now: Instant) {
         while let Some(effect_index) = self.player.active_effects.iter().position(|effect| {
             matches!(
@@ -1767,6 +1789,25 @@ fn mushroom_step_interval(wpm: u32) -> std::time::Duration {
 
 fn ai_chars_per_second(words_per_minute: f64) -> f64 {
     words_per_minute * 5.0 / 60.0
+}
+
+fn ai_effective_wpm(
+    base_wpm: f64,
+    is_focused: bool,
+    is_inked: bool,
+    focus_boost_wpm: u32,
+    ink_multiplier_percent: u32,
+) -> f64 {
+    let focused_wpm = if is_focused {
+        base_wpm + f64::from(focus_boost_wpm)
+    } else {
+        base_wpm
+    };
+    if is_inked {
+        focused_wpm * f64::from(ink_multiplier_percent) / 100.0
+    } else {
+        focused_wpm
+    }
 }
 
 fn attack_direction(attacker_word_index: usize, target_word_index: usize) -> AttackDirection {
@@ -2224,6 +2265,31 @@ mod tests {
             !session.ai_racers[0].player.input.is_empty()
                 || session.ai_racers[0].player.stats.completed_words > 0
         );
+    }
+
+    #[test]
+    fn inked_ai_racer_hesitates_from_reduced_wpm_budget() {
+        let now = Instant::now();
+        let mut session = LocalSession::with_bonuses(
+            track(&["one", "two"]),
+            PlayerState::new(now),
+            BonusState::with_points(vec![], vec![]),
+        );
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 60.0, now);
+        ai.player.inked_word_index = Some(0);
+        ai.player.inked_until = Some(now + Duration::from_secs(5));
+        session.ai_racers.push(ai);
+
+        session.tick(now + Duration::from_secs(1));
+
+        assert_eq!(session.ai_racers[0].player.word_index, 0);
+        assert_eq!(session.ai_racers[0].player.input, "one");
+    }
+
+    #[test]
+    fn focused_ai_racer_gets_small_wpm_boost() {
+        assert_eq!(super::ai_effective_wpm(60.0, true, false, 10, 70), 70.0);
+        assert_eq!(super::ai_effective_wpm(60.0, false, false, 10, 70), 60.0);
     }
 
     #[test]
@@ -2804,6 +2870,7 @@ mod tests {
 
         assert_eq!(session.player.held_item, None);
         assert_eq!(session.ai_racers[0].player.word_override(1), Some("owt"));
+        assert!(session.ai_racers[0].is_stunned(now));
         assert!(
             session
                 .events

@@ -168,12 +168,14 @@ impl Default for ShieldEffectConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct FocusEffectConfig {
     pub duration_ms: u64,
+    pub ai_wpm_boost: u32,
 }
 
 impl Default for FocusEffectConfig {
     fn default() -> Self {
         Self {
             duration_ms: 10_000,
+            ai_wpm_boost: 10,
         }
     }
 }
@@ -181,11 +183,15 @@ impl Default for FocusEffectConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct CycloneEffectConfig {
     pub affected_words: usize,
+    pub stun_ms: u64,
 }
 
 impl Default for CycloneEffectConfig {
     fn default() -> Self {
-        Self { affected_words: 1 }
+        Self {
+            affected_words: 1,
+            stun_ms: 2_500,
+        }
     }
 }
 
@@ -195,6 +201,7 @@ pub struct SquidInkEffectConfig {
     pub duration_ms: u64,
     pub impact_blink_ms: u64,
     pub cue_ms: u64,
+    pub ai_wpm_multiplier_percent: u32,
 }
 
 impl Default for SquidInkEffectConfig {
@@ -204,6 +211,7 @@ impl Default for SquidInkEffectConfig {
             duration_ms: 5_000,
             impact_blink_ms: 1_200,
             cue_ms: 1_500,
+            ai_wpm_multiplier_percent: 70,
         }
     }
 }
@@ -686,10 +694,28 @@ impl ItemRegistry {
                     }
                 }
 
-                if target.effect.cyclone.is_some() && effect.affected_words.is_some() {
+                if target.effect.focus.is_some() && effect.focus_ai_wpm_boost.is_some() {
+                    let mut focus = target.effect.focus.unwrap_or_default();
+                    if let Some(boost) = effect.focus_ai_wpm_boost {
+                        focus.ai_wpm_boost = boost;
+                    }
+                    target.effect.focus = Some(focus);
+                } else if effect.focus_ai_wpm_boost.is_some() {
+                    bail!(
+                        "item '{}' does not support focus effect config",
+                        override_item.id
+                    );
+                }
+
+                if target.effect.cyclone.is_some()
+                    && (effect.affected_words.is_some() || effect.cyclone_stun_ms.is_some())
+                {
                     let mut cyclone = target.effect.cyclone.unwrap_or_default();
                     if let Some(affected_words) = effect.affected_words {
                         cyclone.affected_words = affected_words;
+                    }
+                    if let Some(stun_ms) = effect.cyclone_stun_ms {
+                        cyclone.stun_ms = stun_ms;
                     }
                     if cyclone.affected_words == 0 {
                         bail!(
@@ -697,8 +723,14 @@ impl ItemRegistry {
                             override_item.id
                         );
                     }
+                    if cyclone.stun_ms == 0 {
+                        bail!(
+                            "item '{}' cyclone stun_ms must be greater than zero",
+                            override_item.id
+                        );
+                    }
                     target.effect.cyclone = Some(cyclone);
-                } else if effect.affected_words.is_some() {
+                } else if effect.affected_words.is_some() || effect.cyclone_stun_ms.is_some() {
                     bail!(
                         "item '{}' does not support cyclone effect config",
                         override_item.id
@@ -709,7 +741,8 @@ impl ItemRegistry {
                     && (effect.ink_range_words.is_some()
                         || effect.ink_duration_ms.is_some()
                         || effect.ink_impact_blink_ms.is_some()
-                        || effect.ink_cue_ms.is_some())
+                        || effect.ink_cue_ms.is_some()
+                        || effect.ink_ai_wpm_multiplier_percent.is_some())
                 {
                     let mut squid_ink = target.effect.squid_ink.unwrap_or_default();
                     if let Some(range_words) = effect.ink_range_words {
@@ -724,6 +757,9 @@ impl ItemRegistry {
                     if let Some(cue_ms) = effect.ink_cue_ms {
                         squid_ink.cue_ms = cue_ms;
                     }
+                    if let Some(multiplier) = effect.ink_ai_wpm_multiplier_percent {
+                        squid_ink.ai_wpm_multiplier_percent = multiplier;
+                    }
                     if squid_ink.range_words == 0 {
                         bail!(
                             "item '{}' squid ink range_words must be greater than zero",
@@ -736,11 +772,20 @@ impl ItemRegistry {
                             override_item.id
                         );
                     }
+                    if squid_ink.ai_wpm_multiplier_percent == 0
+                        || squid_ink.ai_wpm_multiplier_percent > 100
+                    {
+                        bail!(
+                            "item '{}' squid ink ai_wpm_multiplier_percent must be between 1 and 100",
+                            override_item.id
+                        );
+                    }
                     target.effect.squid_ink = Some(squid_ink);
                 } else if effect.ink_range_words.is_some()
                     || effect.ink_duration_ms.is_some()
                     || effect.ink_impact_blink_ms.is_some()
                     || effect.ink_cue_ms.is_some()
+                    || effect.ink_ai_wpm_multiplier_percent.is_some()
                 {
                     bail!(
                         "item '{}' does not support squid ink effect config",
@@ -925,11 +970,14 @@ struct ItemPackEffectConfig {
     impact_blink_ms: Option<u64>,
     cue_ms: Option<u64>,
     duration_ms: Option<u64>,
+    focus_ai_wpm_boost: Option<u32>,
     affected_words: Option<usize>,
+    cyclone_stun_ms: Option<u64>,
     ink_range_words: Option<usize>,
     ink_duration_ms: Option<u64>,
     ink_impact_blink_ms: Option<u64>,
     ink_cue_ms: Option<u64>,
+    ink_ai_wpm_multiplier_percent: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1367,11 +1415,17 @@ mod tests {
                     },
                     {
                         "id": "focus",
-                        "effect": { "duration_ms": 7500 }
+                        "effect": {
+                            "duration_ms": 7500,
+                            "focus_ai_wpm_boost": 15
+                        }
                     },
                     {
                         "id": "cyclone",
-                        "effect": { "affected_words": 2 }
+                        "effect": {
+                            "affected_words": 2,
+                            "cyclone_stun_ms": 3000
+                        }
                     },
                     {
                         "id": "squid_ink",
@@ -1379,7 +1433,8 @@ mod tests {
                             "ink_range_words": 7,
                             "ink_duration_ms": 2500,
                             "ink_impact_blink_ms": 800,
-                            "ink_cue_ms": 600
+                            "ink_cue_ms": 600,
+                            "ink_ai_wpm_multiplier_percent": 55
                         }
                     }
                 ]
@@ -1397,11 +1452,14 @@ mod tests {
         assert_eq!(registry.banana_effect().cue_ms, 700);
         assert_eq!(registry.shield_effect().duration_ms, 3000);
         assert_eq!(registry.focus_effect().duration_ms, 7500);
+        assert_eq!(registry.focus_effect().ai_wpm_boost, 15);
         assert_eq!(registry.cyclone_effect().affected_words, 2);
+        assert_eq!(registry.cyclone_effect().stun_ms, 3000);
         assert_eq!(registry.squid_ink_effect().range_words, 7);
         assert_eq!(registry.squid_ink_effect().duration_ms, 2500);
         assert_eq!(registry.squid_ink_effect().impact_blink_ms, 800);
         assert_eq!(registry.squid_ink_effect().cue_ms, 600);
+        assert_eq!(registry.squid_ink_effect().ai_wpm_multiplier_percent, 55);
 
         let _ = std::fs::remove_file(path);
     }
@@ -1454,6 +1512,8 @@ mod tests {
 
         assert_eq!(registry.items.len(), ItemRegistry::builtin().items.len());
         assert_eq!(registry.focus_effect().duration_ms, 10_000);
+        assert_eq!(registry.focus_effect().ai_wpm_boost, 10);
+        assert!(registry.cyclone_effect().stun_ms > registry.banana_effect().stun_ms);
         assert_eq!(registry.squid_ink_effect().range_words, 5);
     }
 }
