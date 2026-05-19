@@ -327,4 +327,17 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn shipped_classic_word_template_loads() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("mods")
+            .join("words")
+            .join("classic.txt");
+
+        let word_set = WordSetDefinition::load_file(path).unwrap();
+
+        assert_eq!(word_set.metadata.id.as_str(), "classic");
+        assert!(word_set.words.words.len() > 100);
+    }
 }

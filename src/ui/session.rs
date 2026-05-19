@@ -111,7 +111,7 @@ pub struct ImpactCue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImpactCueKind {
     Banana,
-    BlueShell,
+    Cyclone,
     SquidInk,
     ShieldBlock,
 }
@@ -162,7 +162,7 @@ impl ItemCue {
             ItemCueKind::Banana { direction } => {
                 Self::banana(direction, now, &ItemRegistry::builtin())
             }
-            ItemCueKind::BlueShell { direction } => Self::blue_shell(direction, now),
+            ItemCueKind::Cyclone { direction } => Self::cyclone(direction, now),
             ItemCueKind::SquidInk => Self::squid_ink(now, &ItemRegistry::builtin()),
         }
     }
@@ -184,15 +184,15 @@ impl ItemCue {
         }
     }
 
-    fn blue_shell(direction: AttackDirection, now: Instant) -> Self {
+    fn cyclone(direction: AttackDirection, now: Instant) -> Self {
         let (ascii_label, unicode_label) = match direction {
-            AttackDirection::Ahead => (" sh>>".to_string(), " 🐢 >>".to_string()),
-            AttackDirection::Behind => ("<<sh ".to_string(), "<< 🐢 ".to_string()),
-            AttackDirection::Overlap => (" sh<>".to_string(), " 🐢 <>".to_string()),
+            AttackDirection::Ahead => (" cy>>".to_string(), " 🌀 >>".to_string()),
+            AttackDirection::Behind => ("<<cy ".to_string(), "<< 🌀 ".to_string()),
+            AttackDirection::Overlap => (" cy<>".to_string(), " 🌀 <>".to_string()),
         };
 
         Self {
-            kind: ItemCueKind::BlueShell { direction },
+            kind: ItemCueKind::Cyclone { direction },
             until: now + Duration::from_millis(1_500),
             ascii_label,
             unicode_label,
@@ -217,7 +217,7 @@ impl ItemCue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemCueKind {
     Banana { direction: AttackDirection },
-    BlueShell { direction: AttackDirection },
+    Cyclone { direction: AttackDirection },
     SquidInk,
 }
 
@@ -725,7 +725,7 @@ impl LocalSession {
         };
         if ai.player.held_item.is_some()
             || ai.player.has_active_shield(now)
-            || ai.player.has_active_star(now)
+            || ai.player.has_active_focus(now)
             || player_has_active_mushroom(&ai.player)
             || ai.item_cue.as_ref().is_some_and(|cue| cue.is_visible(now))
             || ai.player.is_finished()
@@ -844,8 +844,8 @@ impl LocalSession {
         match item {
             HeldItem::Mushroom => self.activate_ai_mushroom(ai_index, now),
             HeldItem::Banana => self.ai_use_banana(ai_index, now),
-            HeldItem::Star => self.activate_ai_star(ai_index, now),
-            HeldItem::BlueShell => self.use_blue_shell(Some(ai_index), now),
+            HeldItem::Focus => self.activate_ai_focus(ai_index, now),
+            HeldItem::Cyclone => self.use_cyclone(Some(ai_index), now),
             HeldItem::SquidInk => self.use_ai_squid_ink(ai_index, now),
         }
     }
@@ -913,12 +913,12 @@ impl LocalSession {
         }
     }
 
-    fn activate_ai_star(&mut self, ai_index: usize, now: Instant) {
+    fn activate_ai_focus(&mut self, ai_index: usize, now: Instant) {
         let Some(ai) = self.ai_racers.get_mut(ai_index) else {
             return;
         };
-        ai.player.active_effects.push(ActiveEffect::Star {
-            until: now + Duration::from_millis(self.item_registry.star_effect().duration_ms),
+        ai.player.active_effects.push(ActiveEffect::Focus {
+            until: now + Duration::from_millis(self.item_registry.focus_effect().duration_ms),
         });
     }
 
@@ -959,32 +959,31 @@ impl LocalSession {
         }
     }
 
-    fn use_blue_shell(&mut self, attacker_ai_index: Option<usize>, now: Instant) {
+    fn use_cyclone(&mut self, attacker_ai_index: Option<usize>, now: Instant) {
         let Some(target) = self.first_place_target(attacker_ai_index) else {
-            self.events.push("Missed Blue Shell");
+            self.events.push("Missed Cyclone");
             return;
         };
 
         match target {
-            BlueShellTarget::Player => {
+            CycloneTarget::Player => {
                 if attacker_ai_index.is_none() {
-                    self.events.push("Missed Blue Shell");
+                    self.events.push("Missed Cyclone");
                     return;
                 }
                 if let Some(ai_index) = attacker_ai_index {
                     let attacker_word_index = self.ai_racers[ai_index].player.word_index;
                     let direction = attack_direction(attacker_word_index, self.player.word_index);
-                    self.ai_racers[ai_index].item_cue = Some(ItemCue::blue_shell(direction, now));
+                    self.ai_racers[ai_index].item_cue = Some(ItemCue::cyclone(direction, now));
                 }
-                if self.apply_blue_shell_to_player(now)
+                if self.apply_cyclone_to_player(now)
                     && let Some(ai_index) = attacker_ai_index
                 {
                     let ai_name = self.ai_racers[ai_index].name.clone();
-                    self.events
-                        .push(format!("{ai_name} hit you with Blue Shell"));
+                    self.events.push(format!("{ai_name} hit you with Cyclone"));
                 }
             }
-            BlueShellTarget::Ai(ai_id) => {
+            CycloneTarget::Ai(ai_id) => {
                 let target_word_index = self
                     .ai_racers
                     .iter()
@@ -997,26 +996,25 @@ impl LocalSession {
                         .unwrap_or(self.player.word_index);
                     let direction = attack_direction(attacker_word_index, target_word_index);
                     if let Some(ai_index) = attacker_ai_index {
-                        self.ai_racers[ai_index].item_cue =
-                            Some(ItemCue::blue_shell(direction, now));
+                        self.ai_racers[ai_index].item_cue = Some(ItemCue::cyclone(direction, now));
                     } else {
-                        self.player_item_cue = Some(ItemCue::blue_shell(direction, now));
+                        self.player_item_cue = Some(ItemCue::cyclone(direction, now));
                     }
                 }
-                if self.apply_blue_shell_to_ai(ai_id, now) {
-                    self.events.push(format!("Hit ai-{ai_id} with Blue Shell"));
+                if self.apply_cyclone_to_ai(ai_id, now) {
+                    self.events.push(format!("Hit ai-{ai_id} with Cyclone"));
                 }
             }
         }
     }
 
-    fn first_place_target(&self, attacker_ai_index: Option<usize>) -> Option<BlueShellTarget> {
+    fn first_place_target(&self, attacker_ai_index: Option<usize>) -> Option<CycloneTarget> {
         let mut racers = Vec::new();
         if !self.player.is_finished() {
             racers.push((
                 self.player.word_index,
                 self.player.input.chars().count(),
-                BlueShellTarget::Player,
+                CycloneTarget::Player,
             ));
         }
         racers.extend(
@@ -1029,7 +1027,7 @@ impl LocalSession {
                     (
                         ai.player.word_index,
                         ai.player.input.chars().count(),
-                        BlueShellTarget::Ai(ai.id),
+                        CycloneTarget::Ai(ai.id),
                     )
                 }),
         );
@@ -1040,7 +1038,7 @@ impl LocalSession {
             .map(|(_, _, target)| target)
     }
 
-    fn apply_blue_shell_to_player(&mut self, now: Instant) -> bool {
+    fn apply_cyclone_to_player(&mut self, now: Instant) -> bool {
         if self.player.has_active_shield(now) {
             self.player
                 .active_effects
@@ -1049,24 +1047,24 @@ impl LocalSession {
                 kind: ImpactCueKind::ShieldBlock,
                 until: now + Duration::from_millis(700),
             });
-            self.events.push("Blocked Blue Shell");
+            self.events.push("Blocked Cyclone");
             return false;
         }
-        let applied = apply_blue_shell_overrides(
+        let applied = apply_cyclone_overrides(
             &self.track,
             &mut self.player,
-            self.item_registry.blue_shell_effect().affected_words,
+            self.item_registry.cyclone_effect().affected_words,
         );
         if applied {
             self.player_impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::BlueShell,
+                kind: ImpactCueKind::Cyclone,
                 until: now + Duration::from_millis(1_200),
             });
         }
         applied
     }
 
-    fn apply_blue_shell_to_ai(&mut self, ai_id: usize, now: Instant) -> bool {
+    fn apply_cyclone_to_ai(&mut self, ai_id: usize, now: Instant) -> bool {
         let Some(ai) = self.ai_racers.iter_mut().find(|ai| ai.id == ai_id) else {
             return false;
         };
@@ -1078,17 +1076,17 @@ impl LocalSession {
                 kind: ImpactCueKind::ShieldBlock,
                 until: now + Duration::from_millis(700),
             });
-            self.events.push(format!("{} blocked Blue Shell", ai.name));
+            self.events.push(format!("{} blocked Cyclone", ai.name));
             return false;
         }
-        let applied = apply_blue_shell_overrides(
+        let applied = apply_cyclone_overrides(
             &self.track,
             &mut ai.player,
-            self.item_registry.blue_shell_effect().affected_words,
+            self.item_registry.cyclone_effect().affected_words,
         );
         if applied {
             ai.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::BlueShell,
+                kind: ImpactCueKind::Cyclone,
                 until: now + Duration::from_millis(1_200),
             });
         }
@@ -1483,7 +1481,7 @@ impl LocalSession {
     fn can_start_bonus_attempt(&self, now: Instant) -> bool {
         self.player.held_item.is_none()
             && !self.player.has_active_shield(now)
-            && !self.player.has_active_star(now)
+            && !self.player.has_active_focus(now)
             && !player_has_active_mushroom(&self.player)
             && !self
                 .player_item_cue
@@ -1550,8 +1548,8 @@ impl LocalSession {
     fn activate_held_item(&mut self, item: HeldItem, _item_use: ItemUse, now: Instant) {
         match item {
             HeldItem::Mushroom => self.activate_mushroom(now),
-            HeldItem::Star => self.activate_star(now),
-            HeldItem::BlueShell => self.use_blue_shell(None, now),
+            HeldItem::Focus => self.activate_focus(now),
+            HeldItem::Cyclone => self.use_cyclone(None, now),
             HeldItem::SquidInk => self.use_squid_ink(now),
             HeldItem::Banana => {
                 let racers = self
@@ -1690,9 +1688,9 @@ impl LocalSession {
         true
     }
 
-    fn activate_star(&mut self, now: Instant) {
-        self.player.active_effects.push(ActiveEffect::Star {
-            until: now + Duration::from_millis(self.item_registry.star_effect().duration_ms),
+    fn activate_focus(&mut self, now: Instant) {
+        self.player.active_effects.push(ActiveEffect::Focus {
+            until: now + Duration::from_millis(self.item_registry.focus_effect().duration_ms),
         });
     }
 
@@ -1847,16 +1845,12 @@ fn next_ai_key(player: &PlayerState, track: &Track) -> Option<KeyAction> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BlueShellTarget {
+enum CycloneTarget {
     Player,
     Ai(usize),
 }
 
-fn apply_blue_shell_overrides(
-    track: &Track,
-    player: &mut PlayerState,
-    affected_words: usize,
-) -> bool {
+fn apply_cyclone_overrides(track: &Track, player: &mut PlayerState, affected_words: usize) -> bool {
     let mut applied = false;
     for word_index in player.word_index..player.word_index.saturating_add(affected_words) {
         let Some(word) = track.current_word(word_index) else {
@@ -1953,7 +1947,7 @@ impl RunLog {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use crate::{
         game::{
@@ -2778,24 +2772,24 @@ mod tests {
     }
 
     #[test]
-    fn star_pickup_activates_and_forgives_wrong_keys() {
+    fn focus_pickup_activates_and_forgives_wrong_keys() {
         let now = Instant::now();
         let track = track(&["one", "two"]);
         let player = PlayerState::new(now);
         let mut session =
             LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
 
-        session.receive_pickup(ItemPickup::Held(HeldItem::Star), now);
+        session.receive_pickup(ItemPickup::Held(HeldItem::Focus), now);
         session.apply_action(LocalAction::Typing(KeyAction::Char('x')), now);
 
-        assert!(session.player.has_active_star(now));
+        assert!(session.player.has_active_focus(now));
         assert_eq!(session.player.input, "");
         assert_eq!(session.player.typo_index, None);
         assert_eq!(session.player.stats.typo_chars, 1);
     }
 
     #[test]
-    fn player_blue_shell_reverses_first_place_ai_word() {
+    fn player_cyclone_reverses_first_place_ai_word() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let player = PlayerState::new(now);
@@ -2804,7 +2798,7 @@ mod tests {
         let mut ai = AiRacer::new(1, AiDifficulty::Easy, 80.0, now);
         ai.player.word_index = 1;
         session.ai_racers.push(ai);
-        session.player.held_item = Some(HeldItem::BlueShell);
+        session.player.held_item = Some(HeldItem::Cyclone);
 
         session.apply_action(LocalAction::ActivateItem, now);
 
@@ -2814,12 +2808,12 @@ mod tests {
             session
                 .events
                 .entries()
-                .any(|entry| entry == "Hit ai-1 with Blue Shell")
+                .any(|entry| entry == "Hit ai-1 with Cyclone")
         );
     }
 
     #[test]
-    fn blue_shell_is_blocked_by_shield_and_consumes_shield() {
+    fn cyclone_is_blocked_by_shield_and_consumes_shield() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let player = PlayerState::new(now);
@@ -2831,7 +2825,7 @@ mod tests {
             until: now + std::time::Duration::from_secs(5),
         });
         session.ai_racers.push(ai);
-        session.player.held_item = Some(HeldItem::BlueShell);
+        session.player.held_item = Some(HeldItem::Cyclone);
 
         session.apply_action(LocalAction::ActivateItem, now);
 
@@ -2841,7 +2835,7 @@ mod tests {
             session
                 .events
                 .entries()
-                .any(|entry| entry == "ai-1 blocked Blue Shell")
+                .any(|entry| entry == "ai-1 blocked Cyclone")
         );
     }
 
@@ -2862,8 +2856,8 @@ mod tests {
 
         session.apply_action(LocalAction::ActivateItem, now);
 
-        assert!(session.ai_racers[0].player.is_inked());
-        assert!(!session.ai_racers[1].player.is_inked());
+        assert!(session.ai_racers[0].player.is_inked_at(now));
+        assert!(!session.ai_racers[1].player.is_inked_at(now));
         assert!(matches!(
             session.ai_racers[0].impact_cue.map(|cue| cue.kind),
             Some(ImpactCueKind::SquidInk)

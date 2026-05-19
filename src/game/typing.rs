@@ -30,8 +30,8 @@ pub fn apply_key(
     action: KeyAction,
     now: Instant,
 ) -> Vec<TypingEvent> {
-    let star_power = player.has_active_star(now);
-    apply_key_with_options(player, track, action, now, star_power)
+    let focus = player.has_active_focus(now);
+    apply_key_with_options(player, track, action, now, focus)
 }
 
 pub fn apply_key_with_options(
@@ -39,7 +39,7 @@ pub fn apply_key_with_options(
     track: &Track,
     action: KeyAction,
     now: Instant,
-    star_power: bool,
+    focus: bool,
 ) -> Vec<TypingEvent> {
     if player.is_finished() {
         return Vec::new();
@@ -55,8 +55,8 @@ pub fn apply_key_with_options(
         .to_string();
 
     match action {
-        KeyAction::Char(ch) => apply_char(player, track, &target, ch, now, star_power),
-        KeyAction::Space => apply_space(player, track, &target, now, star_power),
+        KeyAction::Char(ch) => apply_char(player, track, &target, ch, now, focus),
+        KeyAction::Space => apply_space(player, track, &target, now, focus),
         KeyAction::Backspace => apply_backspace(player, &target),
     }
 }
@@ -67,7 +67,7 @@ fn apply_char(
     target: &str,
     ch: char,
     now: Instant,
-    star_power: bool,
+    focus: bool,
 ) -> Vec<TypingEvent> {
     let previous_typo = player.typo_index;
     let input_index = player.input.chars().count();
@@ -82,7 +82,7 @@ fn apply_char(
         player.stats.typo_chars += 1;
     }
 
-    if star_power && !is_correct {
+    if focus && !is_correct {
         return vec![TypingEvent::InputChanged];
     }
 
@@ -105,7 +105,7 @@ fn apply_space(
     track: &Track,
     target: &str,
     now: Instant,
-    star_power: bool,
+    focus: bool,
 ) -> Vec<TypingEvent> {
     if player.input == target {
         player.word_index += 1;
@@ -121,7 +121,7 @@ fn apply_space(
         return vec![TypingEvent::WordCompleted];
     }
 
-    apply_char(player, track, target, ' ', now, star_power)
+    apply_char(player, track, target, ' ', now, focus)
 }
 
 fn finish_current_word(player: &mut PlayerState, now: Instant) {
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn star_power_counts_wrong_keys_without_adding_typo_input() {
+    fn focus_counts_wrong_keys_without_adding_typo_input() {
         let track = track(&["fox"]);
         let mut player = player();
         let now = Instant::now();

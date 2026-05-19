@@ -536,8 +536,7 @@ fn visible_item_cue(
 ) -> Option<VisibleItemCue> {
     let cue = item_cue.filter(|cue| cue.is_visible(now))?;
     let placement = match cue.kind {
-        ItemCueKind::Banana { direction } | ItemCueKind::BlueShell { direction } => match direction
-        {
+        ItemCueKind::Banana { direction } | ItemCueKind::Cyclone { direction } => match direction {
             AttackDirection::Ahead | AttackDirection::Overlap => ItemCuePlacement::After,
             AttackDirection::Behind => ItemCuePlacement::Before,
         },
@@ -688,9 +687,10 @@ fn racer_line_for_player(
     icon_mode: IconMode,
 ) -> Line<'static> {
     let mut cells = vec![TrackCell::default(); window.width];
-    let marker_anchor_width = racer_marker_layout_width(player, now, None, icon_mode);
-    let marker = racer_marker(player, now, status_label, icon_mode);
-    let marker_layout_width = racer_marker_layout_width(player, now, status_label, icon_mode);
+    let marker_anchor_width = racer_marker_layout_width(player, now, None, impact_cue, icon_mode);
+    let marker = racer_marker(player, now, status_label, impact_cue, icon_mode);
+    let marker_layout_width =
+        racer_marker_layout_width(player, now, status_label, impact_cue, icon_mode);
     let visible_marker = match visibility {
         RacerVisibility::Always => Some(VisibleRacerMarker::Visible {
             start: window.racer_marker_start_for_player(player, marker_anchor_width),
@@ -704,12 +704,12 @@ fn racer_line_for_player(
         let (marker_start, marker, marker_width) = match visible_marker {
             VisibleRacerMarker::Visible { start } => (start, marker, marker_layout_width),
             VisibleRacerMarker::Behind => {
-                let marker = edge_racer_marker('<', player, now, icon_mode);
+                let marker = edge_racer_marker('<', player, now, impact_cue, icon_mode);
                 let marker_width = marker.chars().count();
                 (0, marker, marker_width)
             }
             VisibleRacerMarker::Ahead => {
-                let marker = edge_racer_marker('>', player, now, icon_mode);
+                let marker = edge_racer_marker('>', player, now, impact_cue, icon_mode);
                 let marker_width = marker.chars().count();
                 (
                     window.width.saturating_sub(marker_width),
@@ -755,24 +755,28 @@ fn edge_racer_marker(
     direction: char,
     player: &PlayerState,
     now: std::time::Instant,
+    impact_cue: Option<ImpactCue>,
     icon_mode: IconMode,
 ) -> String {
-    let mut marker = if player.has_active_shield(now) {
-        match icon_mode {
-            IconMode::Unicode => format!("{direction}🛡"),
-            IconMode::Ascii => format!("[{direction}]"),
-        }
-    } else if player.has_active_star(now) {
-        match icon_mode {
-            IconMode::Unicode => format!("{direction}★"),
-            IconMode::Ascii => format!("*{direction}*"),
-        }
-    } else {
-        direction.to_string()
-    };
+    let mut marker =
+        if let Some(marker) = impact_racer_marker(direction, impact_cue, now, icon_mode) {
+            marker
+        } else if player.has_active_shield(now) {
+            match icon_mode {
+                IconMode::Unicode => format!("{direction}🛡"),
+                IconMode::Ascii => format!("[{direction}]"),
+            }
+        } else if player.has_active_focus(now) {
+            match icon_mode {
+                IconMode::Unicode => format!("{direction}★"),
+                IconMode::Ascii => format!("*{direction}*"),
+            }
+        } else {
+            direction.to_string()
+        };
 
-    if player.has_active_star(now) && player.has_active_shield(now) {
-        marker = format!("{}{}", star_marker_prefix(icon_mode), marker);
+    if player.has_active_focus(now) && player.has_active_shield(now) {
+        marker = format!("{}{}", focus_marker_prefix(icon_mode), marker);
     }
 
     if has_active_mushroom(player) {
@@ -786,14 +790,17 @@ fn racer_marker(
     player: &PlayerState,
     now: std::time::Instant,
     status_label: Option<&str>,
+    impact_cue: Option<ImpactCue>,
     icon_mode: IconMode,
 ) -> String {
-    let mut marker = if player.has_active_shield(now) {
+    let mut marker = if let Some(marker) = impact_racer_marker('█', impact_cue, now, icon_mode) {
+        marker
+    } else if player.has_active_shield(now) {
         match icon_mode {
             IconMode::Unicode => "█🛡".to_string(),
             IconMode::Ascii => SHIELDED_RACER_MARKER.to_string(),
         }
-    } else if player.has_active_star(now) {
+    } else if player.has_active_focus(now) {
         match icon_mode {
             IconMode::Unicode => "█★█".to_string(),
             IconMode::Ascii => "[*]".to_string(),
@@ -806,8 +813,8 @@ fn racer_marker(
         marker.push_str(status_label);
     }
 
-    if player.has_active_star(now) && player.has_active_shield(now) {
-        marker = format!("{}{}", star_marker_prefix(icon_mode), marker);
+    if player.has_active_focus(now) && player.has_active_shield(now) {
+        marker = format!("{}{}", focus_marker_prefix(icon_mode), marker);
     }
 
     if has_active_mushroom(player) {
@@ -821,11 +828,31 @@ fn racer_marker_layout_width(
     player: &PlayerState,
     now: std::time::Instant,
     status_label: Option<&str>,
+    impact_cue: Option<ImpactCue>,
     icon_mode: IconMode,
 ) -> usize {
+    if impact_marker_symbol(impact_cue, now, icon_mode).is_some() {
+        let status_width = status_label
+            .map(str::chars)
+            .map(Iterator::count)
+            .unwrap_or(0);
+        let boost_width = if has_active_mushroom(player) {
+            boost_marker_prefix(icon_mode).chars().count()
+        } else {
+            0
+        };
+        let focus_width = if player.has_active_focus(now) && player.has_active_shield(now) {
+            focus_marker_prefix(icon_mode).chars().count()
+        } else {
+            0
+        };
+
+        return boost_width + focus_width + LOCAL_RACER_MARKER.chars().count() + status_width;
+    }
+
     let base_width = match (
         player.has_active_shield(now),
-        player.has_active_star(now),
+        player.has_active_focus(now),
         icon_mode,
     ) {
         // The shield emoji commonly occupies two terminal columns. The marker
@@ -846,13 +873,47 @@ fn racer_marker_layout_width(
     } else {
         0
     };
-    let star_width = if player.has_active_star(now) && player.has_active_shield(now) {
-        star_marker_prefix(icon_mode).chars().count()
+    let focus_width = if player.has_active_focus(now) && player.has_active_shield(now) {
+        focus_marker_prefix(icon_mode).chars().count()
     } else {
         0
     };
 
-    boost_width + star_width + base_width + status_width
+    boost_width + focus_width + base_width + status_width
+}
+
+fn impact_racer_marker(
+    anchor: char,
+    impact_cue: Option<ImpactCue>,
+    now: std::time::Instant,
+    icon_mode: IconMode,
+) -> Option<String> {
+    let symbol = impact_marker_symbol(impact_cue, now, icon_mode)?;
+    Some(match icon_mode {
+        IconMode::Unicode => format!("{anchor}{symbol}"),
+        IconMode::Ascii => format!("[{symbol}]"),
+    })
+}
+
+fn impact_marker_symbol(
+    impact_cue: Option<ImpactCue>,
+    now: std::time::Instant,
+    icon_mode: IconMode,
+) -> Option<&'static str> {
+    if !impact_blink_visible(impact_cue, now) {
+        return None;
+    }
+
+    match (impact_cue.map(|cue| cue.kind)?, icon_mode) {
+        (ImpactCueKind::Banana, IconMode::Unicode) => Some("🍌"),
+        (ImpactCueKind::Banana, IconMode::Ascii) => Some("B"),
+        (ImpactCueKind::Cyclone, IconMode::Unicode) => Some("🌀"),
+        (ImpactCueKind::Cyclone, IconMode::Ascii) => Some("C"),
+        (ImpactCueKind::SquidInk, IconMode::Unicode) => Some("🦑"),
+        (ImpactCueKind::SquidInk, IconMode::Ascii) => Some("I"),
+        (ImpactCueKind::ShieldBlock, IconMode::Unicode) => Some("🛡"),
+        (ImpactCueKind::ShieldBlock, IconMode::Ascii) => Some("S"),
+    }
 }
 
 fn boost_marker_prefix(icon_mode: IconMode) -> &'static str {
@@ -862,7 +923,7 @@ fn boost_marker_prefix(icon_mode: IconMode) -> &'static str {
     }
 }
 
-fn star_marker_prefix(icon_mode: IconMode) -> &'static str {
+fn focus_marker_prefix(icon_mode: IconMode) -> &'static str {
     match icon_mode {
         IconMode::Ascii => "*",
         IconMode::Unicode => "★",
@@ -894,7 +955,7 @@ fn marker_style(color: Color, impact_cue: Option<ImpactCue>, now: std::time::Ins
     if impact_blink_visible(impact_cue, now) {
         match impact_cue.map(|cue| cue.kind) {
             Some(ImpactCueKind::Banana) => base.bg(Color::Yellow).fg(Color::Black),
-            Some(ImpactCueKind::BlueShell) => base.bg(Color::Blue).fg(Color::White),
+            Some(ImpactCueKind::Cyclone) => base.bg(Color::Blue).fg(Color::White),
             Some(ImpactCueKind::SquidInk) => base.bg(Color::Black).fg(Color::White),
             Some(ImpactCueKind::ShieldBlock) => base.bg(Color::Cyan).fg(Color::Black),
             None => base,
@@ -1073,7 +1134,7 @@ fn track_word_line(
             if let Some(cell) = cells.get_mut(column) {
                 *cell = TrackCell {
                     ch: visible_word_char(player, visible.index, ch, now),
-                    style: base_word_style(visible.state, player, race_phase),
+                    style: base_word_style(visible.state, player, race_phase, now),
                 };
             }
         }
@@ -1104,9 +1165,24 @@ fn visible_word_char(
     }
 }
 
-fn base_word_style(state: WordRenderState, player: &PlayerState, race_phase: RacePhase) -> Style {
+fn base_word_style(
+    state: WordRenderState,
+    player: &PlayerState,
+    race_phase: RacePhase,
+    now: std::time::Instant,
+) -> Style {
     if !race_phase.is_racing() {
         return Style::default().fg(Color::DarkGray);
+    }
+
+    if player.has_active_focus(now) && !player.is_finished() {
+        return match state {
+            WordRenderState::Completed => Style::default().fg(Color::DarkGray),
+            WordRenderState::Current => Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+            WordRenderState::Upcoming => Style::default().fg(Color::LightMagenta),
+        };
     }
 
     match state {
@@ -1460,7 +1536,7 @@ fn centered_rect(area: Rect, max_width: u16, height: u16) -> Rect {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
 
     use crate::{
         game::{
@@ -1473,7 +1549,7 @@ mod tests {
         ui::render::{
             IconMode, WordRenderState, ai_color, bonus_column, build_track_window,
             is_bonus_point_claimable, minimap_line, player_list_height, racer_lines, result_rows,
-            track_panel_height, track_word_line, visible_bonus_point,
+            track_panel_height, track_word_line, visible_bonus_point, visible_word_char,
         },
         ui::session::{
             AiRacer, AttackDirection, ImpactCue, ImpactCueKind, ItemCue, ItemCueKind, RacePhase,
@@ -1663,7 +1739,7 @@ mod tests {
     }
 
     #[test]
-    fn minimap_line_shows_star_for_ai_overlap() {
+    fn minimap_line_shows_focus_for_ai_overlap() {
         let now = Instant::now();
         let player = PlayerState::new(now);
         let mut ai_1 = AiRacer::new(1, AiDifficulty::Easy, 35.0, now);
@@ -1920,12 +1996,12 @@ mod tests {
     }
 
     #[test]
-    fn racer_line_uses_unicode_star_marker_when_enabled() {
+    fn racer_line_uses_unicode_focus_marker_when_enabled() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let window = build_track_window(&track, 0, 40);
         let mut player = PlayerState::new(now);
-        player.active_effects.push(ActiveEffect::Star {
+        player.active_effects.push(ActiveEffect::Focus {
             until: now + std::time::Duration::from_secs(1),
         });
 
@@ -1976,13 +2052,13 @@ mod tests {
     }
 
     #[test]
-    fn racer_line_shows_unicode_blue_shell_attack_direction_cue() {
+    fn racer_line_shows_unicode_cyclone_attack_direction_cue() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let window = build_track_window(&track, 0, 40);
         let player = PlayerState::new(now);
         let cue = ItemCue::new(
-            ItemCueKind::BlueShell {
+            ItemCueKind::Cyclone {
                 direction: AttackDirection::Ahead,
             },
             now,
@@ -2000,7 +2076,7 @@ mod tests {
         );
 
         assert_eq!(lines[0].spans[3].content.as_ref(), " ");
-        assert_eq!(lines[0].spans[4].content.as_ref(), "🐢");
+        assert_eq!(lines[0].spans[4].content.as_ref(), "🌀");
         assert_eq!(lines[0].spans[6].content.as_ref(), ">");
         assert_eq!(lines[0].spans[7].content.as_ref(), ">");
     }
@@ -2090,10 +2166,13 @@ mod tests {
         );
 
         assert_eq!(lines[0].spans[0].style.bg, Some(Color::Yellow));
+        assert_eq!(lines[0].spans[0].content.as_ref(), "[");
+        assert_eq!(lines[0].spans[1].content.as_ref(), "B");
+        assert_eq!(lines[0].spans[2].content.as_ref(), "]");
     }
 
     #[test]
-    fn racer_line_blinks_blue_when_hit_by_blue_shell() {
+    fn racer_line_blinks_blue_when_hit_by_cyclone() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let window = build_track_window(&track, 0, 40);
@@ -2104,7 +2183,7 @@ mod tests {
             &player,
             &[],
             Some(ImpactCue {
-                kind: ImpactCueKind::BlueShell,
+                kind: ImpactCueKind::Cyclone,
                 until: now + std::time::Duration::from_millis(300),
             }),
             None,
@@ -2114,6 +2193,9 @@ mod tests {
         );
 
         assert_eq!(lines[0].spans[0].style.bg, Some(Color::Blue));
+        assert_eq!(lines[0].spans[0].content.as_ref(), "[");
+        assert_eq!(lines[0].spans[1].content.as_ref(), "C");
+        assert_eq!(lines[0].spans[2].content.as_ref(), "]");
     }
 
     #[test]
@@ -2211,6 +2293,24 @@ mod tests {
         assert_eq!(spans[1].style.fg, Some(Color::DarkGray));
         assert_eq!(spans[2].content.as_ref(), "x");
         assert_eq!(spans[2].style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn focus_effect_tints_current_and_upcoming_track_words() {
+        let track = track(&["fox", "road"]);
+        let window = build_track_window(&track, 0, 40);
+        let now = Instant::now();
+        let mut player = PlayerState::new(now);
+        player.active_effects.push(ActiveEffect::Focus {
+            until: now + Duration::from_secs(5),
+        });
+
+        let line = track_word_line(&window, &player, RacePhase::Racing, now);
+        let spans = line.spans;
+
+        assert_eq!(spans[0].style.fg, Some(Color::LightMagenta));
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[4].style.fg, Some(Color::LightMagenta));
     }
 
     #[test]

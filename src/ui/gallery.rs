@@ -190,12 +190,12 @@ enum GalleryScenario {
     FinishSprint,
     MushroomBoost,
     ShieldActive,
-    StarActive,
+    FocusActive,
     BananaAhead,
     BananaBehind,
     BananaImpact,
-    BlueShellAhead,
-    BlueShellImpact,
+    CycloneAhead,
+    CycloneImpact,
     SquidInkCue,
     SquidInkImpact,
     SquidInkMaskedWords,
@@ -211,12 +211,12 @@ impl GalleryScenario {
             Self::FinishSprint => "finish-sprint",
             Self::MushroomBoost => "mushroom-boost",
             Self::ShieldActive => "shield-active",
-            Self::StarActive => "star-active",
+            Self::FocusActive => "focus-active",
             Self::BananaAhead => "banana-ahead",
             Self::BananaBehind => "banana-behind",
             Self::BananaImpact => "banana-impact",
-            Self::BlueShellAhead => "blue-shell-ahead",
-            Self::BlueShellImpact => "blue-shell-impact",
+            Self::CycloneAhead => "cyclone-ahead",
+            Self::CycloneImpact => "cyclone-impact",
             Self::SquidInkCue => "squid-ink-cue",
             Self::SquidInkImpact => "squid-ink-impact",
             Self::SquidInkMaskedWords => "squid-ink-masked",
@@ -232,12 +232,12 @@ impl GalleryScenario {
             Self::FinishSprint => "Finish sprint",
             Self::MushroomBoost => "Mushroom boost",
             Self::ShieldActive => "Shield active",
-            Self::StarActive => "Star Power active",
+            Self::FocusActive => "Focus active",
             Self::BananaAhead => "Banana fired ahead",
             Self::BananaBehind => "Banana fired behind",
             Self::BananaImpact => "Banana impact blink",
-            Self::BlueShellAhead => "Blue Shell fired",
-            Self::BlueShellImpact => "Blue Shell impact blink",
+            Self::CycloneAhead => "Cyclone fired",
+            Self::CycloneImpact => "Cyclone impact blink",
             Self::SquidInkCue => "Squid Ink fired",
             Self::SquidInkImpact => "Squid Ink impact blink",
             Self::SquidInkMaskedWords => "Squid Ink masked words",
@@ -248,22 +248,22 @@ impl GalleryScenario {
         match self {
             Self::MultiplayerPack => "A fuller race scene with six racers, bonus words, and map.",
             Self::BananaHitPack => "Player fires Banana while the target blinks from impact.",
-            Self::SquidInkPack => "Squid Ink cue, impacted racers, and masked upcoming words.",
+            Self::SquidInkPack => {
+                "Squid Ink cue, impacted racers, and masked words beyond the current word."
+            }
             Self::ItemPileup => "Multiple simultaneous effects for stress-testing readability.",
             Self::FinishSprint => "Racers near the finish with a finished offscreen marker.",
             Self::MushroomBoost => "Boost prefix on a racer lane.",
             Self::ShieldActive => "Shield icon centered on the kart marker.",
-            Self::StarActive => "Star icon centered on the kart marker.",
+            Self::FocusActive => "Focus icon centered on the kart marker.",
             Self::BananaAhead => "Pickup cue rendered in front of the attacker.",
             Self::BananaBehind => "Pickup cue rendered behind the attacker.",
             Self::BananaImpact => "Yellow blink on the impacted racer.",
-            Self::BlueShellAhead => "Blue shell cue rendered in front of the attacker.",
-            Self::BlueShellImpact => "Blue blink on the impacted racer.",
+            Self::CycloneAhead => "Cyclone cue rendered in front of the attacker.",
+            Self::CycloneImpact => "Blue blink on the impacted racer.",
             Self::SquidInkCue => "Squid cue rendered after the attacker.",
             Self::SquidInkImpact => "Black blink on the impacted racer.",
-            Self::SquidInkMaskedWords => {
-                "Upcoming words hidden until the current word is finished."
-            }
+            Self::SquidInkMaskedWords => "Future words hidden until reached or ink expires.",
         }
     }
 }
@@ -277,12 +277,12 @@ fn gallery_scenarios() -> Vec<GalleryScenario> {
         GalleryScenario::FinishSprint,
         GalleryScenario::MushroomBoost,
         GalleryScenario::ShieldActive,
-        GalleryScenario::StarActive,
+        GalleryScenario::FocusActive,
         GalleryScenario::BananaAhead,
         GalleryScenario::BananaBehind,
         GalleryScenario::BananaImpact,
-        GalleryScenario::BlueShellAhead,
-        GalleryScenario::BlueShellImpact,
+        GalleryScenario::CycloneAhead,
+        GalleryScenario::CycloneImpact,
         GalleryScenario::SquidInkCue,
         GalleryScenario::SquidInkImpact,
         GalleryScenario::SquidInkMaskedWords,
@@ -401,10 +401,10 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
                 step_interval: Duration::from_millis(350),
             });
             ai_ahead.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::BlueShell,
+                kind: ImpactCueKind::Cyclone,
                 until: now + Duration::from_secs(2),
             });
-            ai_behind.player.active_effects.push(ActiveEffect::Star {
+            ai_behind.player.active_effects.push(ActiveEffect::Focus {
                 until: now + Duration::from_secs(5),
             });
             extra_ai[0]
@@ -425,7 +425,7 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
                 kind: ImpactCueKind::SquidInk,
                 until: now + Duration::from_secs(2),
             });
-            events.push("Blue Shell, Banana, Shield, Star, and Squid Ink visible");
+            events.push("Cyclone, Banana, Shield, Focus, and Squid Ink visible");
         }
         GalleryScenario::FinishSprint => {
             player.word_index = 8;
@@ -454,8 +454,8 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
                 until: now + Duration::from_secs(5),
             });
         }
-        GalleryScenario::StarActive => {
-            player.active_effects.push(ActiveEffect::Star {
+        GalleryScenario::FocusActive => {
+            player.active_effects.push(ActiveEffect::Focus {
                 until: now + Duration::from_secs(5),
             });
         }
@@ -485,19 +485,19 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
                 until: now + Duration::from_secs(2),
             });
         }
-        GalleryScenario::BlueShellAhead => {
+        GalleryScenario::CycloneAhead => {
             player_item_cue = Some(item_cue(
-                ItemCueKind::BlueShell {
+                ItemCueKind::Cyclone {
                     direction: AttackDirection::Ahead,
                 },
-                " sh>>",
-                " 🐢 >>",
+                " cy>>",
+                " 🌀 >>",
                 now,
             ));
         }
-        GalleryScenario::BlueShellImpact => {
+        GalleryScenario::CycloneImpact => {
             ai_ahead.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::BlueShell,
+                kind: ImpactCueKind::Cyclone,
                 until: now + Duration::from_secs(2),
             });
         }
@@ -665,9 +665,9 @@ mod tests {
 
         assert!(scenarios.contains(&GalleryScenario::MushroomBoost));
         assert!(scenarios.contains(&GalleryScenario::ShieldActive));
-        assert!(scenarios.contains(&GalleryScenario::StarActive));
+        assert!(scenarios.contains(&GalleryScenario::FocusActive));
         assert!(scenarios.contains(&GalleryScenario::BananaAhead));
-        assert!(scenarios.contains(&GalleryScenario::BlueShellAhead));
+        assert!(scenarios.contains(&GalleryScenario::CycloneAhead));
         assert!(scenarios.contains(&GalleryScenario::SquidInkMaskedWords));
         assert!(scenarios.contains(&GalleryScenario::MultiplayerPack));
         assert!(scenarios.contains(&GalleryScenario::BananaHitPack));

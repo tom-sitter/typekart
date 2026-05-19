@@ -7,7 +7,7 @@ pub enum ActiveEffect {
     Shield {
         until: Instant,
     },
-    Star {
+    Focus {
         until: Instant,
     },
     Mushroom {
@@ -21,13 +21,13 @@ impl ActiveEffect {
     pub fn is_shield_active_at(self, now: Instant) -> bool {
         match self {
             Self::Shield { until } => until > now,
-            Self::Star { .. } | Self::Mushroom { .. } => false,
+            Self::Focus { .. } | Self::Mushroom { .. } => false,
         }
     }
 
-    pub fn is_star_active_at(self, now: Instant) -> bool {
+    pub fn is_focus_active_at(self, now: Instant) -> bool {
         match self {
-            Self::Star { until } => until > now,
+            Self::Focus { until } => until > now,
             Self::Mushroom { .. } => false,
             Self::Shield { .. } => false,
         }

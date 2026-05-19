@@ -52,18 +52,14 @@ impl PlayerState {
             .any(|effect| effect.is_shield_active_at(now))
     }
 
-    pub fn has_active_star(&self, now: Instant) -> bool {
+    pub fn has_active_focus(&self, now: Instant) -> bool {
         self.active_effects
             .iter()
-            .any(|effect| effect.is_star_active_at(now))
+            .any(|effect| effect.is_focus_active_at(now))
     }
 
     pub fn word_override(&self, word_index: usize) -> Option<&str> {
         self.word_overrides.get(&word_index).map(String::as_str)
-    }
-
-    pub fn is_inked(&self) -> bool {
-        !self.is_finished() && self.inked_until.is_some()
     }
 
     pub fn is_inked_at(&self, now: Instant) -> bool {
@@ -79,7 +75,7 @@ impl PlayerState {
         let before = self.active_effects.len();
         self.active_effects.retain(|effect| match effect {
             ActiveEffect::Shield { until } => *until > now,
-            ActiveEffect::Star { until } => *until > now,
+            ActiveEffect::Focus { until } => *until > now,
             ActiveEffect::Mushroom {
                 remaining_words, ..
             } => *remaining_words > 0,

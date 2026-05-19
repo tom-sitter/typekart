@@ -12,8 +12,8 @@ use super::mods::ContentId;
 pub enum HeldItem {
     Mushroom,
     Banana,
-    Star,
-    BlueShell,
+    Focus,
+    Cyclone,
     SquidInk,
 }
 
@@ -22,8 +22,8 @@ impl HeldItem {
         match self {
             Self::Mushroom => "Mushroom",
             Self::Banana => "Banana",
-            Self::Star => "Star Power",
-            Self::BlueShell => "Blue Shell",
+            Self::Focus => "Focus",
+            Self::Cyclone => "Cyclone",
             Self::SquidInk => "Squid Ink",
         }
     }
@@ -60,8 +60,8 @@ pub struct ItemEffectConfig {
     pub mushroom: Option<MushroomEffectConfig>,
     pub banana: Option<BananaEffectConfig>,
     pub shield: Option<ShieldEffectConfig>,
-    pub star: Option<StarEffectConfig>,
-    pub blue_shell: Option<BlueShellEffectConfig>,
+    pub focus: Option<FocusEffectConfig>,
+    pub cyclone: Option<CycloneEffectConfig>,
     pub squid_ink: Option<SquidInkEffectConfig>,
 }
 
@@ -72,48 +72,48 @@ impl ItemEffectConfig {
                 mushroom: Some(MushroomEffectConfig::default()),
                 banana: None,
                 shield: None,
-                star: None,
-                blue_shell: None,
+                focus: None,
+                cyclone: None,
                 squid_ink: None,
             },
             ItemPickup::Held(HeldItem::Banana) => Self {
                 mushroom: None,
                 banana: Some(BananaEffectConfig::default()),
                 shield: None,
-                star: None,
-                blue_shell: None,
+                focus: None,
+                cyclone: None,
                 squid_ink: None,
             },
-            ItemPickup::Held(HeldItem::Star) => Self {
+            ItemPickup::Held(HeldItem::Focus) => Self {
                 mushroom: None,
                 banana: None,
                 shield: None,
-                star: Some(StarEffectConfig::default()),
-                blue_shell: None,
+                focus: Some(FocusEffectConfig::default()),
+                cyclone: None,
                 squid_ink: None,
             },
-            ItemPickup::Held(HeldItem::BlueShell) => Self {
+            ItemPickup::Held(HeldItem::Cyclone) => Self {
                 mushroom: None,
                 banana: None,
                 shield: None,
-                star: None,
-                blue_shell: Some(BlueShellEffectConfig::default()),
+                focus: None,
+                cyclone: Some(CycloneEffectConfig::default()),
                 squid_ink: None,
             },
             ItemPickup::Held(HeldItem::SquidInk) => Self {
                 mushroom: None,
                 banana: None,
                 shield: None,
-                star: None,
-                blue_shell: None,
+                focus: None,
+                cyclone: None,
                 squid_ink: Some(SquidInkEffectConfig::default()),
             },
             ItemPickup::Shield => Self {
                 mushroom: None,
                 banana: None,
                 shield: Some(ShieldEffectConfig::default()),
-                star: None,
-                blue_shell: None,
+                focus: None,
+                cyclone: None,
                 squid_ink: None,
             },
         }
@@ -166,11 +166,11 @@ impl Default for ShieldEffectConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct StarEffectConfig {
+pub struct FocusEffectConfig {
     pub duration_ms: u64,
 }
 
-impl Default for StarEffectConfig {
+impl Default for FocusEffectConfig {
     fn default() -> Self {
         Self {
             duration_ms: 10_000,
@@ -179,11 +179,11 @@ impl Default for StarEffectConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct BlueShellEffectConfig {
+pub struct CycloneEffectConfig {
     pub affected_words: usize,
 }
 
-impl Default for BlueShellEffectConfig {
+impl Default for CycloneEffectConfig {
     fn default() -> Self {
         Self { affected_words: 1 }
     }
@@ -220,8 +220,8 @@ impl ItemDisplayConfig {
                 banana: Some(BananaDisplayConfig::default()),
             },
             ItemPickup::Held(HeldItem::Mushroom)
-            | ItemPickup::Held(HeldItem::Star)
-            | ItemPickup::Held(HeldItem::BlueShell)
+            | ItemPickup::Held(HeldItem::Focus)
+            | ItemPickup::Held(HeldItem::Cyclone)
             | ItemPickup::Held(HeldItem::SquidInk)
             | ItemPickup::Shield => Self { banana: None },
         }
@@ -463,9 +463,9 @@ impl ItemRegistry {
                 },
             ),
             ItemDefinition::built_in_with_context(
-                "star",
-                "Star Power",
-                ItemPickup::Held(HeldItem::Star),
+                "focus",
+                "Focus",
+                ItemPickup::Held(HeldItem::Focus),
                 ItemActivation::Held,
                 1,
                 2,
@@ -483,9 +483,9 @@ impl ItemRegistry {
                 },
             ),
             ItemDefinition::built_in_with_context(
-                "blue_shell",
-                "Blue Shell",
-                ItemPickup::Held(HeldItem::BlueShell),
+                "cyclone",
+                "Cyclone",
+                ItemPickup::Held(HeldItem::Cyclone),
                 ItemActivation::Held,
                 1,
                 2,
@@ -532,7 +532,7 @@ impl ItemRegistry {
     /// enabled flags, roll weights, selected effect parameters, and display
     /// labels. Adding entirely new item effects needs the shared item engine
     /// first, because the current game still resolves Mushroom, Banana, and
-    /// Shield, Star, and Blue Shell through concrete Rust handlers.
+    /// Shield, Focus, and Cyclone through concrete Rust handlers.
     pub fn load_json_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path)?;
@@ -668,16 +668,16 @@ impl ItemRegistry {
                     }
                     target.effect.shield = Some(shield);
                 } else if effect.duration_ms.is_some() {
-                    if target.effect.star.is_some() {
-                        let mut star = target.effect.star.unwrap_or_default();
-                        star.duration_ms = effect.duration_ms.unwrap();
-                        if star.duration_ms == 0 {
+                    if target.effect.focus.is_some() {
+                        let mut focus = target.effect.focus.unwrap_or_default();
+                        focus.duration_ms = effect.duration_ms.unwrap();
+                        if focus.duration_ms == 0 {
                             bail!(
-                                "item '{}' star duration_ms must be greater than zero",
+                                "item '{}' focus duration_ms must be greater than zero",
                                 override_item.id
                             );
                         }
-                        target.effect.star = Some(star);
+                        target.effect.focus = Some(focus);
                     } else {
                         bail!(
                             "item '{}' does not support duration_ms effect config",
@@ -686,21 +686,21 @@ impl ItemRegistry {
                     }
                 }
 
-                if target.effect.blue_shell.is_some() && effect.affected_words.is_some() {
-                    let mut blue_shell = target.effect.blue_shell.unwrap_or_default();
+                if target.effect.cyclone.is_some() && effect.affected_words.is_some() {
+                    let mut cyclone = target.effect.cyclone.unwrap_or_default();
                     if let Some(affected_words) = effect.affected_words {
-                        blue_shell.affected_words = affected_words;
+                        cyclone.affected_words = affected_words;
                     }
-                    if blue_shell.affected_words == 0 {
+                    if cyclone.affected_words == 0 {
                         bail!(
-                            "item '{}' blue shell affected_words must be greater than zero",
+                            "item '{}' cyclone affected_words must be greater than zero",
                             override_item.id
                         );
                     }
-                    target.effect.blue_shell = Some(blue_shell);
+                    target.effect.cyclone = Some(cyclone);
                 } else if effect.affected_words.is_some() {
                     bail!(
-                        "item '{}' does not support blue shell effect config",
+                        "item '{}' does not support cyclone effect config",
                         override_item.id
                     );
                 }
@@ -727,6 +727,12 @@ impl ItemRegistry {
                     if squid_ink.range_words == 0 {
                         bail!(
                             "item '{}' squid ink range_words must be greater than zero",
+                            override_item.id
+                        );
+                    }
+                    if squid_ink.duration_ms == 0 {
+                        bail!(
+                            "item '{}' squid ink duration_ms must be greater than zero",
                             override_item.id
                         );
                     }
@@ -822,19 +828,19 @@ impl ItemRegistry {
             .unwrap_or_default()
     }
 
-    pub fn star_effect(&self) -> StarEffectConfig {
+    pub fn focus_effect(&self) -> FocusEffectConfig {
         self.items
             .iter()
-            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Star))
-            .and_then(|item| item.effect.star)
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Focus))
+            .and_then(|item| item.effect.focus)
             .unwrap_or_default()
     }
 
-    pub fn blue_shell_effect(&self) -> BlueShellEffectConfig {
+    pub fn cyclone_effect(&self) -> CycloneEffectConfig {
         self.items
             .iter()
-            .find(|item| item.pickup == ItemPickup::Held(HeldItem::BlueShell))
-            .and_then(|item| item.effect.blue_shell)
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Cyclone))
+            .and_then(|item| item.effect.cyclone)
             .unwrap_or_default()
     }
 
@@ -1360,11 +1366,11 @@ mod tests {
                         "effect": { "duration_ms": 3000 }
                     },
                     {
-                        "id": "star",
+                        "id": "focus",
                         "effect": { "duration_ms": 7500 }
                     },
                     {
-                        "id": "blue_shell",
+                        "id": "cyclone",
                         "effect": { "affected_words": 2 }
                     },
                     {
@@ -1390,8 +1396,8 @@ mod tests {
         assert_eq!(registry.banana_effect().impact_blink_ms, 900);
         assert_eq!(registry.banana_effect().cue_ms, 700);
         assert_eq!(registry.shield_effect().duration_ms, 3000);
-        assert_eq!(registry.star_effect().duration_ms, 7500);
-        assert_eq!(registry.blue_shell_effect().affected_words, 2);
+        assert_eq!(registry.focus_effect().duration_ms, 7500);
+        assert_eq!(registry.cyclone_effect().affected_words, 2);
         assert_eq!(registry.squid_ink_effect().range_words, 7);
         assert_eq!(registry.squid_ink_effect().duration_ms, 2500);
         assert_eq!(registry.squid_ink_effect().impact_blink_ms, 800);
@@ -1435,5 +1441,19 @@ mod tests {
         assert_eq!(display.unicode_overlap, " 🍌 <>");
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn shipped_classic_item_template_loads() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("mods")
+            .join("items")
+            .join("classic.json");
+
+        let registry = ItemRegistry::load_json_file(path).unwrap();
+
+        assert_eq!(registry.items.len(), ItemRegistry::builtin().items.len());
+        assert_eq!(registry.focus_effect().duration_ms, 10_000);
+        assert_eq!(registry.squid_ink_effect().range_words, 5);
     }
 }

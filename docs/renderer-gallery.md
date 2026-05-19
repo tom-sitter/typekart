@@ -53,9 +53,9 @@ Focused item scenarios:
 
 - Mushroom boost marker.
 - Shield active marker.
-- Star Power active marker.
+- Focus active marker.
 - Banana fired ahead, behind, and impact blink.
-- Blue Shell fired and impact blink.
+- Cyclone fired and impact blink.
 - Squid Ink fired and impact blink.
 - Squid Ink obscuring words beyond the affected racer's current word.
 

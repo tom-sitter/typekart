@@ -93,8 +93,8 @@ Items currently activate automatically when obtained.
 | Mushroom | Boosts the racer forward by three words one at a time. Input is paused during the boost. |
 | Banana | Hits the nearest unfinished racer in range and briefly stuns them. |
 | Shield | Protects the racer from the next blockable attack until it expires or is consumed. |
-| Star Power | Temporarily discards incorrect keys without adding typo input. Correct keys are still required to advance. |
-| Blue Shell | Targets first place and reverses the affected racer's next word. |
+| Focus | Temporarily discards incorrect keys without adding typo input. Correct keys are still required to advance. |
+| Cyclone | Targets first place and reverses the affected racer's next word. |
 | Squid Ink | Hits every unfinished racer within five words and hides upcoming words for up to five seconds. The current word is visible, but later words stay hidden until reached or until the ink wears off. |
 
 ## Visual Indicators
@@ -105,12 +105,12 @@ Unicode icons are enabled by default. Use `--ascii` if a terminal renders emoji 
 | --- | --- |
 | `>>🍄` | Mushroom boost is active. |
 | Shield icon on marker | Shield is active. |
-| Star icon on marker | Star Power is active. |
+| Focus icon on marker and light magenta track text | Focus is active. |
 | `🍌 >>` or `<< 🍌` | Banana fired ahead or behind. |
-| Blue shell cue | Blue Shell fired. |
+| Cyclone cue | Cyclone fired. |
 | Squid icon cue | Squid Ink fired. |
 | Yellow blink | Banana impact. |
-| Blue blink | Blue Shell impact. |
+| Blue blink | Cyclone impact. |
 | Black blink | Squid Ink impact. |
 
 ASCII fallback keeps plain text markers for terminals without reliable Unicode support.

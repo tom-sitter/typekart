@@ -1,0 +1,103 @@
+{
+  "items": [
+    {
+      "id": "mushroom",
+      "name": "Mushroom",
+      "enabled": true,
+      "standard_weight": 3,
+      "nearby_racer_weight": 4,
+      "context_weights": {
+        "standard": { "first": 3, "middle": 3, "trailing": 6 },
+        "nearby_racer": { "first": 4, "middle": 4, "trailing": 8 }
+      },
+      "effect": {
+        "boost_words": 3,
+        "wpm": 180
+      }
+    },
+    {
+      "id": "banana",
+      "name": "Banana",
+      "enabled": true,
+      "standard_weight": 2,
+      "nearby_racer_weight": 3,
+      "context_weights": {
+        "standard": { "first": 1, "middle": 2, "trailing": 3 },
+        "nearby_racer": { "first": 2, "middle": 3, "trailing": 5 }
+      },
+      "effect": {
+        "range_words": 10,
+        "stun_ms": 2000,
+        "impact_blink_ms": 1200,
+        "cue_ms": 1500
+      },
+      "display": {
+        "ascii_ahead": " ))>>",
+        "ascii_behind": "((<< ",
+        "ascii_overlap": " ))<>",
+        "unicode_ahead": " 🍌 >>",
+        "unicode_behind": "<< 🍌 ",
+        "unicode_overlap": " 🍌 <>"
+      }
+    },
+    {
+      "id": "shield",
+      "name": "Shield",
+      "enabled": true,
+      "standard_weight": 1,
+      "nearby_racer_weight": 3,
+      "context_weights": {
+        "standard": { "first": 1, "middle": 1, "trailing": 1 },
+        "nearby_racer": { "first": 3, "middle": 3, "trailing": 2 }
+      },
+      "effect": {
+        "duration_ms": 5000
+      }
+    },
+    {
+      "id": "focus",
+      "name": "Focus",
+      "enabled": true,
+      "standard_weight": 1,
+      "nearby_racer_weight": 2,
+      "context_weights": {
+        "standard": { "first": 1, "middle": 2, "trailing": 3 },
+        "nearby_racer": { "first": 1, "middle": 2, "trailing": 4 }
+      },
+      "effect": {
+        "duration_ms": 10000
+      }
+    },
+    {
+      "id": "cyclone",
+      "name": "Cyclone",
+      "enabled": true,
+      "standard_weight": 1,
+      "nearby_racer_weight": 2,
+      "context_weights": {
+        "standard": { "first": 0, "middle": 1, "trailing": 3 },
+        "nearby_racer": { "first": 0, "middle": 2, "trailing": 4 }
+      },
+      "effect": {
+        "affected_words": 1
+      }
+    },
+    {
+      "id": "squid_ink",
+      "name": "Squid Ink",
+      "enabled": true,
+      "standard_weight": 2,
+      "nearby_racer_weight": 5,
+      "context_weights": {
+        "standard": { "first": 1, "middle": 2, "trailing": 2 },
+        "nearby_racer": { "first": 4, "middle": 6, "trailing": 5 }
+      },
+      "effect": {
+        "ink_range_words": 5,
+        "ink_duration_ms": 5000,
+        "ink_impact_blink_ms": 1200,
+        "ink_cue_ms": 1500
+      }
+    }
+  ]
+}

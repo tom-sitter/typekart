@@ -136,7 +136,7 @@ pub struct PlayerSnapshot {
     pub finished: bool,
     pub connected: bool,
     pub shielded: bool,
-    pub starred: bool,
+    pub focused: bool,
     pub inked: bool,
     pub boosted: bool,
     pub stunned: bool,
@@ -161,7 +161,7 @@ pub struct ImpactCueSnapshot {
 #[serde(rename_all = "snake_case")]
 pub enum ImpactCueSnapshotKind {
     Banana,
-    BlueShell,
+    Cyclone,
     SquidInk,
     ShieldBlock,
 }
@@ -271,7 +271,7 @@ pub enum ItemCuePlacementSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ItemCueSnapshotKind {
     Banana { direction: AttackDirectionSnapshot },
-    BlueShell { direction: AttackDirectionSnapshot },
+    Cyclone { direction: AttackDirectionSnapshot },
     SquidInk,
 }
 
@@ -425,7 +425,7 @@ mod tests {
                 finished: false,
                 connected: true,
                 shielded: false,
-                starred: true,
+                focused: true,
                 inked: false,
                 boosted: false,
                 stunned: false,
@@ -460,7 +460,7 @@ mod tests {
                 finished: false,
                 connected: true,
                 shielded: false,
-                starred: false,
+                focused: false,
                 inked: false,
                 boosted: false,
                 stunned: false,

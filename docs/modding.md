@@ -50,8 +50,9 @@ Supported item ids:
 - `mushroom`
 - `banana`
 - `shield`
-- `star`
-- `blue_shell`
+- `focus`
+- `cyclone`
+- `squid_ink`
 
 Example:
 
@@ -92,15 +93,24 @@ Example:
       }
     },
     {
-      "id": "star",
+      "id": "focus",
       "effect": {
         "duration_ms": 10000
       }
     },
     {
-      "id": "blue_shell",
+      "id": "cyclone",
       "effect": {
         "affected_words": 1
+      }
+    },
+    {
+      "id": "squid_ink",
+      "effect": {
+        "ink_range_words": 5,
+        "ink_duration_ms": 5000,
+        "ink_impact_blink_ms": 1200,
+        "ink_cue_ms": 1500
       }
     }
   ]
@@ -145,8 +155,8 @@ Effect fields are item-specific:
 - Mushroom: `boost_words`, `wpm`.
 - Banana: `range_words`, `stun_ms`, `impact_blink_ms`, `cue_ms`.
 - Shield: `duration_ms`.
-- Star Power: `duration_ms`.
-- Blue Shell: `affected_words`.
+- Focus: `duration_ms`.
+- Cyclone: `affected_words`.
 - Squid Ink: `ink_range_words`, `ink_duration_ms`, `ink_impact_blink_ms`, `ink_cue_ms`.
 
 Banana display fields:
@@ -171,3 +181,8 @@ TypeKart rejects:
 - Word sets with unplayable words.
 
 Use `--debug-log` while testing packs to capture selected mod metadata and item resolution details.
+
+Copyable templates live in `mods/`. The item template mirrors the built-in defaults. The word template is the playable lowercase-only version of the bundled word list so it can pass external word-set validation.
+
+- `mods/words/classic.txt`
+- `mods/items/classic.json`

@@ -177,7 +177,7 @@ This module defines timed active effects and pending attacks.
 
 Main types:
 
-- `ActiveEffect`: timed racer effects such as Shield and Star Power.
+- `ActiveEffect`: timed racer effects such as Shield and Focus.
 - `PendingAttack`: delayed attack effects that need warning or resolution timing.
 - `AttackWarning`: an attack plus the time when it resolves.
 
@@ -410,7 +410,7 @@ Important Rust concepts:
 
 The track renderer first computes a `TrackWindow`, which records visible words and their terminal columns. That metadata is then used to draw the word layer and each racer's lane. When Shield is active, the marker is rendered in bracketed form as `[███]` in ASCII mode or as `█🛡` in Unicode icon mode. The Unicode shield marker reserves the normal three-column kart footprint but does not draw a right-side block, because the shield emoji commonly occupies two terminal columns. When Mushroom is active, the marker gains a `>>>` prefix in ASCII mode or a `>>🍄` prefix in Unicode icon mode. Banana attacks briefly show a direction cue beside the attacker marker. Item impacts briefly blink the impacted racer's marker.
 
-The word layer is rendered through fixed-width track cells. Correctly typed characters are green, the next character has a cursor-like highlight, and `typo_index` makes typed characters from the first typo onward red. Since the renderer maps `PlayerState.input` over the visible track stream, typo overflow can continue across following words and spaces while `word_index` remains blocked at the real race position.
+The word layer is rendered through fixed-width track cells. Correctly typed characters are green, the next character has a cursor-like highlight, active Focus tints untyped current and upcoming track text light magenta, and `typo_index` makes typed characters from the first typo onward red. Since the renderer maps `PlayerState.input` over the visible track stream, typo overflow can continue across following words and spaces while `word_index` remains blocked at the real race position.
 
 The local racer marker is also derived from the character stream. It follows the next character while input is valid, and pins to the first typo while typo recovery is required. The local racer lane is rendered immediately below the word layer; AI racer lanes are rendered below it.
 

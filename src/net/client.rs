@@ -1673,9 +1673,17 @@ fn network_word_char_style(
     }
 
     if word.index == local.word_index {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        if local.focused {
+            Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        }
+    } else if local.focused {
+        Style::default().fg(Color::LightMagenta)
     } else {
         Style::default()
     }
@@ -1768,8 +1776,8 @@ fn network_racer_line<'a>(
     if player.boosted {
         prefix.push_str(network_boost_prefix(icon_mode));
     }
-    if player.starred && player.shielded {
-        prefix.push_str(network_star_prefix(icon_mode));
+    if player.focused && player.shielded {
+        prefix.push_str(network_focus_prefix(icon_mode));
     }
     if !prefix.is_empty() {
         let prefix_start = start.saturating_sub(prefix.chars().count());
@@ -1789,18 +1797,20 @@ fn network_racer_line<'a>(
         }
     }
 
-    let marker = if player.shielded && matches!(marker, NETWORK_RACER_MARKER) {
+    let marker = if let Some(marker) = network_impact_marker(marker, player, icon_mode) {
+        marker
+    } else if player.shielded && matches!(marker, NETWORK_RACER_MARKER) {
         network_shield_marker(icon_mode)
     } else if player.shielded && marker == "<" {
         network_edge_shield_marker('<', icon_mode)
     } else if player.shielded && marker == ">" {
         network_edge_shield_marker('>', icon_mode)
-    } else if player.starred && matches!(marker, NETWORK_RACER_MARKER) {
-        network_star_marker(icon_mode)
-    } else if player.starred && marker == "<" {
-        network_edge_star_marker('<', icon_mode)
-    } else if player.starred && marker == ">" {
-        network_edge_star_marker('>', icon_mode)
+    } else if player.focused && matches!(marker, NETWORK_RACER_MARKER) {
+        network_focus_marker(icon_mode)
+    } else if player.focused && marker == "<" {
+        network_edge_focus_marker('<', icon_mode)
+    } else if player.focused && marker == ">" {
+        network_edge_focus_marker('>', icon_mode)
     } else {
         marker
     };
@@ -1866,7 +1876,7 @@ fn network_boost_prefix(icon_mode: IconMode) -> &'static str {
     }
 }
 
-fn network_star_prefix(icon_mode: IconMode) -> &'static str {
+fn network_focus_prefix(icon_mode: IconMode) -> &'static str {
     match icon_mode {
         IconMode::Ascii => "*",
         IconMode::Unicode => "★",
@@ -1880,7 +1890,7 @@ fn network_shield_marker(icon_mode: IconMode) -> &'static str {
     }
 }
 
-fn network_star_marker(icon_mode: IconMode) -> &'static str {
+fn network_focus_marker(icon_mode: IconMode) -> &'static str {
     match icon_mode {
         IconMode::Ascii => "[*]",
         IconMode::Unicode => "█★█",
@@ -1897,7 +1907,7 @@ fn network_edge_shield_marker(direction: char, icon_mode: IconMode) -> &'static 
     }
 }
 
-fn network_edge_star_marker(direction: char, icon_mode: IconMode) -> &'static str {
+fn network_edge_focus_marker(direction: char, icon_mode: IconMode) -> &'static str {
     match (direction, icon_mode) {
         ('<', IconMode::Ascii) => "*<*",
         ('>', IconMode::Ascii) => "*>*",
@@ -1907,12 +1917,59 @@ fn network_edge_star_marker(direction: char, icon_mode: IconMode) -> &'static st
     }
 }
 
+fn network_impact_marker(
+    marker: &str,
+    player: &PlayerSnapshot,
+    icon_mode: IconMode,
+) -> Option<&'static str> {
+    let symbol = network_impact_marker_symbol(player, icon_mode)?;
+    match (marker, symbol, icon_mode) {
+        (NETWORK_RACER_MARKER, "🍌", IconMode::Unicode) => Some("█🍌"),
+        (NETWORK_RACER_MARKER, "🌀", IconMode::Unicode) => Some("█🌀"),
+        (NETWORK_RACER_MARKER, "🦑", IconMode::Unicode) => Some("█🦑"),
+        (NETWORK_RACER_MARKER, "🛡", IconMode::Unicode) => Some("█🛡"),
+        ("<", "🍌", IconMode::Unicode) => Some("<🍌"),
+        ("<", "🌀", IconMode::Unicode) => Some("<🌀"),
+        ("<", "🦑", IconMode::Unicode) => Some("<🦑"),
+        ("<", "🛡", IconMode::Unicode) => Some("<🛡"),
+        (">", "🍌", IconMode::Unicode) => Some(">🍌"),
+        (">", "🌀", IconMode::Unicode) => Some(">🌀"),
+        (">", "🦑", IconMode::Unicode) => Some(">🦑"),
+        (">", "🛡", IconMode::Unicode) => Some(">🛡"),
+        (NETWORK_RACER_MARKER | "<" | ">", "B", IconMode::Ascii) => Some("[B]"),
+        (NETWORK_RACER_MARKER | "<" | ">", "C", IconMode::Ascii) => Some("[C]"),
+        (NETWORK_RACER_MARKER | "<" | ">", "I", IconMode::Ascii) => Some("[I]"),
+        (NETWORK_RACER_MARKER | "<" | ">", "S", IconMode::Ascii) => Some("[S]"),
+        _ => None,
+    }
+}
+
+fn network_impact_marker_symbol(
+    player: &PlayerSnapshot,
+    icon_mode: IconMode,
+) -> Option<&'static str> {
+    let cue = player
+        .impact_cue
+        .as_ref()
+        .filter(|cue| cue.remaining_ms > 0)?;
+    match (cue.kind, icon_mode) {
+        (ImpactCueSnapshotKind::Banana, IconMode::Unicode) => Some("🍌"),
+        (ImpactCueSnapshotKind::Banana, IconMode::Ascii) => Some("B"),
+        (ImpactCueSnapshotKind::Cyclone, IconMode::Unicode) => Some("🌀"),
+        (ImpactCueSnapshotKind::Cyclone, IconMode::Ascii) => Some("C"),
+        (ImpactCueSnapshotKind::SquidInk, IconMode::Unicode) => Some("🦑"),
+        (ImpactCueSnapshotKind::SquidInk, IconMode::Ascii) => Some("I"),
+        (ImpactCueSnapshotKind::ShieldBlock, IconMode::Unicode) => Some("🛡"),
+        (ImpactCueSnapshotKind::ShieldBlock, IconMode::Ascii) => Some("S"),
+    }
+}
+
 fn network_marker_style(player: &PlayerSnapshot, color: Color) -> Style {
     let base = Style::default().fg(color).add_modifier(Modifier::BOLD);
     if let Some(cue) = player.impact_cue.filter(|cue| cue.remaining_ms > 0) {
         match cue.kind {
             ImpactCueSnapshotKind::Banana => base.bg(Color::Yellow).fg(Color::Black),
-            ImpactCueSnapshotKind::BlueShell => base.bg(Color::Blue).fg(Color::White),
+            ImpactCueSnapshotKind::Cyclone => base.bg(Color::Blue).fg(Color::White),
             ImpactCueSnapshotKind::SquidInk => base.bg(Color::Black).fg(Color::White),
             ImpactCueSnapshotKind::ShieldBlock => base.bg(Color::Cyan).fg(Color::Black),
         }
@@ -2286,13 +2343,15 @@ mod tests {
         AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, NetworkViewState, PlayerId,
         PlayerSnapshot, display_word_number, enter_sets_ready, host_cancel_key,
         join_rejection_message, lifecycle_command_message, network_bonus_column,
-        network_help_lines, network_minimap_column, network_racer_label, network_track_word_line,
-        phase_accepts_typed_commands, primary_command_help, rename_prefill, space_starts_countdown,
-        starts_rename_mode, stream_index_for_word_char, visible_network_bonus_point,
+        network_help_lines, network_minimap_column, network_racer_label, network_racer_line,
+        network_track_word_line, phase_accepts_typed_commands, primary_command_help,
+        rename_prefill, space_starts_countdown, starts_rename_mode, stream_index_for_word_char,
+        visible_network_bonus_point,
     };
     use crate::net::protocol::{
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
-        ModConfigSnapshot, NetworkRacePhase, PlayerKind, RaceSnapshot,
+        ImpactCueSnapshot, ImpactCueSnapshotKind, ModConfigSnapshot, NetworkRacePhase, PlayerKind,
+        RaceSnapshot,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Modifier};
@@ -2373,6 +2432,20 @@ mod tests {
         assert_eq!(line.spans[3].content.as_ref(), "x");
         assert_eq!(line.spans[3].style.fg, Some(Color::Red));
         assert!(line.spans[3].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn network_word_line_tints_focused_track_words() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 0, 20);
+        let mut player = player(PlayerId(1), 0, "", None, false);
+        player.focused = true;
+
+        let line = network_track_word_line(&window, Some(&player));
+
+        assert_eq!(line.spans[0].style.fg, Some(Color::LightMagenta));
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(line.spans[4].style.fg, Some(Color::LightMagenta));
     }
 
     #[test]
@@ -2579,6 +2652,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn network_racer_marker_shows_banana_impact_icon() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 0, 40);
+        let mut racer = player(PlayerId(1), 0, "", None, false);
+        racer.impact_cue = Some(ImpactCueSnapshot {
+            kind: ImpactCueSnapshotKind::Banana,
+            remaining_ms: 500,
+        });
+
+        let line = network_racer_line(
+            &window,
+            &racer,
+            true,
+            NetworkRacePhase::Racing,
+            super::IconMode::Unicode,
+        );
+
+        assert_eq!(line.spans[0].content.as_ref(), "█");
+        assert_eq!(line.spans[1].content.as_ref(), "🍌");
+    }
+
+    #[test]
+    fn network_racer_marker_shows_cyclone_impact_icon() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 0, 40);
+        let mut racer = player(PlayerId(1), 0, "", None, false);
+        racer.impact_cue = Some(ImpactCueSnapshot {
+            kind: ImpactCueSnapshotKind::Cyclone,
+            remaining_ms: 500,
+        });
+
+        let line = network_racer_line(
+            &window,
+            &racer,
+            true,
+            NetworkRacePhase::Racing,
+            super::IconMode::Unicode,
+        );
+
+        assert_eq!(line.spans[0].content.as_ref(), "█");
+        assert_eq!(line.spans[1].content.as_ref(), "🌀");
+    }
+
     fn words<const N: usize>(words: [&str; N]) -> Vec<String> {
         words.into_iter().map(str::to_string).collect()
     }
@@ -2602,7 +2719,7 @@ mod tests {
             finished,
             connected: true,
             shielded: false,
-            starred: false,
+            focused: false,
             inked: false,
             boosted: false,
             stunned: false,

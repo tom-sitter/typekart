@@ -157,7 +157,7 @@ struct NetworkItemCue {
 #[derive(Debug, Clone, Copy)]
 enum NetworkItemCueKind {
     Banana { direction: AttackDirectionSnapshot },
-    BlueShell { direction: AttackDirectionSnapshot },
+    Cyclone { direction: AttackDirectionSnapshot },
     SquidInk,
 }
 
@@ -1395,7 +1395,7 @@ fn network_bonus_start(
     let player = state.race.player(RacePlayerId(player_id.0))?;
     if player.state.held_item.is_some()
         || player.state.has_active_shield(now)
-        || player.state.has_active_star(now)
+        || player.state.has_active_focus(now)
         || player.state.typo_index.is_some()
         || !player.state.input.is_empty()
         || player.state.is_finished()
@@ -1650,8 +1650,8 @@ fn activate_network_pickup(
     match item {
         ItemPickup::Held(HeldItem::Mushroom) => activate_network_mushroom(state, player_id, now),
         ItemPickup::Held(HeldItem::Banana) => activate_network_banana(state, player_id, now),
-        ItemPickup::Held(HeldItem::Star) => activate_network_star(state, player_id, now),
-        ItemPickup::Held(HeldItem::BlueShell) => activate_network_blue_shell(state, player_id, now),
+        ItemPickup::Held(HeldItem::Focus) => activate_network_focus(state, player_id, now),
+        ItemPickup::Held(HeldItem::Cyclone) => activate_network_cyclone(state, player_id, now),
         ItemPickup::Held(HeldItem::SquidInk) => activate_network_squid_ink(state, player_id, now),
         ItemPickup::Shield => activate_network_shield(state, player_id, now),
     }
@@ -1694,7 +1694,7 @@ fn activate_network_mushroom(state: &mut HostState, player_id: PlayerId, now: In
     advance_network_mushrooms(state, now);
 }
 
-fn activate_network_star(state: &mut HostState, player_id: PlayerId, now: Instant) {
+fn activate_network_focus(state: &mut HostState, player_id: PlayerId, now: Instant) {
     let Some(player) = state
         .race
         .players
@@ -1704,15 +1704,15 @@ fn activate_network_star(state: &mut HostState, player_id: PlayerId, now: Instan
         return;
     };
 
-    player.state.active_effects.push(ActiveEffect::Star {
-        until: now + Duration::from_millis(state.item_registry.star_effect().duration_ms),
+    player.state.active_effects.push(ActiveEffect::Focus {
+        until: now + Duration::from_millis(state.item_registry.focus_effect().duration_ms),
     });
 }
 
-fn activate_network_blue_shell(state: &mut HostState, player_id: PlayerId, now: Instant) {
+fn activate_network_cyclone(state: &mut HostState, player_id: PlayerId, now: Instant) {
     let attacker_name = player_label(state, player_id);
     let Some(target_id) = first_place_network_target(state, Some(player_id)) else {
-        push_event(state, format!("{attacker_name} missed Blue Shell"));
+        push_event(state, format!("{attacker_name} missed Cyclone"));
         return;
     };
 
@@ -1728,18 +1728,18 @@ fn activate_network_blue_shell(state: &mut HostState, player_id: PlayerId, now: 
         .unwrap_or_default();
     let direction = attack_direction(attacker_word_index, target_word_index);
     state.player_effects.entry(player_id).or_default().item_cue = Some(NetworkItemCue {
-        kind: NetworkItemCueKind::BlueShell { direction },
-        ascii_label: network_blue_shell_cue_label(direction, false),
-        unicode_label: network_blue_shell_cue_label(direction, true),
+        kind: NetworkItemCueKind::Cyclone { direction },
+        ascii_label: network_cyclone_cue_label(direction, false),
+        unicode_label: network_cyclone_cue_label(direction, true),
         placement: network_item_cue_placement(direction),
         until: now + Duration::from_millis(1_500),
     });
 
     let target_name = player_label(state, target_id);
-    if apply_network_blue_shell_to_player(state, target_id, now) {
+    if apply_network_cyclone_to_player(state, target_id, now) {
         push_event(
             state,
-            format!("{attacker_name} hit {target_name} with Blue Shell"),
+            format!("{attacker_name} hit {target_name} with Cyclone"),
         );
     }
 }
@@ -1948,7 +1948,7 @@ fn first_place_network_target(state: &HostState, exclude: Option<PlayerId>) -> O
         .map(|player| PlayerId(player.id.0))
 }
 
-fn apply_network_blue_shell_to_player(
+fn apply_network_cyclone_to_player(
     state: &mut HostState,
     target_id: PlayerId,
     now: Instant,
@@ -1979,15 +1979,15 @@ fn apply_network_blue_shell_to_player(
             kind: ImpactCueSnapshotKind::ShieldBlock,
             until: now + Duration::from_millis(700),
         });
-        push_event(state, format!("{target_name} blocked Blue Shell"));
+        push_event(state, format!("{target_name} blocked Cyclone"));
         push_network_log(
             &state.debug_log,
-            format!("{target_name} blocked Blue Shell; shield consumed"),
+            format!("{target_name} blocked Cyclone; shield consumed"),
         );
         return false;
     }
 
-    let affected_words = state.item_registry.blue_shell_effect().affected_words;
+    let affected_words = state.item_registry.cyclone_effect().affected_words;
     let target = &mut state.race.players[target_index].state;
     let mut applied = false;
     for word_index in target.word_index..target.word_index.saturating_add(affected_words) {
@@ -2008,7 +2008,7 @@ fn apply_network_blue_shell_to_player(
             .entry(target_id)
             .or_default()
             .impact_cue = Some(NetworkImpactCue {
-            kind: ImpactCueSnapshotKind::BlueShell,
+            kind: ImpactCueSnapshotKind::Cyclone,
             until: now + Duration::from_millis(1_200),
         });
     }
@@ -2193,7 +2193,7 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
     };
     if player.state.held_item.is_some()
         || player.state.has_active_shield(now)
-        || player.state.has_active_star(now)
+        || player.state.has_active_focus(now)
         || player_has_active_mushroom_effect(player, now)
         || player_is_stunned(state, player_id, now)
         || state
@@ -2358,14 +2358,14 @@ fn network_banana_cue_labels(
     }
 }
 
-fn network_blue_shell_cue_label(direction: AttackDirectionSnapshot, unicode: bool) -> String {
+fn network_cyclone_cue_label(direction: AttackDirectionSnapshot, unicode: bool) -> String {
     match (direction, unicode) {
-        (AttackDirectionSnapshot::Ahead, false) => " sh>>".to_string(),
-        (AttackDirectionSnapshot::Behind, false) => "<<sh ".to_string(),
-        (AttackDirectionSnapshot::Overlap, false) => " sh<>".to_string(),
-        (AttackDirectionSnapshot::Ahead, true) => " 🐢 >>".to_string(),
-        (AttackDirectionSnapshot::Behind, true) => "<< 🐢 ".to_string(),
-        (AttackDirectionSnapshot::Overlap, true) => " 🐢 <>".to_string(),
+        (AttackDirectionSnapshot::Ahead, false) => " cy>>".to_string(),
+        (AttackDirectionSnapshot::Behind, false) => "<<cy ".to_string(),
+        (AttackDirectionSnapshot::Overlap, false) => " cy<>".to_string(),
+        (AttackDirectionSnapshot::Ahead, true) => " 🌀 >>".to_string(),
+        (AttackDirectionSnapshot::Behind, true) => "<< 🌀 ".to_string(),
+        (AttackDirectionSnapshot::Overlap, true) => " 🌀 <>".to_string(),
     }
 }
 
@@ -2965,7 +2965,7 @@ fn build_player_snapshots(state: &HostState, now: Instant) -> Vec<PlayerSnapshot
                 finished: player.state.is_finished(),
                 connected: player.connected,
                 shielded: player.state.has_active_shield(now),
-                starred: player.state.has_active_star(now),
+                focused: player.state.has_active_focus(now),
                 inked: player.state.is_inked_at(now),
                 boosted: player_has_active_mushroom_effect(player, now),
                 stunned: effects.stunned_until.is_some_and(|until| until > now),
@@ -2989,9 +2989,7 @@ fn build_item_cue_snapshot(cue: Option<NetworkItemCue>, now: Instant) -> Option<
     Some(ItemCueSnapshot {
         kind: match cue.kind {
             NetworkItemCueKind::Banana { direction } => ItemCueSnapshotKind::Banana { direction },
-            NetworkItemCueKind::BlueShell { direction } => {
-                ItemCueSnapshotKind::BlueShell { direction }
-            }
+            NetworkItemCueKind::Cyclone { direction } => ItemCueSnapshotKind::Cyclone { direction },
             NetworkItemCueKind::SquidInk => ItemCueSnapshotKind::SquidInk,
         },
         ascii_label: cue.ascii_label,
@@ -4179,23 +4177,23 @@ mod tests {
     }
 
     #[test]
-    fn network_star_pickup_marks_snapshot_as_starred() {
+    fn network_focus_pickup_marks_snapshot_as_focused() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
 
         activate_network_pickup(
             &mut state,
             PlayerId(1),
-            ItemPickup::Held(HeldItem::Star),
+            ItemPickup::Held(HeldItem::Focus),
             now,
         );
         let snapshot = build_race_snapshot(&mut state);
 
-        assert!(snapshot.players[0].starred);
+        assert!(snapshot.players[0].focused);
     }
 
     #[test]
-    fn network_blue_shell_reverses_first_place_target_word() {
+    fn network_cyclone_reverses_first_place_target_word() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.race.players[1].state.word_index = 1;
@@ -4203,7 +4201,7 @@ mod tests {
         activate_network_pickup(
             &mut state,
             PlayerId(1),
-            ItemPickup::Held(HeldItem::BlueShell),
+            ItemPickup::Held(HeldItem::Cyclone),
             now,
         );
 
@@ -4213,12 +4211,12 @@ mod tests {
             state
                 .events
                 .iter()
-                .any(|event| event == "host hit alex with Blue Shell")
+                .any(|event| event == "host hit alex with Cyclone")
         );
     }
 
     #[test]
-    fn network_blue_shell_is_blocked_by_shield_and_consumes_shield() {
+    fn network_cyclone_is_blocked_by_shield_and_consumes_shield() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.race.players[1].state.word_index = 1;
@@ -4232,7 +4230,7 @@ mod tests {
         activate_network_pickup(
             &mut state,
             PlayerId(1),
-            ItemPickup::Held(HeldItem::BlueShell),
+            ItemPickup::Held(HeldItem::Cyclone),
             now,
         );
 
@@ -4243,7 +4241,7 @@ mod tests {
             state
                 .events
                 .iter()
-                .any(|event| event == "alex blocked Blue Shell")
+                .any(|event| event == "alex blocked Cyclone")
         );
     }
 
@@ -4262,7 +4260,7 @@ mod tests {
         );
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
-        assert!(alex.state.is_inked());
+        assert!(alex.state.is_inked_at(now));
         assert_eq!(
             state
                 .player_effects
@@ -4295,7 +4293,7 @@ mod tests {
         );
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
-        assert!(!alex.state.is_inked());
+        assert!(!alex.state.is_inked_at(now));
         assert!(!alex.state.has_active_shield(now));
         assert!(
             state
@@ -4603,10 +4601,8 @@ mod tests {
         let (id, name, activation) = match pickup {
             ItemPickup::Held(HeldItem::Mushroom) => ("mushroom", "Mushroom", ItemActivation::Held),
             ItemPickup::Held(HeldItem::Banana) => ("banana", "Banana", ItemActivation::Held),
-            ItemPickup::Held(HeldItem::Star) => ("star", "Star Power", ItemActivation::Held),
-            ItemPickup::Held(HeldItem::BlueShell) => {
-                ("blue_shell", "Blue Shell", ItemActivation::Held)
-            }
+            ItemPickup::Held(HeldItem::Focus) => ("focus", "Focus", ItemActivation::Held),
+            ItemPickup::Held(HeldItem::Cyclone) => ("cyclone", "Cyclone", ItemActivation::Held),
             ItemPickup::Held(HeldItem::SquidInk) => {
                 ("squid_ink", "Squid Ink", ItemActivation::Held)
             }
