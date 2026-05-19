@@ -184,6 +184,9 @@ impl GalleryState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GalleryScenario {
     MultiplayerPack,
+    MultiplayerOpening,
+    BonusScramble,
+    ComebackChase,
     BananaHitPack,
     SquidInkPack,
     ItemPileup,
@@ -205,6 +208,9 @@ impl GalleryScenario {
     fn slug(self) -> &'static str {
         match self {
             Self::MultiplayerPack => "multiplayer-pack",
+            Self::MultiplayerOpening => "multiplayer-opening",
+            Self::BonusScramble => "bonus-scramble",
+            Self::ComebackChase => "comeback-chase",
             Self::BananaHitPack => "banana-hit-pack",
             Self::SquidInkPack => "squid-ink-pack",
             Self::ItemPileup => "item-pileup",
@@ -226,6 +232,9 @@ impl GalleryScenario {
     fn title(self) -> &'static str {
         match self {
             Self::MultiplayerPack => "Multiplayer pack",
+            Self::MultiplayerOpening => "Multiplayer opening",
+            Self::BonusScramble => "Bonus scramble",
+            Self::ComebackChase => "Comeback chase",
             Self::BananaHitPack => "Banana hit pack",
             Self::SquidInkPack => "Squid Ink pack",
             Self::ItemPileup => "Item pileup",
@@ -247,6 +256,9 @@ impl GalleryScenario {
     fn description(self) -> &'static str {
         match self {
             Self::MultiplayerPack => "A fuller race scene with six racers, bonus words, and map.",
+            Self::MultiplayerOpening => "A tight opening pack just after the race starts.",
+            Self::BonusScramble => "Racers converge around a bonus-word pickup point.",
+            Self::ComebackChase => "A trailing player lines up a comeback with active effects.",
             Self::BananaHitPack => "Player fires Banana while the target blinks from impact.",
             Self::SquidInkPack => {
                 "Squid Ink cue, impacted racers, and masked words beyond the current word."
@@ -271,6 +283,9 @@ impl GalleryScenario {
 fn gallery_scenarios() -> Vec<GalleryScenario> {
     vec![
         GalleryScenario::MultiplayerPack,
+        GalleryScenario::MultiplayerOpening,
+        GalleryScenario::BonusScramble,
+        GalleryScenario::ComebackChase,
         GalleryScenario::BananaHitPack,
         GalleryScenario::SquidInkPack,
         GalleryScenario::ItemPileup,
@@ -353,6 +368,104 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             events.push("Bonus choices visible ahead");
             events.push("Six racers in the same race window");
         }
+        GalleryScenario::MultiplayerOpening => {
+            player.word_index = 0;
+            player.stats.completed_words = 0;
+            player.input = "sig".to_string();
+            ai_ahead.player.word_index = 1;
+            ai_ahead.player.stats.completed_words = 1;
+            ai_behind.player.word_index = 0;
+            ai_behind.player.stats.completed_words = 0;
+            extra_ai[0].player.word_index = 1;
+            extra_ai[0].player.stats.completed_words = 1;
+            extra_ai[1].player.word_index = 0;
+            extra_ai[1].player.stats.completed_words = 0;
+            extra_ai[2].player.word_index = 2;
+            extra_ai[2].player.stats.completed_words = 2;
+            extra_ai[3].player.word_index = 1;
+            extra_ai[3].player.stats.completed_words = 1;
+            extra_ai[1].item_cue = Some(item_cue(
+                ItemCueKind::Banana {
+                    direction: AttackDirection::Ahead,
+                },
+                " ))>>",
+                " 🍌 >>",
+                now,
+            ));
+            extra_ai[2].player.active_effects.push(ActiveEffect::Focus {
+                until: now + Duration::from_secs(5),
+            });
+            events.push("The pack is still bunched together");
+            events.push("First item cues are starting to appear");
+        }
+        GalleryScenario::BonusScramble => {
+            player.word_index = 4;
+            player.stats.completed_words = 4;
+            player.input = String::new();
+            ai_ahead.player.word_index = 4;
+            ai_ahead.player.stats.completed_words = 4;
+            ai_behind.player.word_index = 3;
+            ai_behind.player.stats.completed_words = 3;
+            extra_ai[0].player.word_index = 4;
+            extra_ai[0].player.stats.completed_words = 4;
+            extra_ai[1].player.word_index = 3;
+            extra_ai[1].player.stats.completed_words = 3;
+            extra_ai[2].player.word_index = 5;
+            extra_ai[2].player.stats.completed_words = 5;
+            extra_ai[3].player.word_index = 2;
+            extra_ai[3].player.stats.completed_words = 2;
+            ai_ahead.player.active_effects.push(ActiveEffect::Shield {
+                until: now + Duration::from_secs(5),
+            });
+            ai_behind.player.active_effects.push(ActiveEffect::Focus {
+                until: now + Duration::from_secs(5),
+            });
+            extra_ai[0].item_cue = Some(item_cue(ItemCueKind::SquidInk, " ink ", " 🦑 ", now));
+            events.push("Bonus words are live in the middle lane");
+            events.push("Shield, Focus, and Squid Ink pressure overlap");
+        }
+        GalleryScenario::ComebackChase => {
+            player.word_index = 2;
+            player.stats.completed_words = 2;
+            player.input = "dr".to_string();
+            player.active_effects.push(ActiveEffect::Mushroom {
+                remaining_words: 2,
+                next_step_at: now + Duration::from_secs(1),
+                step_interval: Duration::from_millis(350),
+            });
+            player.active_effects.push(ActiveEffect::Focus {
+                until: now + Duration::from_secs(5),
+            });
+            ai_ahead.player.word_index = 7;
+            ai_ahead.player.stats.completed_words = 7;
+            ai_ahead.player.active_effects.push(ActiveEffect::Shield {
+                until: now + Duration::from_secs(5),
+            });
+            ai_behind.player.word_index = 1;
+            ai_behind.player.stats.completed_words = 1;
+            extra_ai[0].player.word_index = 5;
+            extra_ai[0].player.stats.completed_words = 5;
+            extra_ai[0].impact_cue = Some(ImpactCue {
+                kind: ImpactCueKind::Banana,
+                until: now + Duration::from_secs(2),
+            });
+            extra_ai[1].player.word_index = 4;
+            extra_ai[1].player.stats.completed_words = 4;
+            extra_ai[1].item_cue = Some(item_cue(
+                ItemCueKind::Cyclone {
+                    direction: AttackDirection::Ahead,
+                },
+                " cy>>",
+                " 🌀 >>",
+                now,
+            ));
+            extra_ai[2].player.word_index = 6;
+            extra_ai[2].player.stats.completed_words = 6;
+            extra_ai[3].player.word_index = 3;
+            extra_ai[3].player.stats.completed_words = 3;
+            events.push("you are boosted and focused");
+            events.push("The leader is shielded but still in reach");
+        }
         GalleryScenario::BananaHitPack => {
             player_item_cue = Some(item_cue(
                 ItemCueKind::Banana {
@@ -392,7 +505,7 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
                 until: now + Duration::from_secs(2),
             });
             events.push("Squid Ink hit 3 racer(s)");
-            events.push("Upcoming words are hidden for you");
+            events.push("Future words are hidden until reached");
         }
         GalleryScenario::ItemPileup => {
             player.active_effects.push(ActiveEffect::Mushroom {
@@ -670,6 +783,9 @@ mod tests {
         assert!(scenarios.contains(&GalleryScenario::CycloneAhead));
         assert!(scenarios.contains(&GalleryScenario::SquidInkMaskedWords));
         assert!(scenarios.contains(&GalleryScenario::MultiplayerPack));
+        assert!(scenarios.contains(&GalleryScenario::MultiplayerOpening));
+        assert!(scenarios.contains(&GalleryScenario::BonusScramble));
+        assert!(scenarios.contains(&GalleryScenario::ComebackChase));
         assert!(scenarios.contains(&GalleryScenario::BananaHitPack));
         assert!(scenarios.contains(&GalleryScenario::SquidInkPack));
         assert!(scenarios.contains(&GalleryScenario::ItemPileup));

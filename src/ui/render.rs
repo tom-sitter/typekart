@@ -2308,7 +2308,8 @@ mod tests {
         let line = track_word_line(&window, &player, RacePhase::Racing, now);
         let spans = line.spans;
 
-        assert_eq!(spans[0].style.fg, Some(Color::LightMagenta));
+        assert_eq!(spans[0].style.fg, Some(Color::Black));
+        assert_eq!(spans[0].style.bg, Some(Color::Yellow));
         assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[4].style.fg, Some(Color::LightMagenta));
     }

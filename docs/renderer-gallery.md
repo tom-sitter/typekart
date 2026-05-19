@@ -24,6 +24,9 @@ Jump directly to a screenshot-ready scenario:
 
 ```sh
 typekart gallery items --scenario multiplayer-pack
+typekart gallery items --scenario multiplayer-opening
+typekart gallery items --scenario bonus-scramble
+typekart gallery items --scenario comeback-chase
 typekart gallery items --scenario banana-hit-pack
 typekart gallery items --scenario squid-ink-pack
 ```
@@ -44,8 +47,11 @@ The gallery includes focused item closeups and fuller static race compositions.
 Screenshot-oriented scenarios:
 
 - `multiplayer-pack`: six racers, bonus words, mixed positions, boost and shield markers, and minimap.
+- `multiplayer-opening`: six racers bunched together just after the race starts.
+- `bonus-scramble`: racers converge around a bonus-word pickup point with overlapping effects.
+- `comeback-chase`: a trailing player uses boost and Focus while chasing shielded leaders.
 - `banana-hit-pack`: the player firing a Banana while another racer shows the impact blink.
-- `squid-ink-pack`: Squid Ink fired, multiple racers impacted, and upcoming words hidden.
+- `squid-ink-pack`: Squid Ink fired, multiple racers impacted, and future words hidden.
 - `item-pileup`: several simultaneous effects to stress-test readability.
 - `finish-sprint`: racers near the finish line with one racer already finished.
 
