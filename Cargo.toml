@@ -1,6 +1,6 @@
 [package]
 name = "typekart"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "A terminal typing racer with kart-style item effects"
 readme = "README.md"
