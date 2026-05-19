@@ -135,7 +135,7 @@ pub fn run_online_join_proxy(config: OnlineJoinProxyConfig) -> Result<()> {
         .context("failed to accept local join client")?;
     let hello = read_local_hello(&local_stream)?;
 
-    let mut websocket = connect_relay(&config.relay)?;
+    let mut websocket = connect_relay(&relay_join_url(&config.relay, &config.room))?;
     send_relay_message(
         &mut websocket,
         &RelayClientMessage::JoinRoom {
@@ -526,6 +526,23 @@ fn connect_relay(relay: &str) -> Result<RelaySocket> {
     Ok(websocket)
 }
 
+fn relay_join_url(relay: &str, room: &RoomCode) -> String {
+    let base = if relay_has_path_or_query(relay) {
+        relay.to_string()
+    } else {
+        format!("{relay}/")
+    };
+    let separator = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{separator}typekart_room={}", room.as_str())
+}
+
+fn relay_has_path_or_query(relay: &str) -> bool {
+    relay.contains('?')
+        || relay
+            .split_once("://")
+            .is_none_or(|(_, rest)| rest.contains('/'))
+}
+
 fn set_relay_read_timeout(websocket: &mut RelaySocket) -> Result<()> {
     const RELAY_READ_TIMEOUT: Duration = Duration::from_millis(10);
     match websocket.get_mut() {
@@ -652,6 +669,20 @@ mod tests {
         };
 
         assert_eq!(join_version(&message), Some("9.9.9"));
+    }
+
+    #[test]
+    fn relay_join_url_adds_room_query_with_valid_path() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+
+        assert_eq!(
+            super::relay_join_url("ws://127.0.0.1:8080", &room),
+            "ws://127.0.0.1:8080/?typekart_room=rocket-salad-tiger"
+        );
+        assert_eq!(
+            super::relay_join_url("wss://relay.example.com/ws?debug=true", &room),
+            "wss://relay.example.com/ws?debug=true&typekart_room=rocket-salad-tiger"
+        );
     }
 
     #[test]
@@ -932,6 +963,7 @@ mod tests {
                 bind: SocketAddr::from(([127, 0, 0, 1], 0)),
                 ready_signal: Some(tx),
                 limits: Default::default(),
+                redis_routing: None,
             });
         });
         rx.recv_timeout(Duration::from_secs(2))

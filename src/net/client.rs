@@ -2646,9 +2646,9 @@ mod tests {
         );
         assert!(
             join_rejection_message(
-                "Version mismatch: host is 0.1.0, client is 0.2.0. Install the same TypeKart version as the host."
+                "Version mismatch: this room is running TypeKart 0.1.0, but you are running TypeKart 0.2.0. Install or launch the same TypeKart version as the room host."
             )
-            .contains("Install the same TypeKart version")
+            .contains("room is running TypeKart 0.1.0")
         );
     }
 

@@ -8,7 +8,7 @@ mod game;
 mod net;
 mod ui;
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -212,6 +212,20 @@ enum Command {
         /// Close rooms after this many idle seconds.
         #[arg(long, default_value_t = 7200)]
         room_idle_timeout_secs: u64,
+        /// Redis URL used to route room joins to the Fly machine hosting the room.
+        ///
+        /// If omitted, TYPEKART_RELAY_REDIS_URL is used when present. Without a
+        /// Redis URL the relay runs in single-machine mode.
+        #[arg(long)]
+        redis_url: Option<String>,
+        /// Machine id to store for Redis room routing.
+        ///
+        /// Defaults to FLY_MACHINE_ID on Fly.io, then a local process-specific id.
+        #[arg(long)]
+        relay_machine_id: Option<String>,
+        /// Seconds before Redis room routing entries expire without refresh.
+        #[arg(long, default_value_t = 7260)]
+        redis_room_ttl_secs: u64,
     },
     /// Preview renderer states for item and effect UI development.
     Gallery {
@@ -409,6 +423,9 @@ fn main() -> Result<()> {
             outbound_queue_size,
             handshake_timeout_secs,
             room_idle_timeout_secs,
+            redis_url,
+            relay_machine_id,
+            redis_room_ttl_secs,
         } => net::relay_server::run_relay(net::relay_server::RelayConfig {
             bind,
             ready_signal: None,
@@ -425,6 +442,7 @@ fn main() -> Result<()> {
                 handshake_timeout: std::time::Duration::from_secs(handshake_timeout_secs),
                 room_idle_timeout: std::time::Duration::from_secs(room_idle_timeout_secs),
             },
+            redis_routing: relay_redis_routing(redis_url, relay_machine_id, redis_room_ttl_secs),
         }),
         Command::Gallery { kind } => match kind {
             GalleryCommand::Items {
@@ -461,6 +479,22 @@ fn main() -> Result<()> {
             settle_timeout: std::time::Duration::from_secs(settle_timeout_secs),
         }),
     }
+}
+
+fn relay_redis_routing(
+    redis_url: Option<String>,
+    relay_machine_id: Option<String>,
+    redis_room_ttl_secs: u64,
+) -> Option<net::relay_server::RedisRoutingConfig> {
+    let redis_url = redis_url.or_else(|| env::var("TYPEKART_RELAY_REDIS_URL").ok())?;
+    let machine_id = relay_machine_id
+        .or_else(|| env::var("FLY_MACHINE_ID").ok())
+        .unwrap_or_else(|| format!("local-{}", std::process::id()));
+    Some(net::relay_server::RedisRoutingConfig {
+        redis_url,
+        machine_id,
+        room_ttl: Duration::from_secs(redis_room_ttl_secs),
+    })
 }
 
 fn word_set_selection(

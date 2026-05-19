@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::game::{ai::AiDifficulty, mods::ActiveModConfig};
 
-pub fn version_mismatch_message(host_version: &str, client_version: &str) -> String {
+pub fn version_mismatch_message(room_version: &str, user_version: &str) -> String {
     format!(
-        "Version mismatch: host is {host_version}, client is {client_version}. Install the same TypeKart version as the host."
+        "Version mismatch: this room is running TypeKart {room_version}, but you are running TypeKart {user_version}. Install or launch the same TypeKart version as the room host."
     )
 }
 
@@ -334,7 +334,16 @@ mod tests {
         PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot, RaceResultRow,
         RaceResultStatus, RaceSnapshot, ServerMessage, WordOverrideSnapshot, decode_client_message,
         decode_server_message, encode_client_message, encode_server_message,
+        version_mismatch_message,
     };
+
+    #[test]
+    fn version_mismatch_message_names_room_and_user_versions() {
+        let message = version_mismatch_message("0.1.0", "0.2.0");
+
+        assert!(message.contains("room is running TypeKart 0.1.0"));
+        assert!(message.contains("you are running TypeKart 0.2.0"));
+    }
 
     #[test]
     fn client_message_round_trips_key_input() {

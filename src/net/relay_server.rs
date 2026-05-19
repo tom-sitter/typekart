@@ -16,6 +16,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use redis::Commands;
 use tungstenite::{Error as WebSocketError, Message, accept, error::ProtocolError};
 
 use super::{
@@ -28,6 +29,14 @@ pub struct RelayConfig {
     pub bind: SocketAddr,
     pub ready_signal: Option<Sender<SocketAddr>>,
     pub limits: RelayLimits,
+    pub redis_routing: Option<RedisRoutingConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RedisRoutingConfig {
+    pub redis_url: String,
+    pub machine_id: String,
+    pub room_ttl: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +90,7 @@ struct RelayRateState {
 struct RelayShared {
     rooms: Mutex<RelayState>,
     rates: Mutex<RelayRateState>,
+    redis_routing: Option<RedisRoomDirectory>,
 }
 
 #[derive(Debug)]
@@ -132,14 +142,102 @@ enum ConnectionRole {
     Participant(PlayerId),
 }
 
+#[derive(Debug, Clone)]
+struct RedisRoomDirectory {
+    client: redis::Client,
+    machine_id: String,
+    room_ttl: Duration,
+}
+
+impl RedisRoomDirectory {
+    fn new(config: RedisRoutingConfig) -> Result<Self> {
+        let client = redis::Client::open(config.redis_url.as_str())
+            .context("failed to create Redis relay routing client")?;
+        Ok(Self {
+            client,
+            machine_id: config.machine_id,
+            room_ttl: config.room_ttl,
+        })
+    }
+
+    fn lookup_room_owner(&self, room: &RoomCode) -> Result<Option<String>> {
+        let mut connection = self
+            .client
+            .get_connection()
+            .context("failed to connect to Redis relay routing registry")?;
+        connection
+            .get(room_registry_key(room))
+            .context("failed to read relay room owner from Redis")
+    }
+
+    fn register_room(&self, room: &RoomCode) -> Result<bool> {
+        let mut connection = self
+            .client
+            .get_connection()
+            .context("failed to connect to Redis relay routing registry")?;
+        let registered: Option<String> = redis::cmd("SET")
+            .arg(room_registry_key(room))
+            .arg(&self.machine_id)
+            .arg("NX")
+            .arg("EX")
+            .arg(self.room_ttl.as_secs().max(1))
+            .query(&mut connection)
+            .context("failed to register relay room in Redis")?;
+        Ok(registered.is_some())
+    }
+
+    fn refresh_room(&self, room: &RoomCode) {
+        let Ok(mut connection) = self.client.get_connection() else {
+            eprintln!("Relay Redis routing refresh failed: could not connect to Redis");
+            return;
+        };
+        let result = redis::cmd("EXPIRE")
+            .arg(room_registry_key(room))
+            .arg(self.room_ttl.as_secs().max(1))
+            .query::<()>(&mut connection);
+        if let Err(error) = result {
+            eprintln!("Relay Redis routing refresh failed: {error}");
+        }
+    }
+
+    fn unregister_room(&self, room: &RoomCode) {
+        let Ok(mut connection) = self.client.get_connection() else {
+            eprintln!("Relay Redis routing cleanup failed: could not connect to Redis");
+            return;
+        };
+        let result = redis::cmd("DEL")
+            .arg(room_registry_key(room))
+            .query::<()>(&mut connection);
+        if let Err(error) = result {
+            eprintln!("Relay Redis routing cleanup failed: {error}");
+        }
+    }
+
+    fn owns_room(&self, owner: &str) -> bool {
+        owner == self.machine_id
+    }
+}
+
+fn room_registry_key(room: &RoomCode) -> String {
+    format!("typekart:room:{}", room.as_str())
+}
+
 pub fn run_relay(config: RelayConfig) -> Result<()> {
     let listener = TcpListener::bind(config.bind)
         .with_context(|| format!("failed to bind relay at {}", config.bind))?;
     let local_addr = listener
         .local_addr()
         .context("failed to read relay address")?;
+    let redis_routing = config
+        .redis_routing
+        .map(RedisRoomDirectory::new)
+        .transpose()?;
+    let routing_label = redis_routing
+        .as_ref()
+        .map(|routing| format!("redis:{}", routing.machine_id))
+        .unwrap_or_else(|| "local".to_string());
     println!(
-        "TypeKart relay listening on ws://{local_addr} rooms={} participants_per_room={} connections={} connections_per_ip={} max_message_bytes={} messages_per_second_per_ip={} room_creates_per_minute_per_ip={} room_joins_per_minute_per_ip={} outbound_queue={} handshake_timeout_secs={} idle_timeout_secs={}",
+        "TypeKart relay listening on ws://{local_addr} routing={routing_label} rooms={} participants_per_room={} connections={} connections_per_ip={} max_message_bytes={} messages_per_second_per_ip={} room_creates_per_minute_per_ip={} room_joins_per_minute_per_ip={} outbound_queue={} handshake_timeout_secs={} idle_timeout_secs={}",
         config.limits.max_rooms,
         config.limits.max_participants_per_room,
         config.limits.max_connections,
@@ -159,6 +257,7 @@ pub fn run_relay(config: RelayConfig) -> Result<()> {
     let shared = Arc::new(RelayShared {
         rooms: Mutex::new(RelayState::default()),
         rates: Mutex::new(RelayRateState::default()),
+        redis_routing,
     });
     spawn_idle_room_sweeper(Arc::clone(&shared), config.limits.room_idle_timeout);
     for stream in listener.incoming() {
@@ -181,7 +280,7 @@ fn handle_connection(
     limits: RelayLimits,
 ) -> Result<()> {
     let peer = stream.peer_addr().ok();
-    if handle_http_health_check(&mut stream)? {
+    if handle_pre_websocket_request(&mut stream, &shared)? {
         return Ok(());
     }
     let peer_ip = peer.map(|peer| peer.ip());
@@ -346,7 +445,10 @@ fn write_http_rejection(stream: &mut std::net::TcpStream, message: &str) -> Resu
         .context("failed to write relay rejection response")
 }
 
-fn handle_http_health_check(stream: &mut std::net::TcpStream) -> Result<bool> {
+fn handle_pre_websocket_request(
+    stream: &mut std::net::TcpStream,
+    shared: &Arc<RelayShared>,
+) -> Result<bool> {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .context("failed to set relay health-check read timeout")?;
@@ -380,6 +482,26 @@ fn handle_http_health_check(stream: &mut std::net::TcpStream) -> Result<bool> {
         return Ok(true);
     }
 
+    if let Some(routing) = &shared.redis_routing
+        && let Some(room) = websocket_room_query(&request)
+    {
+        match routing.lookup_room_owner(&room) {
+            Ok(Some(owner)) if !routing.owns_room(&owner) => {
+                write_fly_replay(stream, &owner)?;
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("Relay Redis routing lookup failed: {error:#}");
+                write_http_unavailable(
+                    stream,
+                    "Relay room routing registry is temporarily unavailable",
+                )?;
+                return Ok(true);
+            }
+        }
+    }
+
     Ok(false)
 }
 
@@ -391,6 +513,48 @@ fn is_health_check_request(request: &str) -> bool {
         .lines()
         .any(|line| line.eq_ignore_ascii_case("Upgrade: websocket"));
     is_health_path && !is_websocket_upgrade
+}
+
+fn websocket_room_query(request: &str) -> Option<RoomCode> {
+    let first_line = request.lines().next().unwrap_or_default();
+    if !first_line.starts_with("GET ") {
+        return None;
+    }
+    let path = first_line.split_whitespace().nth(1)?;
+    let query = path.split_once('?')?.1;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key == "typekart_room" {
+            return RoomCode::parse(value).ok();
+        }
+    }
+    None
+}
+
+fn write_fly_replay(stream: &mut std::net::TcpStream, machine_id: &str) -> Result<()> {
+    let body = "routing to room host\n";
+    let response = format!(
+        "HTTP/1.1 409 Conflict\r\nfly-replay: instance={machine_id};timeout=2s;fallback=prefer_self\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream
+        .write_all(response.as_bytes())
+        .context("failed to write Fly-Replay relay response")
+}
+
+fn write_http_unavailable(stream: &mut std::net::TcpStream, message: &str) -> Result<()> {
+    let body = format!("{message}\n");
+    let response = format!(
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream
+        .write_all(response.as_bytes())
+        .context("failed to write relay unavailable response")
 }
 
 fn drain_outbound(
@@ -531,6 +695,9 @@ fn handle_relay_message(
                 let pending_player_id = PlayerId(room_state.next_pending_player_id);
                 room_state.next_pending_player_id += 1;
                 room_state.last_activity = Instant::now();
+                if let Some(routing) = &shared.redis_routing {
+                    routing.refresh_room(&room);
+                }
                 room_state
                     .participants
                     .insert(pending_player_id, sender.clone());
@@ -571,6 +738,9 @@ fn handle_relay_message(
             let mut state = shared.rooms.lock().expect("relay state poisoned");
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
+                if let Some(routing) = &shared.redis_routing {
+                    routing.refresh_room(&room);
+                }
                 if room_state
                     .host
                     .try_send(RelayServerMessage::ClientToHost {
@@ -580,7 +750,12 @@ fn handle_relay_message(
                     })
                     .is_err()
                 {
-                    close_room(&mut state, &room, "Host relay queue full");
+                    close_room(
+                        &mut state,
+                        &shared.redis_routing,
+                        &room,
+                        "Host relay queue full",
+                    );
                 }
             }
             Ok(None)
@@ -593,6 +768,9 @@ fn handle_relay_message(
             let mut state = shared.rooms.lock().expect("relay state poisoned");
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
+                if let Some(routing) = &shared.redis_routing {
+                    routing.refresh_room(&room);
+                }
                 if let Some(participant) = room_state.participants.get(&player_id)
                     && participant
                         .try_send(RelayServerMessage::HostToClient {
@@ -614,6 +792,9 @@ fn handle_relay_message(
             let mut state = shared.rooms.lock().expect("relay state poisoned");
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
+                if let Some(routing) = &shared.redis_routing {
+                    routing.refresh_room(&room);
+                }
                 let mut disconnected = Vec::new();
                 for (player_id, participant) in &room_state.participants {
                     if participant
@@ -664,6 +845,13 @@ fn create_room(
     loop {
         let room = RoomCode::generate();
         if !state.rooms.contains_key(&room) {
+            if let Some(routing) = &shared.redis_routing
+                && !routing
+                    .register_room(&room)
+                    .map_err(|error| format!("Redis room registration failed: {error:#}"))?
+            {
+                continue;
+            }
             state.rooms.insert(
                 room.clone(),
                 RelayRoom {
@@ -682,7 +870,9 @@ fn create_room(
 fn cleanup_connection(shared: &Arc<RelayShared>, room: &RoomCode, role: ConnectionRole) {
     let mut state = shared.rooms.lock().expect("relay state poisoned");
     match role {
-        ConnectionRole::Host => close_room(&mut state, room, "Host disconnected"),
+        ConnectionRole::Host => {
+            close_room(&mut state, &shared.redis_routing, room, "Host disconnected")
+        }
         ConnectionRole::Participant(player_id) => {
             if let Some(room_state) = state.rooms.get_mut(room) {
                 room_state.participants.remove(&player_id);
@@ -703,10 +893,18 @@ fn cleanup_connection(shared: &Arc<RelayShared>, room: &RoomCode, role: Connecti
     }
 }
 
-fn close_room(state: &mut RelayState, room: &RoomCode, reason: &str) {
+fn close_room(
+    state: &mut RelayState,
+    redis_routing: &Option<RedisRoomDirectory>,
+    room: &RoomCode,
+    reason: &str,
+) {
     let Some(room_state) = state.rooms.remove(room) else {
         return;
     };
+    if let Some(routing) = redis_routing {
+        routing.unregister_room(room);
+    }
     println!("Relay room closed: {} ({reason})", room.display());
     for participant in room_state.participants.values() {
         let _ = participant.try_send(RelayServerMessage::RoomClosed {
@@ -735,7 +933,12 @@ fn cleanup_stale_rooms(shared: &Arc<RelayShared>, idle_timeout: Duration) {
         .collect::<Vec<_>>();
 
     for room in stale_rooms {
-        close_room(&mut state, &room, "Room idle timeout");
+        close_room(
+            &mut state,
+            &shared.redis_routing,
+            &room,
+            "Room idle timeout",
+        );
     }
 }
 
@@ -844,6 +1047,7 @@ mod tests {
         Arc::new(RelayShared {
             rooms: Default::default(),
             rates: Default::default(),
+            redis_routing: None,
         })
     }
 
@@ -1049,6 +1253,8 @@ mod tests {
         assert!(matches!(
             joiner_rx.recv().unwrap(),
             RelayServerMessage::Error { message } if message.contains("Version mismatch")
+                && message.contains("room is running TypeKart 1.2.3")
+                && message.contains("you are running TypeKart 1.2.4")
                 && message.contains("1.2.3")
                 && message.contains("1.2.4")
         ));
@@ -1369,6 +1575,17 @@ mod tests {
         assert!(!super::is_health_check_request(
             "GET /healthz HTTP/1.1\r\nHost: relay\r\nUpgrade: websocket\r\n\r\n"
         ));
+    }
+
+    #[test]
+    fn websocket_room_query_extracts_join_routing_room() {
+        let room = super::websocket_room_query(
+            "GET /?typekart_room=rocket-salad-tiger HTTP/1.1\r\nHost: relay\r\n\r\n",
+        )
+        .expect("room query should parse");
+
+        assert_eq!(room.display(), "rocket-salad-tiger");
+        assert!(super::websocket_room_query("GET / HTTP/1.1\r\nHost: relay\r\n\r\n").is_none());
     }
 
     #[test]
