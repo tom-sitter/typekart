@@ -22,6 +22,7 @@ pub struct PlayerState {
     pub active_effects: Vec<ActiveEffect>,
     pub word_overrides: HashMap<usize, String>,
     pub inked_word_index: Option<usize>,
+    pub inked_until: Option<Instant>,
 }
 
 impl PlayerState {
@@ -37,6 +38,7 @@ impl PlayerState {
             active_effects: Vec::new(),
             word_overrides: HashMap::new(),
             inked_word_index: None,
+            inked_until: None,
         }
     }
 
@@ -61,12 +63,17 @@ impl PlayerState {
     }
 
     pub fn is_inked(&self) -> bool {
-        !self.is_finished() && self.inked_word_index == Some(self.word_index)
+        !self.is_finished() && self.inked_until.is_some()
+    }
+
+    pub fn is_inked_at(&self, now: Instant) -> bool {
+        !self.is_finished() && self.inked_until.is_some_and(|until| until > now)
     }
 
     pub fn expire_effects(&mut self, now: Instant) -> usize {
-        if self.inked_word_index != Some(self.word_index) || self.is_finished() {
+        if self.is_finished() || self.inked_until.is_some_and(|until| until <= now) {
             self.inked_word_index = None;
+            self.inked_until = None;
         }
 
         let before = self.active_effects.len();

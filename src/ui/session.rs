@@ -596,6 +596,9 @@ impl LocalSession {
         if expired_effects > 0 {
             self.events.push("Shield expired");
         }
+        for ai in &mut self.ai_racers {
+            ai.player.expire_effects(now);
+        }
 
         self.expire_item_cues(now);
 
@@ -1651,11 +1654,12 @@ impl LocalSession {
             return false;
         }
 
+        let squid_ink = self.item_registry.squid_ink_effect();
         self.player.inked_word_index = Some(self.player.word_index);
+        self.player.inked_until = Some(now + Duration::from_millis(squid_ink.duration_ms));
         self.player_impact_cue = Some(ImpactCue {
             kind: ImpactCueKind::SquidInk,
-            until: now
-                + Duration::from_millis(self.item_registry.squid_ink_effect().impact_blink_ms),
+            until: now + Duration::from_millis(squid_ink.impact_blink_ms),
         });
         true
     }
@@ -1676,11 +1680,12 @@ impl LocalSession {
             return false;
         }
 
+        let squid_ink = self.item_registry.squid_ink_effect();
         ai.player.inked_word_index = Some(ai.player.word_index);
+        ai.player.inked_until = Some(now + Duration::from_millis(squid_ink.duration_ms));
         ai.impact_cue = Some(ImpactCue {
             kind: ImpactCueKind::SquidInk,
-            until: now
-                + Duration::from_millis(self.item_registry.squid_ink_effect().impact_blink_ms),
+            until: now + Duration::from_millis(squid_ink.impact_blink_ms),
         });
         true
     }
@@ -2870,11 +2875,12 @@ mod tests {
     }
 
     #[test]
-    fn squid_ink_expires_when_current_word_is_completed() {
+    fn squid_ink_persists_after_current_word_is_completed() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let mut player = PlayerState::new(now);
         player.inked_word_index = Some(0);
+        player.inked_until = Some(now + Duration::from_secs(5));
         let mut session =
             LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
 
@@ -2888,8 +2894,26 @@ mod tests {
         }
         session.tick(now);
 
-        assert!(!session.player.is_inked());
+        assert!(session.player.is_inked_at(now));
+        assert_eq!(session.player.word_index, 1);
+        assert_eq!(session.player.inked_word_index, Some(0));
+    }
+
+    #[test]
+    fn squid_ink_expires_after_duration() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let mut player = PlayerState::new(now);
+        player.inked_word_index = Some(0);
+        player.inked_until = Some(now + Duration::from_secs(5));
+        let mut session =
+            LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
+
+        session.tick(now + Duration::from_secs(5));
+
+        assert!(!session.player.is_inked_at(now + Duration::from_secs(5)));
         assert_eq!(session.player.inked_word_index, None);
+        assert_eq!(session.player.inked_until, None);
     }
 
     #[test]

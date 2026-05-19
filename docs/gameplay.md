@@ -95,7 +95,7 @@ Items currently activate automatically when obtained.
 | Shield | Protects the racer from the next blockable attack until it expires or is consumed. |
 | Star Power | Temporarily discards incorrect keys without adding typo input. Correct keys are still required to advance. |
 | Blue Shell | Targets first place and reverses the affected racer's next word. |
-| Squid Ink | Hits every unfinished racer within five words and hides their upcoming words until they finish their current word. |
+| Squid Ink | Hits every unfinished racer within five words and hides upcoming words for up to five seconds. The current word is visible, but later words stay hidden until reached or until the ink wears off. |
 
 ## Visual Indicators
 

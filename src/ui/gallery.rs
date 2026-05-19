@@ -386,6 +386,7 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
                 until: now + Duration::from_secs(2),
             });
             player.inked_word_index = Some(player.word_index);
+            player.inked_until = Some(now + Duration::from_secs(5));
             player_impact_cue = Some(ImpactCue {
                 kind: ImpactCueKind::SquidInk,
                 until: now + Duration::from_secs(2),
@@ -511,6 +512,7 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
         }
         GalleryScenario::SquidInkMaskedWords => {
             player.inked_word_index = Some(player.word_index);
+            player.inked_until = Some(now + Duration::from_secs(5));
             player_impact_cue = Some(ImpactCue {
                 kind: ImpactCueKind::SquidInk,
                 until: now + Duration::from_secs(2),

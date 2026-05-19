@@ -57,6 +57,6 @@ Focused item scenarios:
 - Banana fired ahead, behind, and impact blink.
 - Blue Shell fired and impact blink.
 - Squid Ink fired and impact blink.
-- Squid Ink obscuring upcoming words for the affected racer.
+- Squid Ink obscuring words beyond the affected racer's current word.
 
 The gallery is not a full simulator. It uses deterministic race states so visual states can be compared quickly.

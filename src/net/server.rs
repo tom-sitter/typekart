@@ -2055,14 +2055,16 @@ fn apply_network_squid_ink_to_player(
     }
 
     let target = &mut state.race.players[target_index].state;
+    let squid_ink = state.item_registry.squid_ink_effect();
     target.inked_word_index = Some(target.word_index);
+    target.inked_until = Some(now + Duration::from_millis(squid_ink.duration_ms));
     state
         .player_effects
         .entry(target_id)
         .or_default()
         .impact_cue = Some(NetworkImpactCue {
         kind: ImpactCueSnapshotKind::SquidInk,
-        until: now + Duration::from_millis(state.item_registry.squid_ink_effect().impact_blink_ms),
+        until: now + Duration::from_millis(squid_ink.impact_blink_ms),
     });
     true
 }
@@ -2964,7 +2966,7 @@ fn build_player_snapshots(state: &HostState, now: Instant) -> Vec<PlayerSnapshot
                 connected: player.connected,
                 shielded: player.state.has_active_shield(now),
                 starred: player.state.has_active_star(now),
-                inked: player.state.is_inked(),
+                inked: player.state.is_inked_at(now),
                 boosted: player_has_active_mushroom_effect(player, now),
                 stunned: effects.stunned_until.is_some_and(|until| until > now),
                 impact_remaining_ms: remaining_ms(effects.impact_cue.map(|cue| cue.until), now),

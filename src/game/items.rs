@@ -192,6 +192,7 @@ impl Default for BlueShellEffectConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct SquidInkEffectConfig {
     pub range_words: usize,
+    pub duration_ms: u64,
     pub impact_blink_ms: u64,
     pub cue_ms: u64,
 }
@@ -200,6 +201,7 @@ impl Default for SquidInkEffectConfig {
     fn default() -> Self {
         Self {
             range_words: 5,
+            duration_ms: 5_000,
             impact_blink_ms: 1_200,
             cue_ms: 1_500,
         }
@@ -705,12 +707,16 @@ impl ItemRegistry {
 
                 if target.effect.squid_ink.is_some()
                     && (effect.ink_range_words.is_some()
+                        || effect.ink_duration_ms.is_some()
                         || effect.ink_impact_blink_ms.is_some()
                         || effect.ink_cue_ms.is_some())
                 {
                     let mut squid_ink = target.effect.squid_ink.unwrap_or_default();
                     if let Some(range_words) = effect.ink_range_words {
                         squid_ink.range_words = range_words;
+                    }
+                    if let Some(duration_ms) = effect.ink_duration_ms {
+                        squid_ink.duration_ms = duration_ms;
                     }
                     if let Some(impact_blink_ms) = effect.ink_impact_blink_ms {
                         squid_ink.impact_blink_ms = impact_blink_ms;
@@ -726,6 +732,7 @@ impl ItemRegistry {
                     }
                     target.effect.squid_ink = Some(squid_ink);
                 } else if effect.ink_range_words.is_some()
+                    || effect.ink_duration_ms.is_some()
                     || effect.ink_impact_blink_ms.is_some()
                     || effect.ink_cue_ms.is_some()
                 {
@@ -914,6 +921,7 @@ struct ItemPackEffectConfig {
     duration_ms: Option<u64>,
     affected_words: Option<usize>,
     ink_range_words: Option<usize>,
+    ink_duration_ms: Option<u64>,
     ink_impact_blink_ms: Option<u64>,
     ink_cue_ms: Option<u64>,
 }
@@ -1363,6 +1371,7 @@ mod tests {
                         "id": "squid_ink",
                         "effect": {
                             "ink_range_words": 7,
+                            "ink_duration_ms": 2500,
                             "ink_impact_blink_ms": 800,
                             "ink_cue_ms": 600
                         }
@@ -1384,6 +1393,7 @@ mod tests {
         assert_eq!(registry.star_effect().duration_ms, 7500);
         assert_eq!(registry.blue_shell_effect().affected_words, 2);
         assert_eq!(registry.squid_ink_effect().range_words, 7);
+        assert_eq!(registry.squid_ink_effect().duration_ms, 2500);
         assert_eq!(registry.squid_ink_effect().impact_blink_ms, 800);
         assert_eq!(registry.squid_ink_effect().cue_ms, 600);
 

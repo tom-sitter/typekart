@@ -409,7 +409,7 @@ fn track_view<'a>(
     icon_mode: IconMode,
     now: std::time::Instant,
 ) -> Paragraph<'a> {
-    let word_line = track_word_line(window, player, race_phase);
+    let word_line = track_word_line(window, player, race_phase, now);
     let racer_lines = racer_lines(
         window,
         player,
@@ -1062,6 +1062,7 @@ fn track_word_line(
     window: &TrackWindow<'_>,
     player: &PlayerState,
     race_phase: RacePhase,
+    now: std::time::Instant,
 ) -> Line<'static> {
     let mut cells = vec![TrackCell::default(); window.width];
 
@@ -1071,7 +1072,7 @@ fn track_word_line(
             let column = visible.start_col + offset;
             if let Some(cell) = cells.get_mut(column) {
                 *cell = TrackCell {
-                    ch: visible_word_char(player, visible.index, ch),
+                    ch: visible_word_char(player, visible.index, ch, now),
                     style: base_word_style(visible.state, player, race_phase),
                 };
             }
@@ -1090,8 +1091,13 @@ fn track_word_line(
     )
 }
 
-fn visible_word_char(player: &PlayerState, word_index: usize, ch: char) -> char {
-    if player.is_inked() && word_index > player.word_index {
+fn visible_word_char(
+    player: &PlayerState,
+    word_index: usize,
+    ch: char,
+    now: std::time::Instant,
+) -> char {
+    if player.is_inked_at(now) && word_index > player.word_index {
         '█'
     } else {
         ch
@@ -1452,7 +1458,7 @@ fn centered_rect(area: Rect, max_width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use ratatui::style::Color;
 
@@ -2172,10 +2178,11 @@ mod tests {
     fn current_word_spans_show_typed_prefix_and_cursor_on_track() {
         let track = track(&["fox", "road"]);
         let window = build_track_window(&track, 0, 40);
-        let mut player = PlayerState::new(Instant::now());
+        let now = Instant::now();
+        let mut player = PlayerState::new(now);
         player.input = "fo".to_string();
 
-        let line = track_word_line(&window, &player, RacePhase::Racing);
+        let line = track_word_line(&window, &player, RacePhase::Racing, now);
         let spans = line.spans;
 
         assert_eq!(spans[0].content.as_ref(), "f");
@@ -2190,10 +2197,11 @@ mod tests {
     fn track_words_are_grey_before_race_begins() {
         let track = track(&["fox", "road"]);
         let window = build_track_window(&track, 0, 40);
-        let mut player = PlayerState::new(Instant::now());
+        let now = Instant::now();
+        let mut player = PlayerState::new(now);
         player.input = "fo".to_string();
 
-        let line = track_word_line(&window, &player, RacePhase::WaitingForHost);
+        let line = track_word_line(&window, &player, RacePhase::WaitingForHost, now);
         let spans = line.spans;
 
         assert_eq!(spans[0].content.as_ref(), "f");
@@ -2209,11 +2217,12 @@ mod tests {
     fn current_word_spans_render_typos_red_on_track() {
         let track = track(&["fox", "road"]);
         let window = build_track_window(&track, 0, 40);
-        let mut player = PlayerState::new(Instant::now());
+        let now = Instant::now();
+        let mut player = PlayerState::new(now);
         player.input = "fa".to_string();
         player.typo_index = Some(1);
 
-        let line = track_word_line(&window, &player, RacePhase::Racing);
+        let line = track_word_line(&window, &player, RacePhase::Racing, now);
         let spans = line.spans;
 
         assert_eq!(spans[0].content.as_ref(), "f");
@@ -2223,14 +2232,31 @@ mod tests {
     }
 
     #[test]
+    fn squid_ink_reveals_current_word_and_masks_future_words_until_expired() {
+        let now = Instant::now();
+        let mut player = PlayerState::new(now);
+        player.word_index = 1;
+        player.inked_word_index = Some(0);
+        player.inked_until = Some(now + Duration::from_secs(5));
+
+        assert_eq!(visible_word_char(&player, 1, 'r', now), 'r');
+        assert_eq!(visible_word_char(&player, 2, 'l', now), '█');
+        assert_eq!(
+            visible_word_char(&player, 2, 'l', now + Duration::from_secs(5)),
+            'l'
+        );
+    }
+
+    #[test]
     fn typo_overflow_renders_across_following_words() {
         let track = track(&["fox", "road"]);
         let window = build_track_window(&track, 0, 40);
-        let mut player = PlayerState::new(Instant::now());
+        let now = Instant::now();
+        let mut player = PlayerState::new(now);
         player.input = "fa road".to_string();
         player.typo_index = Some(1);
 
-        let line = track_word_line(&window, &player, RacePhase::Racing);
+        let line = track_word_line(&window, &player, RacePhase::Racing, now);
         let spans = line.spans;
 
         assert_eq!(spans[1].content.as_ref(), "a");

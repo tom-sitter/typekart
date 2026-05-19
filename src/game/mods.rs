@@ -191,6 +191,7 @@ fn hash_item_registry(item_registry: &ItemRegistry) -> ModHash {
         if let Some(squid_ink) = item.effect.squid_ink {
             fields.extend([
                 squid_ink.range_words.to_string(),
+                squid_ink.duration_ms.to_string(),
                 squid_ink.impact_blink_ms.to_string(),
                 squid_ink.cue_ms.to_string(),
             ]);
