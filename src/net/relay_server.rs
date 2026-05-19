@@ -6,10 +6,10 @@
 use std::{
     collections::HashMap,
     io::Write,
-    net::{SocketAddr, TcpListener},
+    net::{IpAddr, SocketAddr, TcpListener},
     sync::{
         Arc, Mutex,
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
     },
     thread,
     time::{Duration, Instant},
@@ -34,7 +34,14 @@ pub struct RelayConfig {
 pub struct RelayLimits {
     pub max_rooms: usize,
     pub max_participants_per_room: usize,
+    pub max_connections: usize,
+    pub max_connections_per_ip: usize,
     pub max_message_bytes: usize,
+    pub max_messages_per_second_per_ip: u32,
+    pub max_room_creates_per_minute_per_ip: u32,
+    pub max_room_joins_per_minute_per_ip: u32,
+    pub outbound_queue_size: usize,
+    pub handshake_timeout: Duration,
     pub room_idle_timeout: Duration,
 }
 
@@ -43,7 +50,14 @@ impl Default for RelayLimits {
         Self {
             max_rooms: 256,
             max_participants_per_room: 5,
+            max_connections: 1024,
+            max_connections_per_ip: 64,
             max_message_bytes: 256 * 1024,
+            max_messages_per_second_per_ip: 120,
+            max_room_creates_per_minute_per_ip: 20,
+            max_room_joins_per_minute_per_ip: 120,
+            outbound_queue_size: 256,
+            handshake_timeout: Duration::from_secs(5),
             room_idle_timeout: Duration::from_secs(2 * 60 * 60),
         }
     }
@@ -54,13 +68,62 @@ struct RelayState {
     rooms: HashMap<RoomCode, RelayRoom>,
 }
 
+#[derive(Debug, Default)]
+struct RelayRateState {
+    total_connections: usize,
+    connections_by_ip: HashMap<IpAddr, usize>,
+    message_buckets_by_ip: HashMap<IpAddr, TokenBucket>,
+    room_create_buckets_by_ip: HashMap<IpAddr, TokenBucket>,
+    room_join_buckets_by_ip: HashMap<IpAddr, TokenBucket>,
+}
+
+#[derive(Debug)]
+struct RelayShared {
+    rooms: Mutex<RelayState>,
+    rates: Mutex<RelayRateState>,
+}
+
 #[derive(Debug)]
 struct RelayRoom {
     host_version: String,
-    host: Sender<RelayServerMessage>,
-    participants: HashMap<PlayerId, Sender<RelayServerMessage>>,
+    host: SyncSender<RelayServerMessage>,
+    participants: HashMap<PlayerId, SyncSender<RelayServerMessage>>,
     next_pending_player_id: u64,
     last_activity: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TokenBucket {
+    tokens: f64,
+    capacity: f64,
+    refill_per_second: f64,
+    last_refill: Instant,
+}
+
+impl TokenBucket {
+    fn new(capacity: u32, refill_per_second: f64, now: Instant) -> Self {
+        let capacity = capacity.max(1) as f64;
+        Self {
+            tokens: capacity,
+            capacity,
+            refill_per_second,
+            last_refill: now,
+        }
+    }
+
+    fn allow(&mut self, now: Instant) -> bool {
+        let elapsed = now
+            .saturating_duration_since(self.last_refill)
+            .as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_per_second).min(self.capacity);
+        self.last_refill = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,24 +139,34 @@ pub fn run_relay(config: RelayConfig) -> Result<()> {
         .local_addr()
         .context("failed to read relay address")?;
     println!(
-        "TypeKart relay listening on ws://{local_addr} rooms={} participants_per_room={} max_message_bytes={} idle_timeout_secs={}",
+        "TypeKart relay listening on ws://{local_addr} rooms={} participants_per_room={} connections={} connections_per_ip={} max_message_bytes={} messages_per_second_per_ip={} room_creates_per_minute_per_ip={} room_joins_per_minute_per_ip={} outbound_queue={} handshake_timeout_secs={} idle_timeout_secs={}",
         config.limits.max_rooms,
         config.limits.max_participants_per_room,
+        config.limits.max_connections,
+        config.limits.max_connections_per_ip,
         config.limits.max_message_bytes,
+        config.limits.max_messages_per_second_per_ip,
+        config.limits.max_room_creates_per_minute_per_ip,
+        config.limits.max_room_joins_per_minute_per_ip,
+        config.limits.outbound_queue_size,
+        config.limits.handshake_timeout.as_secs(),
         config.limits.room_idle_timeout.as_secs()
     );
     if let Some(ready_signal) = config.ready_signal {
         let _ = ready_signal.send(local_addr);
     }
 
-    let state = Arc::new(Mutex::new(RelayState::default()));
-    spawn_idle_room_sweeper(Arc::clone(&state), config.limits.room_idle_timeout);
+    let shared = Arc::new(RelayShared {
+        rooms: Mutex::new(RelayState::default()),
+        rates: Mutex::new(RelayRateState::default()),
+    });
+    spawn_idle_room_sweeper(Arc::clone(&shared), config.limits.room_idle_timeout);
     for stream in listener.incoming() {
         let stream = stream.context("failed to accept relay connection")?;
-        let state = Arc::clone(&state);
+        let shared = Arc::clone(&shared);
         let limits = config.limits.clone();
         thread::spawn(move || {
-            if let Err(error) = handle_connection(stream, state, limits) {
+            if let Err(error) = handle_connection(stream, shared, limits) {
                 eprintln!("Relay connection failed: {error:#}");
             }
         });
@@ -104,13 +177,25 @@ pub fn run_relay(config: RelayConfig) -> Result<()> {
 
 fn handle_connection(
     mut stream: std::net::TcpStream,
-    state: Arc<Mutex<RelayState>>,
+    shared: Arc<RelayShared>,
     limits: RelayLimits,
 ) -> Result<()> {
     let peer = stream.peer_addr().ok();
     if handle_http_health_check(&mut stream)? {
         return Ok(());
     }
+    let peer_ip = peer.map(|peer| peer.ip());
+    let _connection_guard = if let Some(ip) = peer_ip {
+        match try_register_connection(&shared, ip, &limits) {
+            Ok(guard) => Some(guard),
+            Err(message) => {
+                write_http_rejection(&mut stream, &message)?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
 
     let mut websocket = accept(stream).context("failed to accept websocket connection")?;
     websocket
@@ -118,28 +203,54 @@ fn handle_connection(
         .set_read_timeout(Some(Duration::from_millis(10)))
         .context("failed to set relay socket read timeout")?;
 
-    let (tx, rx) = mpsc::channel::<RelayServerMessage>();
+    let (tx, rx) = mpsc::sync_channel::<RelayServerMessage>(limits.outbound_queue_size.max(1));
     let mut joined_room: Option<(RoomCode, ConnectionRole)> = None;
+    let connected_at = Instant::now();
 
     loop {
         drain_outbound(&mut websocket, &rx)?;
+        if joined_room.is_none() && connected_at.elapsed() > limits.handshake_timeout {
+            queue_message(
+                &tx,
+                RelayServerMessage::Error {
+                    message: "Relay handshake timed out".to_string(),
+                },
+            )?;
+            drain_outbound(&mut websocket, &rx)?;
+            break;
+        }
 
         match websocket.read() {
             Ok(Message::Text(text)) => {
                 if text.len() > limits.max_message_bytes {
-                    let _ = tx.send(RelayServerMessage::Error {
-                        message: format!(
-                            "Message too large: {} bytes exceeds {} byte relay limit",
-                            text.len(),
-                            limits.max_message_bytes
-                        ),
-                    });
+                    let _ = queue_message(
+                        &tx,
+                        RelayServerMessage::Error {
+                            message: format!(
+                                "Message too large: {} bytes exceeds {} byte relay limit",
+                                text.len(),
+                                limits.max_message_bytes
+                            ),
+                        },
+                    );
+                    drain_outbound(&mut websocket, &rx)?;
+                    break;
+                }
+                if let Some(ip) = peer_ip
+                    && !allow_message_from_ip(&shared, ip, &limits)
+                {
+                    queue_message(
+                        &tx,
+                        RelayServerMessage::Error {
+                            message: "Relay message rate limit exceeded".to_string(),
+                        },
+                    )?;
                     drain_outbound(&mut websocket, &rx)?;
                     break;
                 }
                 let message = serde_json::from_str::<RelayClientMessage>(&text)
                     .context("failed to decode relay message")?;
-                if let Some(role) = handle_relay_message(message, &state, &tx, &limits)? {
+                if let Some(role) = handle_relay_message(message, &shared, &tx, peer_ip, &limits)? {
                     joined_room = Some(role);
                 }
             }
@@ -176,12 +287,63 @@ fn handle_connection(
     }
 
     if let Some((room, role)) = joined_room {
-        cleanup_connection(&state, &room, role);
+        cleanup_connection(&shared, &room, role);
     }
     if let Some(peer) = peer {
         println!("Relay client disconnected: {peer}");
     }
     Ok(())
+}
+
+struct ConnectionGuard {
+    shared: Arc<RelayShared>,
+    ip: IpAddr,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        let mut rates = self.shared.rates.lock().expect("relay rate state poisoned");
+        rates.total_connections = rates.total_connections.saturating_sub(1);
+        if let Some(count) = rates.connections_by_ip.get_mut(&self.ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                rates.connections_by_ip.remove(&self.ip);
+            }
+        }
+    }
+}
+
+fn try_register_connection(
+    shared: &Arc<RelayShared>,
+    ip: IpAddr,
+    limits: &RelayLimits,
+) -> std::result::Result<ConnectionGuard, String> {
+    let mut rates = shared.rates.lock().expect("relay rate state poisoned");
+    if rates.total_connections >= limits.max_connections {
+        return Err("Relay connection limit reached".to_string());
+    }
+    let ip_connections = rates.connections_by_ip.get(&ip).copied().unwrap_or(0);
+    if ip_connections >= limits.max_connections_per_ip {
+        return Err("Relay per-IP connection limit reached".to_string());
+    }
+    rates.total_connections += 1;
+    *rates.connections_by_ip.entry(ip).or_insert(0) += 1;
+    Ok(ConnectionGuard {
+        shared: Arc::clone(shared),
+        ip,
+    })
+}
+
+fn write_http_rejection(stream: &mut std::net::TcpStream, message: &str) -> Result<()> {
+    let body = format!("{message}\n");
+    let response = format!(
+        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream
+        .write_all(response.as_bytes())
+        .context("failed to write relay rejection response")
 }
 
 fn handle_http_health_check(stream: &mut std::net::TcpStream) -> Result<bool> {
@@ -247,6 +409,17 @@ fn drain_outbound(
     Ok(())
 }
 
+fn queue_message(
+    sender: &SyncSender<RelayServerMessage>,
+    message: RelayServerMessage,
+) -> Result<()> {
+    match sender.try_send(message) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => anyhow::bail!("relay outbound queue is full"),
+        Err(TrySendError::Disconnected(_)) => anyhow::bail!("relay outbound queue is closed"),
+    }
+}
+
 fn websocket_disconnect_error(error: &WebSocketError) -> bool {
     match error {
         WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => true,
@@ -264,25 +437,39 @@ fn websocket_disconnect_error(error: &WebSocketError) -> bool {
 
 fn handle_relay_message(
     message: RelayClientMessage,
-    state: &Arc<Mutex<RelayState>>,
-    sender: &Sender<RelayServerMessage>,
+    shared: &Arc<RelayShared>,
+    sender: &SyncSender<RelayServerMessage>,
+    peer_ip: Option<IpAddr>,
     limits: &RelayLimits,
 ) -> Result<Option<(RoomCode, ConnectionRole)>> {
-    cleanup_stale_rooms(state, limits.room_idle_timeout);
+    cleanup_stale_rooms(shared, limits.room_idle_timeout);
 
     match message {
         RelayClientMessage::CreateRoom { host_version } => {
-            let room = match create_room(state, sender.clone(), host_version, limits) {
+            if let Some(ip) = peer_ip
+                && !allow_room_create_from_ip(shared, ip, limits)
+            {
+                queue_message(
+                    sender,
+                    RelayServerMessage::Error {
+                        message: "Relay room creation rate limit exceeded".to_string(),
+                    },
+                )?;
+                return Ok(None);
+            }
+            let room = match create_room(shared, sender.clone(), host_version, limits) {
                 Ok(room) => room,
                 Err(message) => {
-                    sender.send(RelayServerMessage::Error { message })?;
+                    queue_message(sender, RelayServerMessage::Error { message })?;
                     return Ok(None);
                 }
             };
             println!("Relay room created: {}", room.display());
-            sender
-                .send(RelayServerMessage::RoomCreated { room: room.clone() })
-                .context("failed to send room created")?;
+            queue_message(
+                sender,
+                RelayServerMessage::RoomCreated { room: room.clone() },
+            )
+            .context("failed to send room created")?;
             Ok(Some((room, ConnectionRole::Host)))
         }
         RelayClientMessage::JoinRoom {
@@ -290,38 +477,55 @@ fn handle_relay_message(
             name,
             client_version,
         } => {
+            if let Some(ip) = peer_ip
+                && !allow_room_join_from_ip(shared, ip, limits)
+            {
+                queue_message(
+                    sender,
+                    RelayServerMessage::Error {
+                        message: "Relay room join rate limit exceeded".to_string(),
+                    },
+                )?;
+                return Ok(None);
+            }
             let pending_player_id = {
-                let mut state = state.lock().expect("relay state poisoned");
+                let mut state = shared.rooms.lock().expect("relay state poisoned");
                 let Some(room_state) = state.rooms.get_mut(&room) else {
-                    sender
-                        .send(RelayServerMessage::Error {
+                    queue_message(
+                        sender,
+                        RelayServerMessage::Error {
                             message: format!("Room {} was not found", room.display()),
-                        })
-                        .ok();
+                        },
+                    )
+                    .ok();
                     return Ok(None);
                 };
                 if room_state.participants.len() >= limits.max_participants_per_room {
-                    sender
-                        .send(RelayServerMessage::Error {
+                    queue_message(
+                        sender,
+                        RelayServerMessage::Error {
                             message: format!(
                                 "Room {} is full: {}/{} joiners connected",
                                 room.display(),
                                 room_state.participants.len(),
                                 limits.max_participants_per_room
                             ),
-                        })
-                        .ok();
+                        },
+                    )
+                    .ok();
                     return Ok(None);
                 }
                 if client_version != room_state.host_version {
-                    sender
-                        .send(RelayServerMessage::Error {
+                    queue_message(
+                        sender,
+                        RelayServerMessage::Error {
                             message: version_mismatch_message(
                                 &room_state.host_version,
                                 &client_version,
                             ),
-                        })
-                        .ok();
+                        },
+                    )
+                    .ok();
                     return Ok(None);
                 }
                 let pending_player_id = PlayerId(room_state.next_pending_player_id);
@@ -338,7 +542,7 @@ fn handle_relay_message(
                 );
                 if room_state
                     .host
-                    .send(RelayServerMessage::JoinForwarded {
+                    .try_send(RelayServerMessage::JoinForwarded {
                         room: room.clone(),
                         pending_player_id,
                         name,
@@ -346,6 +550,13 @@ fn handle_relay_message(
                     })
                     .is_err()
                 {
+                    room_state.participants.remove(&pending_player_id);
+                    let _ = queue_message(
+                        sender,
+                        RelayServerMessage::Error {
+                            message: "Host is not accepting relay messages".to_string(),
+                        },
+                    );
                     return Ok(None);
                 }
                 pending_player_id
@@ -357,14 +568,20 @@ fn handle_relay_message(
             player_id,
             message,
         } => {
-            let mut state = state.lock().expect("relay state poisoned");
+            let mut state = shared.rooms.lock().expect("relay state poisoned");
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
-                let _ = room_state.host.send(RelayServerMessage::ClientToHost {
-                    room,
-                    player_id,
-                    message,
-                });
+                if room_state
+                    .host
+                    .try_send(RelayServerMessage::ClientToHost {
+                        room: room.clone(),
+                        player_id,
+                        message,
+                    })
+                    .is_err()
+                {
+                    close_room(&mut state, &room, "Host relay queue full");
+                }
             }
             Ok(None)
         }
@@ -373,28 +590,50 @@ fn handle_relay_message(
             player_id,
             message,
         } => {
-            let mut state = state.lock().expect("relay state poisoned");
+            let mut state = shared.rooms.lock().expect("relay state poisoned");
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
-                if let Some(participant) = room_state.participants.get(&player_id) {
-                    let _ = participant.send(RelayServerMessage::HostToClient {
-                        room,
-                        player_id,
-                        message,
-                    });
+                if let Some(participant) = room_state.participants.get(&player_id)
+                    && participant
+                        .try_send(RelayServerMessage::HostToClient {
+                            room: room.clone(),
+                            player_id,
+                            message,
+                        })
+                        .is_err()
+                {
+                    room_state.participants.remove(&player_id);
+                    let _ = room_state
+                        .host
+                        .try_send(RelayServerMessage::ParticipantDisconnected { room, player_id });
                 }
             }
             Ok(None)
         }
         RelayClientMessage::HostBroadcast { room, message } => {
-            let mut state = state.lock().expect("relay state poisoned");
+            let mut state = shared.rooms.lock().expect("relay state poisoned");
             if let Some(room_state) = state.rooms.get_mut(&room) {
                 room_state.last_activity = Instant::now();
-                for participant in room_state.participants.values() {
-                    let _ = participant.send(RelayServerMessage::HostBroadcast {
-                        room: room.clone(),
-                        message: message.clone(),
-                    });
+                let mut disconnected = Vec::new();
+                for (player_id, participant) in &room_state.participants {
+                    if participant
+                        .try_send(RelayServerMessage::HostBroadcast {
+                            room: room.clone(),
+                            message: message.clone(),
+                        })
+                        .is_err()
+                    {
+                        disconnected.push(*player_id);
+                    }
+                }
+                for player_id in disconnected {
+                    room_state.participants.remove(&player_id);
+                    let _ = room_state
+                        .host
+                        .try_send(RelayServerMessage::ParticipantDisconnected {
+                            room: room.clone(),
+                            player_id,
+                        });
                 }
             }
             Ok(None)
@@ -408,12 +647,12 @@ fn handle_relay_message(
 }
 
 fn create_room(
-    state: &Arc<Mutex<RelayState>>,
-    host: Sender<RelayServerMessage>,
+    shared: &Arc<RelayShared>,
+    host: SyncSender<RelayServerMessage>,
     host_version: String,
     limits: &RelayLimits,
 ) -> std::result::Result<RoomCode, String> {
-    let mut state = state.lock().expect("relay state poisoned");
+    let mut state = shared.rooms.lock().expect("relay state poisoned");
     if state.rooms.len() >= limits.max_rooms {
         return Err(format!(
             "Relay is full: {}/{} rooms active",
@@ -440,8 +679,8 @@ fn create_room(
     }
 }
 
-fn cleanup_connection(state: &Arc<Mutex<RelayState>>, room: &RoomCode, role: ConnectionRole) {
-    let mut state = state.lock().expect("relay state poisoned");
+fn cleanup_connection(shared: &Arc<RelayShared>, room: &RoomCode, role: ConnectionRole) {
+    let mut state = shared.rooms.lock().expect("relay state poisoned");
     match role {
         ConnectionRole::Host => close_room(&mut state, room, "Host disconnected"),
         ConnectionRole::Participant(player_id) => {
@@ -450,7 +689,7 @@ fn cleanup_connection(state: &Arc<Mutex<RelayState>>, room: &RoomCode, role: Con
                 room_state.last_activity = Instant::now();
                 let _ = room_state
                     .host
-                    .send(RelayServerMessage::ParticipantDisconnected {
+                    .try_send(RelayServerMessage::ParticipantDisconnected {
                         room: room.clone(),
                         player_id,
                     });
@@ -470,18 +709,18 @@ fn close_room(state: &mut RelayState, room: &RoomCode, reason: &str) {
     };
     println!("Relay room closed: {} ({reason})", room.display());
     for participant in room_state.participants.values() {
-        let _ = participant.send(RelayServerMessage::RoomClosed {
+        let _ = participant.try_send(RelayServerMessage::RoomClosed {
             reason: reason.to_string(),
         });
     }
 }
 
-fn cleanup_stale_rooms(state: &Arc<Mutex<RelayState>>, idle_timeout: Duration) {
+fn cleanup_stale_rooms(shared: &Arc<RelayShared>, idle_timeout: Duration) {
     if idle_timeout.is_zero() {
         return;
     }
 
-    let mut state = state.lock().expect("relay state poisoned");
+    let mut state = shared.rooms.lock().expect("relay state poisoned");
     let now = Instant::now();
     let stale_rooms = state
         .rooms
@@ -500,7 +739,7 @@ fn cleanup_stale_rooms(state: &Arc<Mutex<RelayState>>, idle_timeout: Duration) {
     }
 }
 
-fn spawn_idle_room_sweeper(state: Arc<Mutex<RelayState>>, idle_timeout: Duration) {
+fn spawn_idle_room_sweeper(shared: Arc<RelayShared>, idle_timeout: Duration) {
     if idle_timeout.is_zero() {
         return;
     }
@@ -508,9 +747,65 @@ fn spawn_idle_room_sweeper(state: Arc<Mutex<RelayState>>, idle_timeout: Duration
     thread::spawn(move || {
         loop {
             thread::sleep(idle_sweep_interval(idle_timeout));
-            cleanup_stale_rooms(&state, idle_timeout);
+            cleanup_stale_rooms(&shared, idle_timeout);
         }
     });
+}
+
+fn allow_message_from_ip(shared: &Arc<RelayShared>, ip: IpAddr, limits: &RelayLimits) -> bool {
+    allow_bucket(
+        &mut shared.rates.lock().expect("relay rate state poisoned"),
+        BucketKind::Message,
+        ip,
+        limits.max_messages_per_second_per_ip,
+        limits.max_messages_per_second_per_ip as f64,
+    )
+}
+
+fn allow_room_create_from_ip(shared: &Arc<RelayShared>, ip: IpAddr, limits: &RelayLimits) -> bool {
+    allow_bucket(
+        &mut shared.rates.lock().expect("relay rate state poisoned"),
+        BucketKind::RoomCreate,
+        ip,
+        limits.max_room_creates_per_minute_per_ip,
+        limits.max_room_creates_per_minute_per_ip as f64 / 60.0,
+    )
+}
+
+fn allow_room_join_from_ip(shared: &Arc<RelayShared>, ip: IpAddr, limits: &RelayLimits) -> bool {
+    allow_bucket(
+        &mut shared.rates.lock().expect("relay rate state poisoned"),
+        BucketKind::RoomJoin,
+        ip,
+        limits.max_room_joins_per_minute_per_ip,
+        limits.max_room_joins_per_minute_per_ip as f64 / 60.0,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum BucketKind {
+    Message,
+    RoomCreate,
+    RoomJoin,
+}
+
+fn allow_bucket(
+    rates: &mut RelayRateState,
+    kind: BucketKind,
+    ip: IpAddr,
+    capacity: u32,
+    refill_per_second: f64,
+) -> bool {
+    let now = Instant::now();
+    let buckets = match kind {
+        BucketKind::Message => &mut rates.message_buckets_by_ip,
+        BucketKind::RoomCreate => &mut rates.room_create_buckets_by_ip,
+        BucketKind::RoomJoin => &mut rates.room_join_buckets_by_ip,
+    };
+    buckets
+        .entry(ip)
+        .or_insert_with(|| TokenBucket::new(capacity, refill_per_second, now))
+        .allow(now)
 }
 
 fn idle_sweep_interval(idle_timeout: Duration) -> Duration {
@@ -529,25 +824,38 @@ fn idle_sweep_interval(idle_timeout: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Mutex, mpsc},
+        net::{IpAddr, Ipv4Addr},
+        sync::{Arc, mpsc},
         thread,
         time::{Duration, Instant},
     };
 
     use super::{
-        ConnectionRole, RelayLimits, RelayState, cleanup_connection, cleanup_stale_rooms,
-        handle_relay_message, idle_sweep_interval, spawn_idle_room_sweeper,
+        ConnectionRole, RelayLimits, RelayShared, allow_message_from_ip, allow_room_create_from_ip,
+        allow_room_join_from_ip, cleanup_connection, cleanup_stale_rooms, handle_relay_message,
+        idle_sweep_interval, spawn_idle_room_sweeper,
     };
     use crate::net::{
         protocol::PlayerId,
         relay::{RelayClientMessage, RelayServerMessage},
     };
 
+    fn relay_shared() -> Arc<RelayShared> {
+        Arc::new(RelayShared {
+            rooms: Default::default(),
+            rates: Default::default(),
+        })
+    }
+
+    fn localhost() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    }
+
     #[test]
     fn relay_creates_room_and_forwards_join_to_host() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
-        let (joiner_tx, _joiner_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
+        let (joiner_tx, _joiner_rx) = mpsc::sync_channel(32);
 
         let Some((room, ConnectionRole::Host)) = handle_relay_message(
             RelayClientMessage::CreateRoom {
@@ -555,6 +863,7 @@ mod tests {
             },
             &state,
             &host_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap() else {
@@ -573,6 +882,7 @@ mod tests {
             },
             &state,
             &joiner_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap();
@@ -593,16 +903,68 @@ mod tests {
     }
 
     #[test]
+    fn relay_tracks_connection_limits_by_ip() {
+        let state = relay_shared();
+        let limits = RelayLimits {
+            max_connections: 2,
+            max_connections_per_ip: 1,
+            ..RelayLimits::default()
+        };
+
+        let first = super::try_register_connection(&state, localhost(), &limits).unwrap();
+        assert!(super::try_register_connection(&state, localhost(), &limits).is_err());
+        drop(first);
+        assert!(super::try_register_connection(&state, localhost(), &limits).is_ok());
+    }
+
+    #[test]
+    fn relay_rate_limits_room_creation_by_ip() {
+        let state = relay_shared();
+        let limits = RelayLimits {
+            max_room_creates_per_minute_per_ip: 1,
+            ..RelayLimits::default()
+        };
+
+        assert!(allow_room_create_from_ip(&state, localhost(), &limits));
+        assert!(!allow_room_create_from_ip(&state, localhost(), &limits));
+    }
+
+    #[test]
+    fn relay_rate_limits_joins_by_ip() {
+        let state = relay_shared();
+        let limits = RelayLimits {
+            max_room_joins_per_minute_per_ip: 1,
+            ..RelayLimits::default()
+        };
+
+        assert!(allow_room_join_from_ip(&state, localhost(), &limits));
+        assert!(!allow_room_join_from_ip(&state, localhost(), &limits));
+    }
+
+    #[test]
+    fn relay_rate_limits_messages_by_ip() {
+        let state = relay_shared();
+        let limits = RelayLimits {
+            max_messages_per_second_per_ip: 1,
+            ..RelayLimits::default()
+        };
+
+        assert!(allow_message_from_ip(&state, localhost(), &limits));
+        assert!(!allow_message_from_ip(&state, localhost(), &limits));
+    }
+
+    #[test]
     fn relay_routes_client_messages_to_host() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
-        let (joiner_tx, _joiner_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
+        let (joiner_tx, _joiner_rx) = mpsc::sync_channel(32);
         let Some((room, _)) = handle_relay_message(
             RelayClientMessage::CreateRoom {
                 host_version: "test".to_string(),
             },
             &state,
             &host_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap() else {
@@ -617,6 +979,7 @@ mod tests {
             },
             &state,
             &joiner_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap();
@@ -634,6 +997,7 @@ mod tests {
             },
             &state,
             &joiner_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap();
@@ -650,9 +1014,9 @@ mod tests {
 
     #[test]
     fn relay_rejects_join_when_client_version_differs_from_host() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
-        let (joiner_tx, joiner_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
+        let (joiner_tx, joiner_rx) = mpsc::sync_channel(32);
 
         let Some((room, ConnectionRole::Host)) = handle_relay_message(
             RelayClientMessage::CreateRoom {
@@ -660,6 +1024,7 @@ mod tests {
             },
             &state,
             &host_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap() else {
@@ -675,6 +1040,7 @@ mod tests {
             },
             &state,
             &joiner_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap();
@@ -691,15 +1057,16 @@ mod tests {
 
     #[test]
     fn relay_broadcasts_host_messages_once_per_participant() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
-        let (joiner_tx, joiner_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
+        let (joiner_tx, joiner_rx) = mpsc::sync_channel(32);
         let Some((room, _)) = handle_relay_message(
             RelayClientMessage::CreateRoom {
                 host_version: "test".to_string(),
             },
             &state,
             &host_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap() else {
@@ -714,6 +1081,7 @@ mod tests {
             },
             &state,
             &joiner_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap();
@@ -729,6 +1097,7 @@ mod tests {
             },
             &state,
             &host_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap();
@@ -742,15 +1111,16 @@ mod tests {
 
     #[test]
     fn relay_closes_room_when_host_disconnects() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
-        let (joiner_tx, joiner_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
+        let (joiner_tx, joiner_rx) = mpsc::sync_channel(32);
         let Some((room, _)) = handle_relay_message(
             RelayClientMessage::CreateRoom {
                 host_version: "test".to_string(),
             },
             &state,
             &host_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap() else {
@@ -765,6 +1135,7 @@ mod tests {
             },
             &state,
             &joiner_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap();
@@ -775,20 +1146,21 @@ mod tests {
             joiner_rx.recv().unwrap(),
             RelayServerMessage::RoomClosed { .. }
         ));
-        assert!(!state.lock().unwrap().rooms.contains_key(&room));
+        assert!(!state.rooms.lock().unwrap().rooms.contains_key(&room));
     }
 
     #[test]
     fn relay_notifies_host_when_participant_disconnects() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
-        let (joiner_tx, _joiner_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
+        let (joiner_tx, _joiner_rx) = mpsc::sync_channel(32);
         let Some((room, _)) = handle_relay_message(
             RelayClientMessage::CreateRoom {
                 host_version: "test".to_string(),
             },
             &state,
             &host_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap() else {
@@ -803,6 +1175,7 @@ mod tests {
             },
             &state,
             &joiner_tx,
+            None,
             &RelayLimits::default(),
         )
         .unwrap() else {
@@ -821,6 +1194,7 @@ mod tests {
         ));
         assert!(
             !state
+                .rooms
                 .lock()
                 .unwrap()
                 .rooms
@@ -833,8 +1207,8 @@ mod tests {
 
     #[test]
     fn relay_rejects_room_creation_when_room_limit_is_reached() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
         let limits = RelayLimits {
             max_rooms: 1,
             ..RelayLimits::default()
@@ -846,6 +1220,7 @@ mod tests {
             },
             &state,
             &host_tx,
+            None,
             &limits,
         )
         .unwrap() else {
@@ -860,6 +1235,7 @@ mod tests {
                 },
                 &state,
                 &host_tx,
+                None,
                 &limits,
             )
             .unwrap(),
@@ -873,10 +1249,10 @@ mod tests {
 
     #[test]
     fn relay_rejects_join_when_room_is_full() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
-        let (joiner_tx, _joiner_rx) = mpsc::channel();
-        let (extra_tx, extra_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
+        let (joiner_tx, _joiner_rx) = mpsc::sync_channel(32);
+        let (extra_tx, extra_rx) = mpsc::sync_channel(32);
         let limits = RelayLimits {
             max_participants_per_room: 1,
             ..RelayLimits::default()
@@ -888,6 +1264,7 @@ mod tests {
             },
             &state,
             &host_tx,
+            None,
             &limits,
         )
         .unwrap() else {
@@ -902,6 +1279,7 @@ mod tests {
             },
             &state,
             &joiner_tx,
+            None,
             &limits,
         )
         .unwrap();
@@ -916,6 +1294,7 @@ mod tests {
                 },
                 &state,
                 &extra_tx,
+                None,
                 &limits,
             )
             .unwrap(),
@@ -929,8 +1308,8 @@ mod tests {
 
     #[test]
     fn relay_cleans_up_idle_rooms() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
         let limits = RelayLimits::default();
         let Some((room, _)) = handle_relay_message(
             RelayClientMessage::CreateRoom {
@@ -938,6 +1317,7 @@ mod tests {
             },
             &state,
             &host_tx,
+            None,
             &limits,
         )
         .unwrap() else {
@@ -946,6 +1326,7 @@ mod tests {
         let _ = host_rx.recv().unwrap();
 
         state
+            .rooms
             .lock()
             .unwrap()
             .rooms
@@ -955,7 +1336,7 @@ mod tests {
 
         cleanup_stale_rooms(&state, Duration::from_secs(1));
 
-        assert!(!state.lock().unwrap().rooms.contains_key(&room));
+        assert!(!state.rooms.lock().unwrap().rooms.contains_key(&room));
     }
 
     #[test]
@@ -992,8 +1373,8 @@ mod tests {
 
     #[test]
     fn idle_room_sweeper_removes_stale_rooms_without_new_messages() {
-        let state = Arc::new(Mutex::new(RelayState::default()));
-        let (host_tx, host_rx) = mpsc::channel();
+        let state = relay_shared();
+        let (host_tx, host_rx) = mpsc::sync_channel(32);
         let limits = RelayLimits::default();
         let Some((room, _)) = handle_relay_message(
             RelayClientMessage::CreateRoom {
@@ -1001,6 +1382,7 @@ mod tests {
             },
             &state,
             &host_tx,
+            None,
             &limits,
         )
         .unwrap() else {
@@ -1009,6 +1391,7 @@ mod tests {
         let _ = host_rx.recv().unwrap();
 
         state
+            .rooms
             .lock()
             .unwrap()
             .rooms
@@ -1019,7 +1402,7 @@ mod tests {
         spawn_idle_room_sweeper(Arc::clone(&state), Duration::from_millis(1));
         let deadline = Instant::now() + Duration::from_secs(1);
         while Instant::now() < deadline {
-            if !state.lock().unwrap().rooms.contains_key(&room) {
+            if !state.rooms.lock().unwrap().rooms.contains_key(&room) {
                 return;
             }
             thread::sleep(Duration::from_millis(10));

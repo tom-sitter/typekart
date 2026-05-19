@@ -185,9 +185,30 @@ enum Command {
         /// Maximum joiners per relay room, excluding the host.
         #[arg(long, default_value_t = 5)]
         max_participants_per_room: usize,
+        /// Maximum concurrent relay WebSocket connections.
+        #[arg(long, default_value_t = 1024)]
+        max_connections: usize,
+        /// Maximum concurrent relay WebSocket connections from one IP.
+        #[arg(long, default_value_t = 64)]
+        max_connections_per_ip: usize,
         /// Maximum WebSocket text message size in bytes.
         #[arg(long, default_value_t = 262_144)]
         max_message_bytes: usize,
+        /// Maximum WebSocket text messages per second from one IP.
+        #[arg(long, default_value_t = 120)]
+        max_messages_per_second_per_ip: u32,
+        /// Maximum room creates per minute from one IP.
+        #[arg(long, default_value_t = 20)]
+        max_room_creates_per_minute_per_ip: u32,
+        /// Maximum room joins per minute from one IP.
+        #[arg(long, default_value_t = 120)]
+        max_room_joins_per_minute_per_ip: u32,
+        /// Maximum queued outbound relay messages per connection.
+        #[arg(long, default_value_t = 256)]
+        outbound_queue_size: usize,
+        /// Seconds a WebSocket may stay connected before creating or joining a room.
+        #[arg(long, default_value_t = 5)]
+        handshake_timeout_secs: u64,
         /// Close rooms after this many idle seconds.
         #[arg(long, default_value_t = 7200)]
         room_idle_timeout_secs: u64,
@@ -379,7 +400,14 @@ fn main() -> Result<()> {
             bind,
             max_rooms,
             max_participants_per_room,
+            max_connections,
+            max_connections_per_ip,
             max_message_bytes,
+            max_messages_per_second_per_ip,
+            max_room_creates_per_minute_per_ip,
+            max_room_joins_per_minute_per_ip,
+            outbound_queue_size,
+            handshake_timeout_secs,
             room_idle_timeout_secs,
         } => net::relay_server::run_relay(net::relay_server::RelayConfig {
             bind,
@@ -387,7 +415,14 @@ fn main() -> Result<()> {
             limits: net::relay_server::RelayLimits {
                 max_rooms,
                 max_participants_per_room,
+                max_connections,
+                max_connections_per_ip,
                 max_message_bytes,
+                max_messages_per_second_per_ip,
+                max_room_creates_per_minute_per_ip,
+                max_room_joins_per_minute_per_ip,
+                outbound_queue_size,
+                handshake_timeout: std::time::Duration::from_secs(handshake_timeout_secs),
                 room_idle_timeout: std::time::Duration::from_secs(room_idle_timeout_secs),
             },
         }),
