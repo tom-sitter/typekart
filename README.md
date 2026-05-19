@@ -4,9 +4,14 @@ TypeKart is a terminal typing racer with kart-style item effects.
 
 ## Install
 
-The easiest beta install path is the GitHub release archive for your computer.
+The easiest macOS install path is Homebrew:
 
-### macOS
+```sh
+brew tap tom-sitter/tap
+brew install typekart
+```
+
+### Manual macOS Install
 
 ```sh
 curl -LO https://github.com/tom-sitter/typekart/releases/latest/download/typekart-aarch64-apple-darwin.tar.gz
@@ -17,7 +22,7 @@ typekart --help
 
 On Intel Macs, use `typekart-x86_64-apple-darwin.tar.gz` instead.
 
-### Windows
+### Manual Windows Install
 
 ```powershell
 iwr https://github.com/tom-sitter/typekart/releases/latest/download/typekart-x86_64-pc-windows-msvc.zip -OutFile typekart.zip
@@ -26,25 +31,6 @@ Expand-Archive typekart.zip -DestinationPath typekart
 ```
 
 You can move `typekart.exe` somewhere on your `PATH` if you want to run `typekart` from any terminal.
-
-### Package Managers
-
-Homebrew:
-
-```sh
-brew tap tom-sitter/tap
-brew install typekart
-```
-
-WinGet is not published yet. Until the package is accepted into the
-`microsoft/winget-pkgs` community repository, use the Windows release archive
-above.
-
-Once published, Windows users will be able to install with:
-
-```powershell
-winget install tom-sitter.TypeKart
-```
 
 ### Direct Downloads
 
