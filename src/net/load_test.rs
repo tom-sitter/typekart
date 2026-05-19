@@ -8,7 +8,7 @@ use std::{
     io::ErrorKind,
     net::TcpStream,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -40,6 +40,9 @@ pub struct RelayLoadTestConfig {
     pub snapshot_interval: Duration,
     pub input_interval: Duration,
     pub settle_timeout: Duration,
+    pub host_start_stagger: Duration,
+    pub joiner_start_stagger: Duration,
+    pub failure_samples: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,6 +54,9 @@ struct LoadMetrics {
     broadcasts_sent: Arc<AtomicU64>,
     inputs_sent: Arc<AtomicU64>,
     errors: Arc<AtomicU64>,
+    host_errors: Arc<AtomicU64>,
+    joiner_errors: Arc<AtomicU64>,
+    failure_samples: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +71,9 @@ struct LoadRunSummary {
     broadcasts_sent: u64,
     inputs_sent: u64,
     errors: u64,
+    host_errors: u64,
+    joiner_errors: u64,
+    failure_samples: Vec<String>,
 }
 
 impl LoadMetrics {
@@ -80,6 +89,51 @@ impl LoadMetrics {
             broadcasts_sent: self.broadcasts_sent.load(Ordering::Relaxed),
             inputs_sent: self.inputs_sent.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
+            host_errors: self.host_errors.load(Ordering::Relaxed),
+            joiner_errors: self.joiner_errors.load(Ordering::Relaxed),
+            failure_samples: self
+                .failure_samples
+                .lock()
+                .expect("load failure samples poisoned")
+                .clone(),
+        }
+    }
+
+    fn record_host_error(&self, game_index: usize, error: anyhow::Error, sample_limit: usize) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+        self.host_errors.fetch_add(1, Ordering::Relaxed);
+        self.record_failure_sample(format!("host game={game_index}: {error:#}"), sample_limit);
+    }
+
+    fn record_joiner_error(
+        &self,
+        game_index: usize,
+        joiner_index: usize,
+        room: &RoomCode,
+        error: anyhow::Error,
+        sample_limit: usize,
+    ) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+        self.joiner_errors.fetch_add(1, Ordering::Relaxed);
+        self.record_failure_sample(
+            format!(
+                "joiner game={game_index} joiner={joiner_index} room={}: {error:#}",
+                room.display()
+            ),
+            sample_limit,
+        );
+    }
+
+    fn record_failure_sample(&self, sample: String, sample_limit: usize) {
+        if sample_limit == 0 {
+            return;
+        }
+        let mut samples = self
+            .failure_samples
+            .lock()
+            .expect("load failure samples poisoned");
+        if samples.len() < sample_limit {
+            samples.push(sample);
         }
     }
 }
@@ -113,6 +167,17 @@ impl LoadRunSummary {
             self.errors,
             if self.passed() { "ok" } else { "failed" }
         );
+        if self.errors > 0 {
+            println!(
+                "     failures: hosts={} joiners={} samples={}",
+                self.host_errors,
+                self.joiner_errors,
+                self.failure_samples.len()
+            );
+            for sample in &self.failure_samples {
+                println!("       - {sample}");
+            }
+        }
     }
 }
 
@@ -143,6 +208,13 @@ pub fn run_relay_load_test(config: RelayLoadTestConfig) -> Result<()> {
         config.joiners_per_game + 1,
         config.joiners_per_game
     );
+    if !config.host_start_stagger.is_zero() || !config.joiner_start_stagger.is_zero() {
+        println!(
+            "Staggering starts: host_start_ms={} joiner_start_ms={}",
+            config.host_start_stagger.as_millis(),
+            config.joiner_start_stagger.as_millis()
+        );
+    }
 
     let mut last_passed = None;
     let mut games = config.start_games;
@@ -183,10 +255,14 @@ fn run_load_step(config: &RelayLoadTestConfig, games: usize) -> Result<LoadRunSu
         let metrics = metrics.clone();
         let room_tx = room_tx.clone();
         handles.push(thread::spawn(move || {
-            if run_host_load_connection(game_index, config, metrics.clone(), room_tx, stop_at)
-                .is_err()
+            if !config.host_start_stagger.is_zero() {
+                thread::sleep(config.host_start_stagger * game_index as u32);
+            }
+            let sample_limit = config.failure_samples;
+            if let Err(error) =
+                run_host_load_connection(game_index, config, metrics.clone(), room_tx, stop_at)
             {
-                metrics.errors.fetch_add(1, Ordering::Relaxed);
+                metrics.record_host_error(game_index, error, sample_limit);
             }
         }));
     }
@@ -208,17 +284,25 @@ fn run_load_step(config: &RelayLoadTestConfig, games: usize) -> Result<LoadRunSu
             let metrics = metrics.clone();
             let room = room.clone();
             handles.push(thread::spawn(move || {
-                if run_joiner_load_connection(
+                if !config.joiner_start_stagger.is_zero() {
+                    thread::sleep(config.joiner_start_stagger * joiner_index as u32);
+                }
+                let sample_limit = config.failure_samples;
+                if let Err(error) = run_joiner_load_connection(
                     game_index,
                     joiner_index,
-                    room,
+                    room.clone(),
                     config,
                     metrics.clone(),
                     stop_at,
-                )
-                .is_err()
-                {
-                    metrics.errors.fetch_add(1, Ordering::Relaxed);
+                ) {
+                    metrics.record_joiner_error(
+                        game_index,
+                        joiner_index,
+                        &room,
+                        error,
+                        sample_limit,
+                    );
                 }
             }));
         }
@@ -283,7 +367,7 @@ fn run_joiner_load_connection(
     metrics: LoadMetrics,
     stop_at: Instant,
 ) -> Result<()> {
-    let mut websocket = connect_load_socket(&config.relay)?;
+    let mut websocket = connect_load_socket(&relay_join_url(&config.relay, &room))?;
     send_relay_message(
         &mut websocket,
         &RelayClientMessage::JoinRoom {
@@ -415,6 +499,23 @@ fn connect_load_socket(relay: &str) -> Result<RelaySocket> {
     Ok(websocket)
 }
 
+fn relay_join_url(relay: &str, room: &RoomCode) -> String {
+    let base = if relay_has_path_or_query(relay) {
+        relay.to_string()
+    } else {
+        format!("{relay}/")
+    };
+    let separator = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{separator}typekart_room={}", room.as_str())
+}
+
+fn relay_has_path_or_query(relay: &str) -> bool {
+    relay.contains('?')
+        || relay
+            .split_once("://")
+            .is_none_or(|(_, rest)| rest.contains('/'))
+}
+
 fn send_relay_message(websocket: &mut RelaySocket, message: &RelayClientMessage) -> Result<()> {
     let encoded = serde_json::to_string(message).context("failed to encode relay message")?;
     websocket
@@ -440,4 +541,19 @@ fn load_disconnect_error(error: &WebSocketError) -> bool {
         error,
         WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RoomCode, relay_join_url};
+
+    #[test]
+    fn load_join_url_includes_room_query_for_replay_routing() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+
+        assert_eq!(
+            relay_join_url("wss://typekart-relay.fly.dev", &room),
+            "wss://typekart-relay.fly.dev/?typekart_room=rocket-salad-tiger"
+        );
+    }
 }

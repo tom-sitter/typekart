@@ -262,6 +262,15 @@ enum Command {
         /// Seconds to wait for rooms to be created before each step starts joiners.
         #[arg(long, default_value_t = 10)]
         settle_timeout_secs: u64,
+        /// Milliseconds to wait between starting synthetic host sockets.
+        #[arg(long, default_value_t = 0)]
+        host_start_stagger_ms: u64,
+        /// Milliseconds to wait between starting joiner sockets within each synthetic game.
+        #[arg(long, default_value_t = 0)]
+        joiner_start_stagger_ms: u64,
+        /// Number of representative load-test failure details to print.
+        #[arg(long, default_value_t = 12)]
+        failure_samples: usize,
     },
 }
 
@@ -467,6 +476,9 @@ fn main() -> Result<()> {
             snapshot_interval_ms,
             input_interval_ms,
             settle_timeout_secs,
+            host_start_stagger_ms,
+            joiner_start_stagger_ms,
+            failure_samples,
         } => net::load_test::run_relay_load_test(net::load_test::RelayLoadTestConfig {
             relay,
             start_games,
@@ -477,6 +489,9 @@ fn main() -> Result<()> {
             snapshot_interval: std::time::Duration::from_millis(snapshot_interval_ms),
             input_interval: std::time::Duration::from_millis(input_interval_ms),
             settle_timeout: std::time::Duration::from_secs(settle_timeout_secs),
+            host_start_stagger: std::time::Duration::from_millis(host_start_stagger_ms),
+            joiner_start_stagger: std::time::Duration::from_millis(joiner_start_stagger_ms),
+            failure_samples,
         }),
     }
 }
