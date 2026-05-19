@@ -42,7 +42,6 @@ impl BonusState {
         Self { points, word_pool }
     }
 
-    #[cfg(test)]
     pub fn with_points(points: Vec<BonusPoint>, word_pool: Vec<String>) -> Self {
         Self { points, word_pool }
     }

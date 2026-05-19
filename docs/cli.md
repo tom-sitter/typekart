@@ -101,6 +101,14 @@ typekart host --name host --ascii
 typekart join --name player2 --room rocket-salad-tiger --ascii
 ```
 
+Preview item and effect rendering:
+
+```sh
+typekart gallery items
+typekart gallery items --ascii
+typekart gallery items --scenario multiplayer-pack
+```
+
 Write a debug log:
 
 ```sh
@@ -139,5 +147,6 @@ typekart host --help
 typekart join --help
 typekart host-lan --help
 typekart join-lan --help
+typekart gallery --help
 typekart relay --help
 ```

@@ -50,6 +50,7 @@ pub struct TypingScreen<'a> {
     pub selected_ai_index: Option<usize>,
     pub show_help: bool,
     pub events: &'a EventLog,
+    pub rendered_at: std::time::Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,7 +197,10 @@ pub fn render(frame: &mut Frame<'_>, screen: TypingScreen<'_>) {
         ])
         .split(area);
 
-    frame.render_widget(header(screen.track, screen.player), root[0]);
+    frame.render_widget(
+        header(screen.track, screen.player, screen.rendered_at),
+        root[0],
+    );
     frame.render_widget(footer_view(screen.race_phase, screen.show_help), root[2]);
 
     if area.width >= WIDE_LAYOUT_MIN_WIDTH {
@@ -243,12 +247,13 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.player_item_cue.clone(),
         screen.race_phase,
         screen.icon_mode,
+        screen.rendered_at,
     );
     frame.render_widget(
         finish_or_empty(screen.player, screen.ai_racers, screen.race_status),
         left[1],
     );
-    frame.render_widget(stats_view(screen.player), right[0]);
+    frame.render_widget(stats_view(screen.player, screen.rendered_at), right[0]);
     frame.render_widget(
         player_list(
             screen.track,
@@ -286,8 +291,9 @@ fn render_narrow(frame: &mut Frame<'_>, area: Rect, screen: TypingScreen<'_>) {
         screen.player_item_cue.clone(),
         screen.race_phase,
         screen.icon_mode,
+        screen.rendered_at,
     );
-    frame.render_widget(stats_view(screen.player), rows[1]);
+    frame.render_widget(stats_view(screen.player, screen.rendered_at), rows[1]);
     frame.render_widget(
         player_list(
             screen.track,
@@ -331,13 +337,13 @@ fn player_list_height(ai_racer_count: usize) -> u16 {
         .unwrap_or(u16::MAX)
 }
 
-fn header<'a>(track: &Track, player: &PlayerState) -> Paragraph<'a> {
+fn header<'a>(track: &Track, player: &PlayerState, now: std::time::Instant) -> Paragraph<'a> {
     let title = if player.is_finished() {
         "TypeKart - Finished"
     } else {
         "TypeKart"
     };
-    let now = player.finished_at.unwrap_or_else(std::time::Instant::now);
+    let now = player.finished_at.unwrap_or(now);
     let progress = format!("{}/{} words", player.stats.completed_words, track.len());
     let wpm = format!(
         "{:.0} WPM",
@@ -367,6 +373,7 @@ fn render_track(
     player_item_cue: Option<ItemCue>,
     race_phase: RacePhase,
     icon_mode: IconMode,
+    now: std::time::Instant,
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let window = build_track_window(track, player.word_index, inner_width);
@@ -382,6 +389,7 @@ fn render_track(
             player_item_cue,
             race_phase,
             icon_mode,
+            now,
         ),
         area,
     );
@@ -399,8 +407,8 @@ fn track_view<'a>(
     player_item_cue: Option<ItemCue>,
     race_phase: RacePhase,
     icon_mode: IconMode,
+    now: std::time::Instant,
 ) -> Paragraph<'a> {
-    let now = std::time::Instant::now();
     let word_line = track_word_line(window, player, race_phase);
     let racer_lines = racer_lines(
         window,
@@ -1153,8 +1161,8 @@ fn cursor_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-fn stats_view<'a>(player: &PlayerState) -> Paragraph<'a> {
-    let now = player.finished_at.unwrap_or_else(std::time::Instant::now);
+fn stats_view<'a>(player: &PlayerState, now: std::time::Instant) -> Paragraph<'a> {
+    let now = player.finished_at.unwrap_or(now);
     let wpm = player.stats.words_per_minute(player.started_at, now);
     let stats = vec![
         Line::from(format!("Accuracy {:.0}%", player.stats.accuracy())),

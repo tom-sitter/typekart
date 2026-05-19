@@ -76,6 +76,15 @@ cargo run -- join-lan --name player2 --server 127.0.0.1:4000
 
 Use [LAN Validation Checklist](lan-validation-checklist.md) for structured manual testing.
 
+Preview item and effect UI states without playing a full race:
+
+```sh
+cargo run -- gallery items
+cargo run -- gallery items --scenario banana-hit-pack
+```
+
+See [Renderer Gallery](renderer-gallery.md) for controls and covered scenarios.
+
 ## Repository Layout
 
 - `src/main.rs`: CLI parsing and command dispatch.

@@ -17,7 +17,7 @@ use crate::game::{
     ai::AiDifficulty,
     words::{DEFAULT_WORD_SET_ID, WordSetSelection},
 };
-use crate::ui::render::IconMode;
+use crate::ui::{gallery::GalleryKind, render::IconMode};
 
 const DEFAULT_PUBLIC_RELAY_URL: &str = "wss://typekart-relay.fly.dev";
 
@@ -192,6 +192,11 @@ enum Command {
         #[arg(long, default_value_t = 7200)]
         room_idle_timeout_secs: u64,
     },
+    /// Preview renderer states for item and effect UI development.
+    Gallery {
+        #[command(subcommand)]
+        kind: GalleryCommand,
+    },
     /// Run a relay capacity load test.
     #[command(name = "relay-load-test", hide = true)]
     RelayLoadTest {
@@ -222,6 +227,19 @@ enum Command {
         /// Seconds to wait for rooms to be created before each step starts joiners.
         #[arg(long, default_value_t = 10)]
         settle_timeout_secs: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GalleryCommand {
+    /// Preview item pickup cues, active effects, and impact effects.
+    Items {
+        /// Start on a named scenario, such as multiplayer-pack or banana-hit-pack.
+        #[arg(long)]
+        scenario: Option<String>,
+        /// Use ASCII-safe markers instead of Unicode item icons.
+        #[arg(long = "ascii")]
+        ascii_icons: bool,
     },
 }
 
@@ -373,6 +391,19 @@ fn main() -> Result<()> {
                 room_idle_timeout: std::time::Duration::from_secs(room_idle_timeout_secs),
             },
         }),
+        Command::Gallery { kind } => match kind {
+            GalleryCommand::Items {
+                scenario,
+                ascii_icons,
+            } => ui::gallery::run_gallery(
+                GalleryKind::Items { scenario },
+                if ascii_icons {
+                    IconMode::Ascii
+                } else {
+                    IconMode::Unicode
+                },
+            ),
+        },
         Command::RelayLoadTest {
             relay,
             start_games,

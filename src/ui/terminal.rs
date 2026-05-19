@@ -95,6 +95,7 @@ fn run_loop(
     let mut show_help = false;
     loop {
         terminal.draw(|frame| {
+            let now = Instant::now();
             render(
                 frame,
                 TypingScreen {
@@ -111,6 +112,7 @@ fn run_loop(
                     selected_ai_index: session.selected_ai_index(),
                     show_help,
                     events: &session.events,
+                    rendered_at: now,
                 },
             );
         })?;
