@@ -1167,8 +1167,8 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
             }
         }
 
-        if current_race_connected_player_count(&state) < 2 {
-            server_println!("Cannot start: at least two ready connected racers are required");
+        if current_race_connected_player_count(&state) < 1 {
+            server_println!("Cannot start: at least one ready connected racer is required");
             return;
         }
 
@@ -2482,7 +2482,7 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
             push_network_log(&guard.debug_log, "countdown stopped before next tick");
             return;
         }
-        if !countdown_has_enough_connected_racers(&guard) {
+        if !countdown_has_any_connected_racer(&guard) {
             cancel_countdown(&mut guard);
             if let Err(error) = broadcast_race_snapshot(&mut guard) {
                 server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -2510,7 +2510,7 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
         push_network_log(&guard.debug_log, "countdown stopped before race start");
         return;
     }
-    if !countdown_has_enough_connected_racers(&guard) {
+    if !countdown_has_any_connected_racer(&guard) {
         cancel_countdown(&mut guard);
         if let Err(error) = broadcast_race_snapshot(&mut guard) {
             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -2574,7 +2574,7 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
 fn reconcile_phase_after_disconnect(state: &mut HostState, now: Instant) {
     match state.phase {
         NetworkRacePhase::Countdown { .. } => {
-            if !countdown_has_enough_connected_racers(state) {
+            if !countdown_has_any_connected_racer(state) {
                 cancel_countdown(state);
             }
         }
@@ -2584,23 +2584,20 @@ fn reconcile_phase_after_disconnect(state: &mut HostState, now: Instant) {
     }
 }
 
-fn countdown_has_enough_connected_racers(state: &HostState) -> bool {
+fn countdown_has_any_connected_racer(state: &HostState) -> bool {
     state
         .race
         .players
         .iter()
         .filter(|player| player.connected && !player.state.is_finished())
         .count()
-        >= 2
+        >= 1
 }
 
 fn cancel_countdown(state: &mut HostState) {
     state.phase = NetworkRacePhase::WaitingForHost;
     push_event(state, "Countdown cancelled".to_string());
-    push_network_log(
-        &state.debug_log,
-        "countdown cancelled fewer than two connected racers",
-    );
+    push_network_log(&state.debug_log, "countdown cancelled no connected racers");
     server_println!("Countdown cancelled");
 }
 
@@ -4490,13 +4487,36 @@ mod tests {
     }
 
     #[test]
-    fn countdown_cancels_when_fewer_than_two_connected_racers_remain() {
+    fn countdown_continues_when_one_racer_remains_connected() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Countdown {
             remaining_seconds: 2,
         });
         state.players[1].connected = false;
         state.race.players[1].connected = false;
+
+        reconcile_phase_after_disconnect(&mut state, now);
+
+        assert_eq!(
+            state.phase,
+            NetworkRacePhase::Countdown {
+                remaining_seconds: 2
+            }
+        );
+    }
+
+    #[test]
+    fn countdown_cancels_when_no_racers_remain_connected() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Countdown {
+            remaining_seconds: 2,
+        });
+        for player in &mut state.players {
+            player.connected = false;
+        }
+        for player in &mut state.race.players {
+            player.connected = false;
+        }
 
         reconcile_phase_after_disconnect(&mut state, now);
 
@@ -4510,7 +4530,7 @@ mod tests {
     }
 
     #[test]
-    fn countdown_continues_when_at_least_two_racers_remain_connected() {
+    fn countdown_continues_when_multiple_racers_remain_connected() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Countdown {
             remaining_seconds: 2,
