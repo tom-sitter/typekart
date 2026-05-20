@@ -34,7 +34,7 @@ Use the same `--ascii` setting on host and joiners when validating ASCII fallbac
 - Full lobby join attempts show a clear rejection.
 - Joiners can press `Enter` to ready up for the next race.
 - Typed `ready` and `unready` remain supported as fallback lobby commands.
-- Host can start with `Space` or `start` once at least two connected racers are ready.
+- Host can start with `Space` or `start` once at least one connected racer is ready, including a solo host race.
 - Footer commands change by phase and do not show irrelevant race/result commands.
 - Lobby Events show joins, ready changes, disconnects, countdown start/cancel, and rematch transitions.
 
@@ -42,7 +42,7 @@ Use the same `--ascii` setting on host and joiners when validating ASCII fallbac
 
 - Race text is grey before input is accepted.
 - Countdown appears next to the local racer marker.
-- Disconnecting a joiner during countdown cancels the countdown if fewer than two connected racers remain.
+- Disconnecting joiners during countdown does not cancel a solo host race; the countdown cancels only if no connected racers remain.
 - After countdown cancellation, the host returns to a lobby/waiting state and can accept new players.
 
 ## Racing
