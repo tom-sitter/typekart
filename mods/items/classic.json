@@ -19,11 +19,11 @@
       "id": "banana",
       "name": "Banana",
       "enabled": true,
-      "standard_weight": 2,
-      "nearby_racer_weight": 3,
+      "standard_weight": 3,
+      "nearby_racer_weight": 5,
       "context_weights": {
-        "standard": { "first": 1, "middle": 2, "trailing": 3 },
-        "nearby_racer": { "first": 2, "middle": 3, "trailing": 5 }
+        "standard": { "first": 2, "middle": 3, "trailing": 4 },
+        "nearby_racer": { "first": 3, "middle": 5, "trailing": 7 }
       },
       "effect": {
         "range_words": 10,
@@ -88,11 +88,11 @@
       "id": "squid_ink",
       "name": "Squid Ink",
       "enabled": true,
-      "standard_weight": 2,
-      "nearby_racer_weight": 5,
+      "standard_weight": 1,
+      "nearby_racer_weight": 2,
       "context_weights": {
-        "standard": { "first": 1, "middle": 2, "trailing": 2 },
-        "nearby_racer": { "first": 4, "middle": 6, "trailing": 5 }
+        "standard": { "first": 0, "middle": 1, "trailing": 1 },
+        "nearby_racer": { "first": 1, "middle": 2, "trailing": 2 }
       },
       "effect": {
         "range_words": 5,

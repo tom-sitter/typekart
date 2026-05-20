@@ -435,18 +435,18 @@ impl ItemRegistry {
                 "Banana",
                 ItemPickup::Held(HeldItem::Banana),
                 ItemActivation::Held,
-                2,
                 3,
+                5,
                 ItemContextWeights {
                     standard: PositionWeights {
-                        first: 1,
-                        middle: 2,
-                        trailing: 3,
-                    },
-                    nearby_racer: PositionWeights {
                         first: 2,
                         middle: 3,
-                        trailing: 5,
+                        trailing: 4,
+                    },
+                    nearby_racer: PositionWeights {
+                        first: 3,
+                        middle: 5,
+                        trailing: 7,
                     },
                 },
             ),
@@ -515,18 +515,18 @@ impl ItemRegistry {
                 "Squid Ink",
                 ItemPickup::Held(HeldItem::SquidInk),
                 ItemActivation::Held,
+                1,
                 2,
-                5,
                 ItemContextWeights {
                     standard: PositionWeights {
+                        first: 0,
+                        middle: 1,
+                        trailing: 1,
+                    },
+                    nearby_racer: PositionWeights {
                         first: 1,
                         middle: 2,
                         trailing: 2,
-                    },
-                    nearby_racer: PositionWeights {
-                        first: 4,
-                        middle: 6,
-                        trailing: 5,
                     },
                 },
             ),
@@ -1129,7 +1129,7 @@ mod tests {
             .sum::<u32>();
 
         assert_eq!(shield.nearby_racer_weight, 3);
-        assert_eq!(total_weight, 19);
+        assert_eq!(total_weight, 18);
     }
 
     #[test]
