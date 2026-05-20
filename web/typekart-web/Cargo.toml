@@ -1,0 +1,11 @@
+[package]
+name = "typekart-web"
+version = "0.1.5"
+edition = "2024"
+description = "Browser UI shell for TypeKart"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+console_error_panic_hook = "0.1"
+leptos = { version = "0.8", features = ["csr"] }

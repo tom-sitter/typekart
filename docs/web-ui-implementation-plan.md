@@ -155,6 +155,16 @@ Validation:
 
 Goal: add a minimal browser app without changing gameplay yet.
 
+Initial slice:
+
+- `web/typekart-web` is a standalone Leptos CSR app that can be served with
+  Trunk.
+- The web app intentionally keeps its own `Cargo.lock` so Leptos dependencies
+  do not enter the terminal app's release/package dependency graph.
+- The web shell renders home/create/join placeholders plus a static race
+  preview.
+- Development docs include the WASM target, Trunk, serve, and check commands.
+
 Tasks:
 
 - Add a web app package/workspace using Leptos.

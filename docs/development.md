@@ -34,6 +34,29 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
+## Web UI Development
+
+The browser UI is a Leptos CSR app served by Trunk. Install the browser build
+tools once:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+```
+
+Run the web shell locally:
+
+```sh
+cd web/typekart-web
+trunk serve
+```
+
+Check the web package from the repository root:
+
+```sh
+cargo check --manifest-path web/typekart-web/Cargo.toml
+```
+
 ## Relay Load Testing
 
 The hidden `relay-load-test` command opens synthetic relay rooms and joiners,
@@ -93,6 +116,7 @@ See [Renderer Gallery](renderer-gallery.md) for controls and covered scenarios.
 - `src/game`: pure game rules, typing state, items, bonus words, words, mods, and AI rules.
 - `src/ui`: terminal rendering and local session loop.
 - `src/net`: LAN protocol, host server, client, relay protocol, relay server, and online loopback adapters.
+- `web/typekart-web`: Leptos browser UI shell.
 - `docs`: user, operator, and maintainer documentation.
 - `packaging`: Homebrew and WinGet package templates.
 - `scripts`: release and packaging helpers.
