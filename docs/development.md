@@ -87,6 +87,7 @@ See [Renderer Gallery](renderer-gallery.md) for controls and covered scenarios.
 
 ## Repository Layout
 
+- `src/lib.rs`: reusable library surface for the CLI today and future browser/WASM code.
 - `src/main.rs`: CLI parsing and command dispatch.
 - `src/app.rs`: thin coordinator between CLI, game setup, UI, and networking.
 - `src/game`: pure game rules, typing state, items, bonus words, words, mods, and AI rules.

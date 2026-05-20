@@ -3,21 +3,18 @@
 //! Keep this file small: it should parse CLI arguments and delegate to `app`.
 //! The actual game rules live under `game`, and terminal code lives under `ui`.
 
-mod app;
-mod game;
-mod net;
-mod ui;
-
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::game::{
+use typekart::app;
+use typekart::game::{
     ai::AiDifficulty,
     words::{DEFAULT_WORD_SET_ID, WordSetSelection},
 };
-use crate::ui::{gallery::GalleryKind, render::IconMode};
+use typekart::ui::{gallery::GalleryKind, render::IconMode};
+use typekart::{net, ui};
 
 const DEFAULT_PUBLIC_RELAY_URL: &str = "wss://typekart-relay.fly.dev";
 
@@ -395,7 +392,7 @@ fn main() -> Result<()> {
             ascii_icons,
         } => app::join_online(
             relay,
-            crate::net::relay::RoomCode::parse(room)?,
+            typekart::net::relay::RoomCode::parse(room)?,
             name,
             if ascii_icons {
                 IconMode::Ascii
