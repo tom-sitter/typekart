@@ -57,6 +57,12 @@ Check the web package from the repository root:
 cargo check --manifest-path web/typekart-web/Cargo.toml
 ```
 
+Check the shared browser/terminal protocol crate:
+
+```sh
+cargo test --manifest-path crates/typekart-protocol/Cargo.toml
+```
+
 ## Relay Load Testing
 
 The hidden `relay-load-test` command opens synthetic relay rooms and joiners,
@@ -116,6 +122,7 @@ See [Renderer Gallery](renderer-gallery.md) for controls and covered scenarios.
 - `src/game`: pure game rules, typing state, items, bonus words, words, mods, and AI rules.
 - `src/ui`: terminal rendering and local session loop.
 - `src/net`: LAN protocol, host server, client, relay protocol, relay server, and online loopback adapters.
+- `crates/typekart-protocol`: shared JSON protocol contract used by the terminal app and browser app.
 - `web/typekart-web`: Leptos browser UI shell.
 - `docs`: user, operator, and maintainer documentation.
 - `packaging`: Homebrew and WinGet package templates.

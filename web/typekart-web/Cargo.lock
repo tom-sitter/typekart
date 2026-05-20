@@ -1600,11 +1600,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "typekart-protocol"
+version = "0.1.5"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "typekart-web"
 version = "0.1.5"
 dependencies = [
  "console_error_panic_hook",
  "leptos",
+ "typekart-protocol",
 ]
 
 [[package]]

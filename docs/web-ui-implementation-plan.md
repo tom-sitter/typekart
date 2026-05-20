@@ -195,9 +195,11 @@ Initial slice:
 
 - The web app now renders protocol-shaped fixture frames instead of a one-off
   static track:
-  - `LobbySnapshotFixture`
-  - `RaceSnapshotFixture`
-  - `ResultsSnapshotFixture`
+  - lobby frames backed by shared `LobbyPlayer`/`ModConfigSnapshot` types
+  - `RaceSnapshot`
+  - results frames backed by shared `RaceResultRow` types
+- `crates/typekart-protocol` contains the shared JSON wire contract used by the
+  terminal app and browser app.
 - Gallery scenarios cover lobby, countdown, Banana, Mushroom, Shield, Focus,
   Cyclone, Squid Ink, finish sprint, and results states.
 - The browser renderer includes track words, stacked bonus choices, racer

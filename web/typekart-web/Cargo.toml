@@ -9,3 +9,4 @@ publish = false
 [dependencies]
 console_error_panic_hook = "0.1"
 leptos = { version = "0.8", features = ["csr"] }
+typekart-protocol = { version = "0.1.5", path = "../../crates/typekart-protocol" }

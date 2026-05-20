@@ -40,7 +40,9 @@ needs to understand the envelope layer and room routing rules.
 
 ## Game Layer
 
-Game messages live in `src/net/protocol.rs`.
+Shared game messages live in `crates/typekart-protocol`. The terminal app
+re-exports those types from `src/net/protocol.rs` and keeps game-specific
+conversion impls there.
 
 Joiners send `ClientMessage` values:
 
