@@ -191,6 +191,17 @@ Validation:
 
 Goal: build the browser race renderer before wiring live multiplayer.
 
+Initial slice:
+
+- The web app now renders protocol-like fixture snapshots instead of a one-off
+  static track.
+- Gallery scenarios cover an opening pack, consumed bonus choice with item
+  cues/impact state, and a finish sprint.
+- The browser renderer includes track words, stacked bonus choices, racer
+  lanes, Unicode/ASCII cue toggle, minimap, and event feed.
+- Fixture tests assert that consumed bonus and impact states are represented and
+  that finished players pin to the minimap finish edge.
+
 Tasks:
 
 - Convert existing gallery scenarios into protocol-level fixture snapshots.
