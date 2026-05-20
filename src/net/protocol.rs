@@ -330,11 +330,12 @@ pub fn decode_server_message(line: &str) -> serde_json::Result<ServerMessage> {
 mod tests {
     use super::{
         AssignedColor, BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot,
-        ClientMessage, ClientSequence, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase, PlayerId,
-        PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot, RaceResultRow,
-        RaceResultStatus, RaceSnapshot, ServerMessage, WordOverrideSnapshot, decode_client_message,
-        decode_server_message, encode_client_message, encode_server_message,
-        version_mismatch_message,
+        ClientMessage, ClientSequence, ImpactCueSnapshot, ImpactCueSnapshotKind,
+        ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer,
+        ModConfigSnapshot, NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey,
+        RaceDeltaSnapshot, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
+        WordOverrideSnapshot, decode_client_message, decode_server_message, encode_client_message,
+        encode_server_message, version_mismatch_message,
     };
 
     #[test]
@@ -524,6 +525,212 @@ mod tests {
         let decoded = decode_server_message(&encoded).unwrap();
 
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn browser_client_key_input_fixture_matches_wire_shape() {
+        let message = ClientMessage::KeyInput {
+            sequence: ClientSequence(42),
+            key: ProtocolKey::Char('x'),
+        };
+
+        let value = serde_json::to_value(&message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "key_input",
+                "sequence": 42,
+                "key": { "char": "x" }
+            })
+        );
+    }
+
+    #[test]
+    fn browser_server_lobby_snapshot_fixture_matches_wire_shape() {
+        let message = ServerMessage::LobbySnapshot {
+            host_id: PlayerId(1),
+            mod_config: test_mod_config(),
+            events: vec!["tom joined".to_string()],
+            players: vec![LobbyPlayer {
+                id: PlayerId(1),
+                name: "tom".to_string(),
+                kind: PlayerKind::Human,
+                color: AssignedColor::Cyan,
+                ready: true,
+                connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
+            }],
+        };
+
+        let value = serde_json::to_value(&message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "lobby_snapshot",
+                "players": [
+                    {
+                        "id": 1,
+                        "name": "tom",
+                        "kind": "human",
+                        "color": "cyan",
+                        "ready": true,
+                        "connected": true,
+                        "ai_difficulty": null,
+                        "ai_wpm": null
+                    }
+                ],
+                "host_id": 1,
+                "mod_config": {
+                    "word_set_id": "classic",
+                    "word_set_name": "Classic",
+                    "word_set_hash": "0000000000000001",
+                    "item_pack_name": "classic",
+                    "item_registry_hash": "0000000000000002",
+                    "combined_hash": "0000000000000003"
+                },
+                "events": ["tom joined"]
+            })
+        );
+    }
+
+    #[test]
+    fn browser_server_race_snapshot_fixture_matches_wire_shape() {
+        let message = ServerMessage::RaceSnapshot(RaceSnapshot {
+            sequence: 12,
+            phase: NetworkRacePhase::Racing,
+            mod_config: test_mod_config(),
+            track_words: vec!["spark".to_string(), "river".to_string()],
+            bonuses: vec![BonusPointSnapshot {
+                after_word_index: 0,
+                choices: vec![
+                    BonusChoiceSnapshot {
+                        word: "focus".to_string(),
+                        status: BonusChoiceSnapshotStatus::Available,
+                    },
+                    BonusChoiceSnapshot {
+                        word: "shield".to_string(),
+                        status: BonusChoiceSnapshotStatus::Cooldown { remaining_ms: 800 },
+                    },
+                ],
+            }],
+            players: vec![PlayerSnapshot {
+                id: PlayerId(2),
+                name: "alex".to_string(),
+                kind: PlayerKind::Human,
+                color: AssignedColor::Red,
+                word_index: 1,
+                input: "r".to_string(),
+                typo_index: None,
+                word_overrides: vec![WordOverrideSnapshot {
+                    word_index: 1,
+                    word: "revir".to_string(),
+                }],
+                finished: false,
+                connected: true,
+                shielded: true,
+                focused: false,
+                inked: false,
+                boosted: false,
+                stunned: true,
+                impact_remaining_ms: 900,
+                impact_cue: Some(ImpactCueSnapshot {
+                    kind: ImpactCueSnapshotKind::Cyclone,
+                    remaining_ms: 900,
+                }),
+                item_cue: Some(ItemCueSnapshot {
+                    kind: ItemCueSnapshotKind::Cyclone {
+                        direction: super::AttackDirectionSnapshot::Ahead,
+                    },
+                    ascii_label: "~~>>".to_string(),
+                    unicode_label: "🌀 >>".to_string(),
+                    placement: ItemCuePlacementSnapshot::After,
+                    remaining_ms: 700,
+                }),
+            }],
+            events: vec!["alex was hit by cyclone".to_string()],
+        });
+
+        let value = serde_json::to_value(&message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "race_snapshot",
+                "sequence": 12,
+                "phase": "racing",
+                "mod_config": {
+                    "word_set_id": "classic",
+                    "word_set_name": "Classic",
+                    "word_set_hash": "0000000000000001",
+                    "item_pack_name": "classic",
+                    "item_registry_hash": "0000000000000002",
+                    "combined_hash": "0000000000000003"
+                },
+                "track_words": ["spark", "river"],
+                "bonuses": [
+                    {
+                        "after_word_index": 0,
+                        "choices": [
+                            {
+                                "word": "focus",
+                                "status": "available"
+                            },
+                            {
+                                "word": "shield",
+                                "status": {
+                                    "cooldown": {
+                                        "remaining_ms": 800
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "players": [
+                    {
+                        "id": 2,
+                        "name": "alex",
+                        "kind": "human",
+                        "color": "red",
+                        "word_index": 1,
+                        "input": "r",
+                        "typo_index": null,
+                        "word_overrides": [
+                            {
+                                "word_index": 1,
+                                "word": "revir"
+                            }
+                        ],
+                        "finished": false,
+                        "connected": true,
+                        "shielded": true,
+                        "focused": false,
+                        "inked": false,
+                        "boosted": false,
+                        "stunned": true,
+                        "impact_remaining_ms": 900,
+                        "impact_cue": {
+                            "kind": "cyclone",
+                            "remaining_ms": 900
+                        },
+                        "item_cue": {
+                            "kind": {
+                                "type": "cyclone",
+                                "direction": "ahead"
+                            },
+                            "ascii_label": "~~>>",
+                            "unicode_label": "🌀 >>",
+                            "placement": "after",
+                            "remaining_ms": 700
+                        }
+                    }
+                ],
+                "events": ["alex was hit by cyclone"]
+            })
+        );
     }
 
     fn test_mod_config() -> ModConfigSnapshot {

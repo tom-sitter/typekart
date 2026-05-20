@@ -117,6 +117,13 @@ Validation:
 
 Goal: turn the current network protocol into a browser-friendly contract.
 
+Initial slice:
+
+- `docs/network-protocol.md` documents relay envelopes, game messages, browser
+  host flow, and compatibility expectations.
+- Protocol tests include fixture-style assertions for browser-required JSON
+  shapes so accidental wire-format drift is caught in Rust tests.
+
 Tasks:
 
 - Audit `ClientMessage`, `ServerMessage`, `RaceSnapshot`, `RaceDelta`,

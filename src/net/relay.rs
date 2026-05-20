@@ -201,4 +201,29 @@ mod tests {
 
         assert_eq!(decoded, message);
     }
+
+    #[test]
+    fn browser_relay_host_broadcast_fixture_matches_wire_shape() {
+        let message = RelayClientMessage::HostBroadcast {
+            room: RoomCode::parse("rocket-salad-tiger").unwrap(),
+            message: serde_json::json!({
+                "type": "race_delta",
+                "sequence": 12
+            }),
+        };
+
+        let value = serde_json::to_value(&message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "host_broadcast",
+                "room": "rocket-salad-tiger",
+                "message": {
+                    "type": "race_delta",
+                    "sequence": 12
+                }
+            })
+        );
+    }
 }
