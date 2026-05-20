@@ -193,14 +193,19 @@ Goal: build the browser race renderer before wiring live multiplayer.
 
 Initial slice:
 
-- The web app now renders protocol-like fixture snapshots instead of a one-off
-  static track.
-- Gallery scenarios cover an opening pack, consumed bonus choice with item
-  cues/impact state, and a finish sprint.
+- The web app now renders protocol-shaped fixture frames instead of a one-off
+  static track:
+  - `LobbySnapshotFixture`
+  - `RaceSnapshotFixture`
+  - `ResultsSnapshotFixture`
+- Gallery scenarios cover lobby, countdown, Banana, Mushroom, Shield, Focus,
+  Cyclone, Squid Ink, finish sprint, and results states.
 - The browser renderer includes track words, stacked bonus choices, racer
   lanes, Unicode/ASCII cue toggle, minimap, and event feed.
-- Fixture tests assert that consumed bonus and impact states are represented and
-  that finished players pin to the minimap finish edge.
+- Fixture smoke tests assert that major states are represented, consumed bonus
+  choices render, all current item cue/impact concepts are covered, Squid Ink
+  masks only future words, results include timed-out racers, and finished
+  players pin to the minimap finish edge.
 
 Tasks:
 

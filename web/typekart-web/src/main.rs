@@ -1,8 +1,9 @@
 mod fixtures;
 
 use fixtures::{
-    BonusStatus, CuePlacement, GalleryScenario, PlayerEffect, RaceFixture, RacePhase, SCENARIOS,
-    minimap_position,
+    BonusStatus, CuePlacement, GalleryFrame, GalleryScenario, LobbySnapshotFixture,
+    PlayerKindFixture, PlayerSnapshotFixture, RacePhase, RaceSnapshotFixture,
+    ResultsSnapshotFixture, SCENARIOS, minimap_position,
 };
 use leptos::prelude::*;
 
@@ -66,7 +67,7 @@ fn App() -> impl IntoView {
                 </div>
             </section>
 
-            <RacePanel
+            <GalleryFrameView
                 scenario=current_scenario
                 unicode_icons=move || unicode_icons.get()
             />
@@ -75,42 +76,92 @@ fn App() -> impl IntoView {
 }
 
 #[component]
-fn RacePanel(
+fn GalleryFrameView(
     scenario: impl Fn() -> GalleryScenario + Copy + Send + Sync + 'static,
     unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
-    let snapshot = move || scenario().snapshot;
+    move || match scenario().frame {
+        GalleryFrame::Lobby(snapshot) => view! { <LobbyPanel snapshot=snapshot /> }.into_any(),
+        GalleryFrame::Race(snapshot) => {
+            view! { <RacePanel snapshot=snapshot unicode_icons=unicode_icons /> }.into_any()
+        }
+        GalleryFrame::Results(snapshot) => view! { <ResultsPanel snapshot=snapshot /> }.into_any(),
+    }
+}
 
+#[component]
+fn LobbyPanel(snapshot: LobbySnapshotFixture) -> impl IntoView {
+    view! {
+        <section class="panel lobby-panel" aria-label="Lobby preview">
+            <div class="phase">"Lobby"</div>
+            <div class="mod-strip">
+                <span>"Words " {snapshot.mod_config.word_set_name}</span>
+                <span>"Items " {snapshot.mod_config.item_pack_name}</span>
+                <span>"Mod " {snapshot.mod_config.combined_hash}</span>
+            </div>
+            <div class="lobby-list">
+                <For
+                    each={move || snapshot.players.iter().copied().collect::<Vec<_>>()}
+                    key=|player| player.id
+                    children={move |player| {
+                        view! {
+                            <div class="lobby-player">
+                                <span class={format!("marker {}", player.color_class)}>{"●"}</span>
+                                <span>{player.name}</span>
+                                <span>{kind_label(player.kind)}</span>
+                                <span>{if player.id == snapshot.host_id { "host" } else { "" }}</span>
+                                <span>{if player.ready { "ready" } else { "not ready" }}</span>
+                                <span>{if player.connected { "" } else { "offline" }}</span>
+                            </div>
+                        }
+                    }}
+                />
+            </div>
+            <EventFeed events=snapshot.events />
+        </section>
+    }
+}
+
+#[component]
+fn RacePanel(
+    snapshot: RaceSnapshotFixture,
+    unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static,
+) -> impl IntoView {
     view! {
         <section class="panel track-panel" aria-label="Race preview">
-            <div class="phase">{move || phase_label(snapshot().phase)}</div>
+            <div class="phase">{phase_label(snapshot.phase)} " · seq " {snapshot.sequence}</div>
+            <div class="mod-strip">
+                <span>{snapshot.mod_config.word_set_name}</span>
+                <span>{snapshot.mod_config.item_pack_name}</span>
+                <span>{snapshot.mod_config.combined_hash}</span>
+            </div>
             <BonusStack snapshot=snapshot />
             <TrackWords snapshot=snapshot />
             <For
-                each={move || snapshot().players.iter().copied().collect::<Vec<_>>()}
+                each={move || snapshot.players.iter().copied().collect::<Vec<_>>()}
                 key=|player| player.id
                 children={move |player| {
                     view! {
                         <RacerLane
                             player=player
-                            local=player.id == snapshot().local_player_id
+                            local=player.id == snapshot.local_player_id
                             unicode_icons=unicode_icons
                         />
                     }
                 }}
             />
             <Minimap snapshot=snapshot />
-            <EventFeed snapshot=snapshot />
+            <EventFeed events=snapshot.events />
         </section>
     }
 }
 
 #[component]
-fn BonusStack(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static) -> impl IntoView {
+fn BonusStack(snapshot: RaceSnapshotFixture) -> impl IntoView {
     view! {
         <div class="bonus-row">
             <For
-                each={move || snapshot().bonuses.iter().copied().collect::<Vec<_>>()}
+                each={move || snapshot.bonuses.iter().copied().collect::<Vec<_>>()}
                 key=|bonus| bonus.after_word_index
                 children={|bonus| {
                     view! {
@@ -119,9 +170,12 @@ fn BonusStack(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static)
                                 each={move || bonus.choices.iter().copied().collect::<Vec<_>>()}
                                 key=|choice| choice.word
                                 children={|choice| {
-                                    let unavailable = matches!(choice.status, BonusStatus::Cooldown);
+                                    let unavailable = matches!(choice.status, BonusStatus::Cooldown { .. });
                                     view! {
-                                        <span class:cooldown=unavailable>{choice.word}</span>
+                                        <span class:cooldown=unavailable>
+                                            {choice.word}
+                                            {cooldown_label(choice.status)}
+                                        </span>
                                     }
                                 }}
                             />
@@ -134,15 +188,15 @@ fn BonusStack(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static)
 }
 
 #[component]
-fn TrackWords(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static) -> impl IntoView {
+fn TrackWords(snapshot: RaceSnapshotFixture) -> impl IntoView {
     view! {
         <div class="track-text">
             <For
-                each=move || snapshot().track_words.iter().copied().enumerate()
+                each={move || snapshot.track_words.iter().copied().enumerate()}
                 key=|(index, _)| *index
                 children={move |(index, word)| {
                     view! {
-                        <span>{display_word(snapshot(), index, word)}</span>
+                        <span>{display_word(snapshot, index, word)}</span>
                     }
                 }}
             />
@@ -152,29 +206,34 @@ fn TrackWords(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static)
 
 #[component]
 fn RacerLane(
-    player: fixtures::PlayerFixture,
+    player: PlayerSnapshotFixture,
     local: bool,
     unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let cue_before = player
-        .cue
+        .item_cue
         .filter(|cue| cue.placement == CuePlacement::Before)
         .map(|cue| cue_label(cue, unicode_icons()));
     let cue_after = player
-        .cue
+        .item_cue
         .filter(|cue| cue.placement == CuePlacement::After)
         .map(|cue| cue_label(cue, unicode_icons()));
 
     view! {
-        <div class="lane" class:self-lane=local>
+        <div
+            class="lane"
+            class:self-lane=local
+            class:stunned=player.stunned
+            class:disconnected=!player.connected
+        >
             <span class="lane-name">{player.name}</span>
-            <span class="lane-progress">{player.typed}</span>
+            <span class:typo=player.typo_index.is_some() class="lane-progress">{player.input}</span>
             <span class="lane-marker-wrap">
                 {cue_before}
                 <span class={format!("marker {}", player.color_class)}>
-                    {effect_prefix(player.effect, unicode_icons())}
-                    {player.marker}
-                    {impact_label(player.impact)}
+                    {effect_prefix(player, unicode_icons())}
+                    {"███"}
+                    {impact_label(player.impact_cue, unicode_icons())}
                 </span>
                 {cue_after}
             </span>
@@ -184,15 +243,15 @@ fn RacerLane(
 }
 
 #[component]
-fn Minimap(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static) -> impl IntoView {
+fn Minimap(snapshot: RaceSnapshotFixture) -> impl IntoView {
     view! {
         <div class="minimap" aria-label="Race minimap">
             <div class="minimap-line"></div>
             <For
-                each={move || snapshot().players.iter().copied().collect::<Vec<_>>()}
+                each={move || snapshot.players.iter().copied().collect::<Vec<_>>()}
                 key=|player| player.id
                 children={move |player| {
-                    let left = minimap_position(player, snapshot().track_words.len());
+                    let left = minimap_position(player, snapshot.track_words.len());
                     view! {
                         <span
                             class={format!("minimap-dot {}", player.color_class)}
@@ -207,11 +266,40 @@ fn Minimap(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static) ->
 }
 
 #[component]
-fn EventFeed(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static) -> impl IntoView {
+fn ResultsPanel(snapshot: ResultsSnapshotFixture) -> impl IntoView {
+    view! {
+        <section class="panel results-panel" aria-label="Results preview">
+            <div class="phase">"Results"</div>
+            <div class="result-grid">
+                <For
+                    each={move || snapshot.rows.iter().copied().collect::<Vec<_>>()}
+                    key=|row| row.placement
+                    children={|row| {
+                        view! {
+                            <div class="result-row">
+                                <span>{row.placement}</span>
+                                <span class={format!("marker {}", row.color_class)}>{"●"}</span>
+                                <span>{row.name}</span>
+                                <span>{format!("{:?}", row.status).to_lowercase()}</span>
+                                <span>{row.progress_words} "/" {row.track_words}</span>
+                                <span>{row.wpm} " wpm"</span>
+                                <span>{row.accuracy_percent} "%"</span>
+                            </div>
+                        }
+                    }}
+                />
+            </div>
+            <EventFeed events=snapshot.events />
+        </section>
+    }
+}
+
+#[component]
+fn EventFeed(events: &'static [&'static str]) -> impl IntoView {
     view! {
         <div class="events">
             <For
-                each={move || snapshot().events.iter().copied().collect::<Vec<_>>()}
+                each={move || events.to_vec()}
                 key=|event| *event
                 children={|event| view! { <span>{event}</span> }}
             />
@@ -221,13 +309,14 @@ fn EventFeed(snapshot: impl Fn() -> RaceFixture + Copy + Send + Sync + 'static) 
 
 fn phase_label(phase: RacePhase) -> String {
     match phase {
+        RacePhase::WaitingForHost => "Waiting for host".to_string(),
         RacePhase::Countdown(seconds) => format!("Countdown: {seconds}"),
         RacePhase::Racing => "Racing".to_string(),
         RacePhase::Finished => "Finished".to_string(),
     }
 }
 
-fn display_word(snapshot: RaceFixture, index: usize, word: &str) -> String {
+fn display_word(snapshot: RaceSnapshotFixture, index: usize, word: &str) -> String {
     let local_player = snapshot
         .players
         .iter()
@@ -235,22 +324,19 @@ fn display_word(snapshot: RaceFixture, index: usize, word: &str) -> String {
     let Some(local_player) = local_player else {
         return word.to_string();
     };
-    if local_player.effect != Some(PlayerEffect::Inked) || index <= local_player.word_index {
-        return word.to_string();
-    }
-    "█".repeat(word.chars().count())
+    fixtures::masked_word(*local_player, index, word)
 }
 
-fn effect_prefix(effect: Option<PlayerEffect>, unicode_icons: bool) -> &'static str {
-    match (effect, unicode_icons) {
-        (Some(PlayerEffect::Mushroom), true) => ">>🍄 ",
-        (Some(PlayerEffect::Mushroom), false) => ">>> ",
-        (Some(PlayerEffect::Shield), true) => "🛡 ",
-        (Some(PlayerEffect::Shield), false) => "[",
-        (Some(PlayerEffect::Focus), true) => "⭐ ",
-        (Some(PlayerEffect::Focus), false) => "* ",
-        (Some(PlayerEffect::Inked), true) => "⬛ ",
-        (Some(PlayerEffect::Inked), false) => "# ",
+fn effect_prefix(player: PlayerSnapshotFixture, unicode_icons: bool) -> &'static str {
+    match unicode_icons {
+        true if player.boosted => ">>🍄 ",
+        false if player.boosted => ">>> ",
+        true if player.shielded => "🛡 ",
+        false if player.shielded => "[",
+        true if player.focused => "⭐ ",
+        false if player.focused => "* ",
+        true if player.inked => "⬛ ",
+        false if player.inked => "# ",
         _ => "",
     }
 }
@@ -263,16 +349,42 @@ fn cue_label(cue: fixtures::ItemCueFixture, unicode_icons: bool) -> &'static str
     }
 }
 
-fn impact_label(impact: Option<fixtures::ImpactFixture>) -> &'static str {
-    impact.map(|impact| impact.label).unwrap_or("")
+fn impact_label(impact: Option<fixtures::ImpactCueFixture>, unicode_icons: bool) -> &'static str {
+    impact
+        .map(|impact| {
+            if unicode_icons {
+                impact.unicode_label
+            } else {
+                impact.ascii_label
+            }
+        })
+        .unwrap_or("")
 }
 
-fn status_label(player: fixtures::PlayerFixture) -> &'static str {
+fn status_label(player: PlayerSnapshotFixture) -> &'static str {
     if player.finished {
         "finished"
-    } else if player.impact.is_some() {
-        "hit"
+    } else if player.stunned {
+        "stunned"
+    } else if player.inked {
+        "inked"
+    } else if !player.connected {
+        "offline"
     } else {
         "word"
+    }
+}
+
+fn kind_label(kind: PlayerKindFixture) -> &'static str {
+    match kind {
+        PlayerKindFixture::Human => "human",
+        PlayerKindFixture::Bot => "ai",
+    }
+}
+
+fn cooldown_label(status: BonusStatus) -> String {
+    match status {
+        BonusStatus::Available => String::new(),
+        BonusStatus::Cooldown { remaining_ms } => format!(" ({remaining_ms}ms)"),
     }
 }

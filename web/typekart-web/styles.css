@@ -114,7 +114,9 @@ h2 {
   color: #edf2ef;
 }
 
-.track-panel {
+.track-panel,
+.lobby-panel,
+.results-panel {
   padding: 16px;
   font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   overflow-x: auto;
@@ -124,6 +126,34 @@ h2 {
   margin-bottom: 12px;
   color: #8bd6ff;
   font-weight: 800;
+}
+
+.mod-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2ch;
+  margin-bottom: 12px;
+  color: #91a399;
+}
+
+.lobby-list,
+.result-grid {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.lobby-player,
+.result-row {
+  display: grid;
+  grid-template-columns: 3ch 12ch 8ch 8ch 12ch 8ch;
+  gap: 1ch;
+  align-items: center;
+  min-height: 30px;
+}
+
+.result-row {
+  grid-template-columns: 4ch 3ch 12ch 13ch 8ch 10ch 8ch;
 }
 
 .bonus-row {
@@ -175,6 +205,10 @@ h2 {
   color: #dbe4df;
 }
 
+.lane-progress.typo {
+  color: #ff6b6b;
+}
+
 .lane-marker-wrap {
   display: inline-flex;
   align-items: center;
@@ -184,6 +218,14 @@ h2 {
 
 .marker {
   font-weight: 900;
+}
+
+.stunned .marker {
+  background: rgba(255, 209, 102, 0.16);
+}
+
+.disconnected {
+  opacity: 0.55;
 }
 
 .cyan {
