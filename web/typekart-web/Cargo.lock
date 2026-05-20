@@ -1612,8 +1612,12 @@ name = "typekart-web"
 version = "0.1.5"
 dependencies = [
  "console_error_panic_hook",
+ "futures-util",
+ "gloo-net",
  "leptos",
+ "serde_json",
  "typekart-protocol",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

@@ -240,6 +240,17 @@ Validation:
 
 Goal: connect a browser to a real relay room as an observer/joiner renderer.
 
+Initial slice:
+
+- Shared relay envelope types (`RoomCode`, `RelayClientMessage`,
+  `RelayServerMessage`) are now part of the shared protocol contract.
+- The web app has a `Join room` mode with relay URL, room code, and display name
+  inputs.
+- Browser join mode opens a WebSocket relay connection, sends `join_room`,
+  decodes host direct/broadcast payloads as `ServerMessage`, and renders lobby,
+  full race snapshots, race deltas after a full snapshot, and race results.
+- Gallery mode remains available for static renderer work.
+
 Tasks:
 
 - Implement browser WebSocket relay connection.

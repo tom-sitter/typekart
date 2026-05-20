@@ -51,6 +51,16 @@ cd web/typekart-web
 trunk serve
 ```
 
+To observe a local CLI-hosted room from the browser, run a local relay and host,
+then use the web app's `Join room` mode with the same relay URL and room code:
+
+```sh
+cargo run -- relay --bind 127.0.0.1:8080
+cargo run -- host --name host --relay ws://127.0.0.1:8080
+cd web/typekart-web
+trunk serve
+```
+
 Check the web package from the repository root:
 
 ```sh

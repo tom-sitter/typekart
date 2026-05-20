@@ -4,12 +4,18 @@ use fixtures::{
     GalleryFrame, GalleryScenario, LobbyFrame, ResultsFrame, SCENARIOS, color_class,
     minimap_position, scenario_frame,
 };
+use futures_util::{SinkExt, StreamExt};
+use gloo_net::websocket::{Message, futures::WebSocket};
 use leptos::prelude::*;
 use typekart_protocol::{
     BonusChoiceSnapshotStatus, ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot,
-    ItemCueSnapshot, LobbyPlayer, NetworkRacePhase, PlayerKind, PlayerSnapshot, RaceResultStatus,
-    RaceSnapshot,
+    ItemCueSnapshot, LobbyPlayer, NetworkRacePhase, PlayerKind, PlayerSnapshot, RaceDeltaSnapshot,
+    RaceResultStatus, RaceSnapshot, RelayClientMessage, RelayServerMessage, RoomCode,
+    ServerMessage,
 };
+use wasm_bindgen_futures::spawn_local;
+
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -20,6 +26,7 @@ fn main() {
 fn App() -> impl IntoView {
     let (selected, set_selected) = signal(0usize);
     let (unicode_icons, set_unicode_icons) = signal(true);
+    let (mode, set_mode) = signal(AppMode::Gallery);
     let current_scenario = move || SCENARIOS[selected.get()];
 
     view! {
@@ -30,52 +37,346 @@ fn App() -> impl IntoView {
                     <h1>"Renderer gallery"</h1>
                 </div>
                 <div class="actions" aria-label="Game setup placeholders">
-                    <button type="button">"Create room"</button>
-                    <button type="button" class="secondary">"Join room"</button>
+                    <button
+                        type="button"
+                        class:selected=move || mode.get() == AppMode::Gallery
+                        on:click=move |_| set_mode.set(AppMode::Gallery)
+                    >
+                        "Gallery"
+                    </button>
+                    <button
+                        type="button"
+                        class:selected=move || mode.get() == AppMode::Join
+                        on:click=move |_| set_mode.set(AppMode::Join)
+                    >
+                        "Join room"
+                    </button>
                 </div>
             </header>
 
-            <section class="panel gallery-layout">
-                <nav class="scenario-list" aria-label="Gallery scenarios">
-                    <For
-                        each=|| SCENARIOS.iter().copied().enumerate()
-                        key=|(_, scenario)| scenario.slug
-                        children={move |(index, scenario)| {
-                            view! {
-                                <button
-                                    type="button"
-                                    class:selected=move || selected.get() == index
-                                    on:click=move |_| set_selected.set(index)
-                                >
-                                    {scenario.title}
-                                </button>
-                            }
-                        }}
+            {move || match mode.get() {
+                AppMode::Gallery => view! {
+                    <GalleryControls
+                        selected=selected
+                        set_selected=set_selected
+                        current_scenario=current_scenario
+                        unicode_icons=unicode_icons
+                        set_unicode_icons=set_unicode_icons
                     />
-                </nav>
-
-                <div class="scenario-copy">
-                    <h2>{move || current_scenario().title}</h2>
-                    <p>{move || current_scenario().description}</p>
-                    <label class="toggle">
-                        <input
-                            type="checkbox"
-                            checked=true
-                            on:change=move |event| {
-                                set_unicode_icons.set(event_target_checked(&event));
-                            }
-                        />
-                        <span>"Unicode icons"</span>
-                    </label>
-                    <p class="note">{move || current_scenario().icon_mode_note}</p>
-                </div>
-            </section>
-
-            <GalleryFrameView
-                scenario=current_scenario
-                unicode_icons=move || unicode_icons.get()
-            />
+                    <GalleryFrameView
+                        scenario=current_scenario
+                        unicode_icons=move || unicode_icons.get()
+                    />
+                }.into_any(),
+                AppMode::Join => view! {
+                    <JoinRoomPanel unicode_icons=move || unicode_icons.get() />
+                }.into_any(),
+            }}
         </main>
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppMode {
+    Gallery,
+    Join,
+}
+
+#[component]
+fn GalleryControls(
+    selected: ReadSignal<usize>,
+    set_selected: WriteSignal<usize>,
+    current_scenario: impl Fn() -> GalleryScenario + Copy + Send + Sync + 'static,
+    unicode_icons: ReadSignal<bool>,
+    set_unicode_icons: WriteSignal<bool>,
+) -> impl IntoView {
+    view! {
+        <section class="panel gallery-layout">
+            <nav class="scenario-list" aria-label="Gallery scenarios">
+                <For
+                    each=|| SCENARIOS.iter().copied().enumerate()
+                    key=|(_, scenario)| scenario.slug
+                    children={move |(index, scenario)| {
+                        view! {
+                            <button
+                                type="button"
+                                class:selected=move || selected.get() == index
+                                on:click=move |_| set_selected.set(index)
+                            >
+                                {scenario.title}
+                            </button>
+                        }
+                    }}
+                />
+            </nav>
+
+            <div class="scenario-copy">
+                <h2>{move || current_scenario().title}</h2>
+                <p>{move || current_scenario().description}</p>
+                <label class="toggle">
+                    <input
+                        type="checkbox"
+                        checked=unicode_icons.get_untracked()
+                        on:change=move |event| {
+                            set_unicode_icons.set(event_target_checked(&event));
+                        }
+                    />
+                    <span>"Unicode icons"</span>
+                </label>
+                <p class="note">{move || current_scenario().icon_mode_note}</p>
+            </div>
+        </section>
+    }
+}
+
+#[component]
+fn JoinRoomPanel(unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static) -> impl IntoView {
+    let (relay_url, set_relay_url) = signal("wss://typekart-relay.fly.dev".to_string());
+    let (room_code, set_room_code) = signal(String::new());
+    let (name, set_name) = signal("web-player".to_string());
+    let (status, set_status) = signal("Not connected".to_string());
+    let (live_frame, set_live_frame) = signal(None::<GalleryFrame>);
+
+    let join = move |_| {
+        let relay = relay_url.get_untracked();
+        let room = room_code.get_untracked();
+        let name = name.get_untracked();
+        set_status.set("Connecting...".to_string());
+        set_live_frame.set(None);
+
+        spawn_local(async move {
+            match observe_room(relay, room, name, set_status, set_live_frame).await {
+                Ok(()) => set_status.set("Connection closed".to_string()),
+                Err(error) => set_status.set(error),
+            }
+        });
+    };
+
+    view! {
+        <section class="panel join-panel">
+            <div class="join-grid">
+                <label>
+                    <span>"Relay"</span>
+                    <input
+                        type="text"
+                        prop:value=move || relay_url.get()
+                        on:input=move |event| set_relay_url.set(event_target_value(&event))
+                    />
+                </label>
+                <label>
+                    <span>"Room"</span>
+                    <input
+                        type="text"
+                        placeholder="rocket-salad-tiger"
+                        prop:value=move || room_code.get()
+                        on:input=move |event| set_room_code.set(event_target_value(&event))
+                    />
+                </label>
+                <label>
+                    <span>"Name"</span>
+                    <input
+                        type="text"
+                        prop:value=move || name.get()
+                        on:input=move |event| set_name.set(event_target_value(&event))
+                    />
+                </label>
+                <button type="button" on:click=join>"Observe"</button>
+            </div>
+            <p class="note">{move || status.get()}</p>
+        </section>
+
+        {move || live_frame.get().map(|frame| {
+            match frame {
+                GalleryFrame::Lobby(snapshot) => view! { <LobbyPanel snapshot=snapshot /> }.into_any(),
+                GalleryFrame::Race(snapshot) => {
+                    view! { <RacePanel snapshot=snapshot unicode_icons=unicode_icons /> }.into_any()
+                }
+                GalleryFrame::Results(snapshot) => view! { <ResultsPanel snapshot=snapshot /> }.into_any(),
+            }
+        })}
+    }
+}
+
+async fn observe_room(
+    relay_url: String,
+    room_code: String,
+    name: String,
+    set_status: WriteSignal<String>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+) -> Result<(), String> {
+    let room = RoomCode::parse(&room_code).map_err(|error| error.to_string())?;
+    let websocket_url = relay_join_url(&relay_url, &room);
+    let websocket = WebSocket::open(&websocket_url)
+        .map_err(|error| format!("failed to open relay websocket: {error:?}"))?;
+    let (mut writer, mut reader) = websocket.split();
+    let join = RelayClientMessage::JoinRoom {
+        room: room.clone(),
+        name,
+        client_version: APP_VERSION.to_string(),
+    };
+    let encoded_join = serde_json::to_string(&join)
+        .map_err(|error| format!("failed to encode join request: {error}"))?;
+    writer
+        .send(Message::Text(encoded_join))
+        .await
+        .map_err(|error| format!("failed to send join request: {error:?}"))?;
+    set_status.set(format!("Connected to relay, observing {}", room.display()));
+
+    let mut current_race: Option<RaceSnapshot> = None;
+    while let Some(message) = reader.next().await {
+        let Message::Text(text) =
+            message.map_err(|error| format!("failed to read relay message: {error:?}"))?
+        else {
+            continue;
+        };
+        let relay_message = serde_json::from_str::<RelayServerMessage>(&text)
+            .map_err(|error| format!("failed to decode relay message: {error}"))?;
+        handle_relay_message(relay_message, &mut current_race, set_status, set_live_frame)?;
+    }
+
+    Ok(())
+}
+
+fn handle_relay_message(
+    relay_message: RelayServerMessage,
+    current_race: &mut Option<RaceSnapshot>,
+    set_status: WriteSignal<String>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+) -> Result<(), String> {
+    match relay_message {
+        RelayServerMessage::HostToClient { message, .. }
+        | RelayServerMessage::HostBroadcast { message, .. } => {
+            let server_message = serde_json::from_value::<ServerMessage>(message)
+                .map_err(|error| format!("failed to decode host message: {error}"))?;
+            handle_server_message(server_message, current_race, set_status, set_live_frame);
+        }
+        RelayServerMessage::Error { message } => {
+            set_status.set(format!("Relay error: {message}"));
+        }
+        RelayServerMessage::RoomClosed { reason } => {
+            set_status.set(format!("Room closed: {reason}"));
+            set_live_frame.set(None);
+        }
+        RelayServerMessage::ParticipantDisconnected { player_id, .. } => {
+            set_status.set(format!("Participant {} disconnected", player_id.0));
+        }
+        RelayServerMessage::RoomCreated { .. }
+        | RelayServerMessage::JoinForwarded { .. }
+        | RelayServerMessage::ClientToHost { .. } => {}
+    }
+    Ok(())
+}
+
+fn handle_server_message(
+    message: ServerMessage,
+    current_race: &mut Option<RaceSnapshot>,
+    set_status: WriteSignal<String>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+) {
+    match message {
+        ServerMessage::Welcome {
+            player_id,
+            assigned_color,
+        } => {
+            set_status.set(format!(
+                "Joined as player {} ({assigned_color:?})",
+                player_id.0
+            ));
+        }
+        ServerMessage::LobbySnapshot {
+            players,
+            host_id,
+            mod_config,
+            events,
+        } => {
+            set_live_frame.set(Some(GalleryFrame::Lobby(LobbyFrame {
+                host_id,
+                players,
+                mod_config,
+                events,
+            })));
+        }
+        ServerMessage::RaceSnapshot(snapshot) => {
+            *current_race = Some(snapshot.clone());
+            set_live_frame.set(Some(GalleryFrame::Race(snapshot)));
+        }
+        ServerMessage::RaceDelta(delta) => {
+            if let Some(snapshot) = apply_delta(current_race.take(), delta) {
+                *current_race = Some(snapshot.clone());
+                set_live_frame.set(Some(GalleryFrame::Race(snapshot)));
+            } else {
+                set_status.set("Received race delta before full race snapshot".to_string());
+            }
+        }
+        ServerMessage::RaceEvent { message } => {
+            set_status.set(message);
+        }
+        ServerMessage::RaceResults { placements, rows } => {
+            set_live_frame.set(Some(GalleryFrame::Results(ResultsFrame {
+                placements,
+                rows,
+                events: Vec::new(),
+            })));
+        }
+        ServerMessage::Error { message } => {
+            set_status.set(format!("Host error: {message}"));
+        }
+    }
+}
+
+fn apply_delta(
+    current_race: Option<RaceSnapshot>,
+    delta: RaceDeltaSnapshot,
+) -> Option<RaceSnapshot> {
+    let mut snapshot = current_race?;
+    snapshot.sequence = delta.sequence;
+    snapshot.phase = delta.phase;
+    snapshot.bonuses = delta.bonuses;
+    snapshot.players = delta.players;
+    snapshot.events = delta.events;
+    Some(snapshot)
+}
+
+fn relay_join_url(relay: &str, room: &RoomCode) -> String {
+    let base = if relay_has_path_or_query(relay) {
+        relay.to_string()
+    } else {
+        format!("{relay}/")
+    };
+    let separator = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{separator}typekart_room={}", room.as_str())
+}
+
+fn relay_has_path_or_query(relay: &str) -> bool {
+    relay.contains('?')
+        || relay
+            .split_once("://")
+            .is_none_or(|(_, rest)| rest.contains('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relay_join_url;
+    use typekart_protocol::RoomCode;
+
+    #[test]
+    fn relay_join_url_adds_room_query_to_plain_relay_url() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+
+        assert_eq!(
+            relay_join_url("ws://127.0.0.1:8080", &room),
+            "ws://127.0.0.1:8080/?typekart_room=rocket-salad-tiger"
+        );
+    }
+
+    #[test]
+    fn relay_join_url_preserves_existing_path_and_query() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+
+        assert_eq!(
+            relay_join_url("wss://relay.example/ws?debug=true", &room),
+            "wss://relay.example/ws?debug=true&typekart_room=rocket-salad-tiger"
+        );
     }
 }
 

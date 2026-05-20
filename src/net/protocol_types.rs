@@ -4,6 +4,82 @@
 // or game-engine modules so browser clients can compile the same wire contract.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{error::Error, fmt};
+
+const ROOM_CODE_WORDS: &[&str] = &[
+    "apple", "beach", "brave", "candy", "cedar", "charm", "cloud", "coral", "crisp", "delta",
+    "eagle", "ember", "fancy", "field", "flame", "frost", "giant", "glide", "grape", "happy",
+    "harbor", "honey", "jolly", "laser", "lemon", "lucky", "maple", "melon", "mint", "music",
+    "noble", "ocean", "olive", "orbit", "panda", "pearl", "pilot", "pixel", "quiet", "racer",
+    "river", "rocket", "salad", "shadow", "spark", "sunny", "tango", "tiger", "ultra", "vivid",
+    "water", "whale", "wonder", "yellow", "zebra",
+];
+const ROOM_CODE_WORD_COUNT: usize = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoomCodeParseError {
+    WrongWordCount,
+    UnknownWord,
+}
+
+impl fmt::Display for RoomCodeParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongWordCount => write!(
+                formatter,
+                "room code must be three words separated by hyphens"
+            ),
+            Self::UnknownWord => write!(formatter, "room code contains an unknown word"),
+        }
+    }
+}
+
+impl Error for RoomCodeParseError {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RoomCode(pub(crate) String);
+
+impl RoomCode {
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, RoomCodeParseError> {
+        let normalized = value
+            .as_ref()
+            .trim()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+        let words = normalized
+            .split('-')
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+
+        if words.len() != ROOM_CODE_WORD_COUNT {
+            return Err(RoomCodeParseError::WrongWordCount);
+        }
+        if !words.iter().all(|word| ROOM_CODE_WORDS.contains(word)) {
+            return Err(RoomCodeParseError::UnknownWord);
+        }
+        Ok(Self(words.join("-")))
+    }
+
+    pub fn from_normalized_words(words: impl Into<String>) -> Self {
+        Self(words.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn display(&self) -> String {
+        self.0.clone()
+    }
+}
 
 pub fn version_mismatch_message(room_version: &str, user_version: &str) -> String {
     format!(
@@ -276,6 +352,74 @@ pub enum ServerMessage {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RelayClientMessage {
+    CreateRoom {
+        host_version: String,
+    },
+    JoinRoom {
+        room: RoomCode,
+        name: String,
+        client_version: String,
+    },
+    ClientToHost {
+        room: RoomCode,
+        player_id: PlayerId,
+        message: Value,
+    },
+    HostToClient {
+        room: RoomCode,
+        player_id: PlayerId,
+        message: Value,
+    },
+    HostBroadcast {
+        room: RoomCode,
+        message: Value,
+    },
+    LeaveRoom {
+        room: RoomCode,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RelayServerMessage {
+    RoomCreated {
+        room: RoomCode,
+    },
+    JoinForwarded {
+        room: RoomCode,
+        pending_player_id: PlayerId,
+        name: String,
+        client_version: String,
+    },
+    ClientToHost {
+        room: RoomCode,
+        player_id: PlayerId,
+        message: Value,
+    },
+    HostToClient {
+        room: RoomCode,
+        player_id: PlayerId,
+        message: Value,
+    },
+    HostBroadcast {
+        room: RoomCode,
+        message: Value,
+    },
+    Error {
+        message: String,
+    },
+    RoomClosed {
+        reason: String,
+    },
+    ParticipantDisconnected {
+        room: RoomCode,
+        player_id: PlayerId,
+    },
+}
+
 pub fn encode_client_message(message: &ClientMessage) -> serde_json::Result<String> {
     serde_json::to_string(message)
 }
@@ -299,10 +443,26 @@ mod tests {
         ClientMessage, ClientSequence, ImpactCueSnapshot, ImpactCueSnapshotKind,
         ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer,
         ModConfigSnapshot, NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey,
-        RaceDeltaSnapshot, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
-        WordOverrideSnapshot, decode_client_message, decode_server_message, encode_client_message,
-        encode_server_message, version_mismatch_message,
+        RaceDeltaSnapshot, RaceResultRow, RaceResultStatus, RaceSnapshot, RelayClientMessage,
+        RelayServerMessage, RoomCode, ServerMessage, WordOverrideSnapshot, decode_client_message,
+        decode_server_message, encode_client_message, encode_server_message,
+        version_mismatch_message,
     };
+
+    #[test]
+    fn room_codes_normalize_display_form() {
+        let code = RoomCode::parse("Rocket Salad TIGER").unwrap();
+
+        assert_eq!(code.as_str(), "rocket-salad-tiger");
+        assert_eq!(code.display(), "rocket-salad-tiger");
+    }
+
+    #[test]
+    fn room_codes_reject_invalid_values() {
+        assert!(RoomCode::parse("short").is_err());
+        assert!(RoomCode::parse("rocket-salad").is_err());
+        assert!(RoomCode::parse("rocket-salad-turnip").is_err());
+    }
 
     #[test]
     fn version_mismatch_message_names_room_and_user_versions() {
@@ -696,6 +856,58 @@ mod tests {
                 ],
                 "events": ["alex was hit by cyclone"]
             })
+        );
+    }
+
+    #[test]
+    fn relay_envelopes_round_trip() {
+        let message = RelayClientMessage::ClientToHost {
+            room: RoomCode::parse("rocket-salad-tiger").unwrap(),
+            player_id: PlayerId(2),
+            message: serde_json::json!({
+                "type": "future_client_command",
+                "payload": { "anything": true }
+            }),
+        };
+
+        let encoded = serde_json::to_string(&message).unwrap();
+        let decoded = serde_json::from_str::<RelayClientMessage>(&encoded).unwrap();
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn browser_relay_host_broadcast_fixture_matches_wire_shape() {
+        let message = RelayClientMessage::HostBroadcast {
+            room: RoomCode::parse("rocket-salad-tiger").unwrap(),
+            message: serde_json::json!({
+                "type": "race_delta",
+                "sequence": 12
+            }),
+        };
+
+        let value = serde_json::to_value(&message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "host_broadcast",
+                "room": "rocket-salad-tiger",
+                "message": {
+                    "type": "race_delta",
+                    "sequence": 12
+                }
+            })
+        );
+
+        let server_message = RelayServerMessage::HostBroadcast {
+            room: RoomCode::parse("rocket-salad-tiger").unwrap(),
+            message: serde_json::json!({ "type": "race_delta", "sequence": 12 }),
+        };
+        let encoded = serde_json::to_string(&server_message).unwrap();
+        assert_eq!(
+            serde_json::from_str::<RelayServerMessage>(&encoded).unwrap(),
+            server_message
         );
     }
 
