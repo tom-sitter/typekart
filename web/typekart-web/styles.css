@@ -181,17 +181,24 @@ input[type="text"] {
   grid-template-columns: 4ch 3ch 12ch 13ch 8ch 10ch 8ch;
 }
 
-.bonus-row {
-  min-height: 76px;
-  display: flex;
-  gap: 24px;
-  padding-left: 14ch;
+.race-window {
+  width: max-content;
+  min-width: calc(var(--track-ch) * 1ch);
+}
+
+.bonus-layer {
+  position: relative;
+  height: 82px;
+  width: calc(var(--track-ch) * 1ch);
 }
 
 .bonus-stack {
+  position: absolute;
+  top: 0;
   display: grid;
   gap: 4px;
   color: #ff8ff0;
+  min-width: 9ch;
 }
 
 .bonus-stack .cooldown {
@@ -201,19 +208,39 @@ input[type="text"] {
 
 .track-text {
   display: flex;
-  gap: 2ch;
+  gap: 1ch;
   color: #d7ddd9;
   white-space: nowrap;
   padding-bottom: 10px;
   border-bottom: 1px solid #344039;
+  width: calc(var(--track-ch) * 1ch);
+}
+
+.track-word .pending {
+  color: #75817a;
+}
+
+.track-word .typed {
+  color: #ffffff;
+  font-weight: 900;
+}
+
+.track-word .cursor {
+  color: #111613;
+  background: #edf2ef;
+}
+
+.track-word .typo {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
 }
 
 .lane {
   display: grid;
-  grid-template-columns: 10ch 12ch minmax(28ch, 1fr) 9ch;
+  grid-template-columns: 10ch 6ch calc(var(--track-ch) * 1ch) 9ch;
   gap: 1ch;
   align-items: center;
-  min-height: 34px;
+  min-height: 36px;
   color: #aeb8b1;
 }
 
@@ -222,23 +249,34 @@ input[type="text"] {
 }
 
 .lane-name,
+.lane-kind,
 .lane-status {
   color: #94a49a;
 }
 
-.lane-progress {
-  color: #dbe4df;
-}
-
-.lane-progress.typo {
-  color: #ff6b6b;
+.lane-track {
+  position: relative;
+  height: 28px;
+  width: calc(var(--track-ch) * 1ch);
+  border-bottom: 1px solid rgba(148, 164, 154, 0.18);
 }
 
 .lane-marker-wrap {
+  position: absolute;
+  top: 3px;
   display: inline-flex;
   align-items: center;
   gap: 1ch;
-  min-width: 28ch;
+  min-width: 3ch;
+  transform: translateX(-1ch);
+}
+
+.lane-marker-wrap.offscreen-left {
+  transform: translateX(0);
+}
+
+.lane-marker-wrap.offscreen-right {
+  transform: translateX(-100%);
 }
 
 .marker {
@@ -263,6 +301,10 @@ input[type="text"] {
 
 .green {
   color: #70e17b;
+}
+
+.blue {
+  color: #8aa8ff;
 }
 
 .yellow {

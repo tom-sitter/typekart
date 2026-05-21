@@ -8,14 +8,16 @@ use futures_util::{SinkExt, StreamExt};
 use gloo_net::websocket::{Message, futures::WebSocket};
 use leptos::prelude::*;
 use typekart_protocol::{
-    BonusChoiceSnapshotStatus, ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot,
-    ItemCueSnapshot, LobbyPlayer, NetworkRacePhase, PlayerKind, PlayerSnapshot, RaceDeltaSnapshot,
-    RaceResultStatus, RaceSnapshot, RelayClientMessage, RelayServerMessage, RoomCode,
-    ServerMessage,
+    BonusChoiceSnapshotStatus, BonusPointSnapshot, ImpactCueSnapshot, ImpactCueSnapshotKind,
+    ItemCuePlacementSnapshot, ItemCueSnapshot, LobbyPlayer, NetworkRacePhase, PlayerKind,
+    PlayerSnapshot, RaceDeltaSnapshot, RaceResultStatus, RaceSnapshot, RelayClientMessage,
+    RelayServerMessage, RoomCode, ServerMessage,
 };
 use wasm_bindgen_futures::spawn_local;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const WEB_TRACK_WORDS_BEHIND: usize = 3;
+const WEB_TRACK_VISIBLE_WORDS: usize = 10;
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -356,8 +358,9 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::relay_join_url;
-    use typekart_protocol::RoomCode;
+    use super::{build_track_window, marker_position, relay_join_url};
+    use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
+    use typekart_protocol::{NetworkRacePhase, RoomCode};
 
     #[test]
     fn relay_join_url_adds_room_query_to_plain_relay_url() {
@@ -376,6 +379,39 @@ mod tests {
         assert_eq!(
             relay_join_url("wss://relay.example/ws?debug=true", &room),
             "wss://relay.example/ws?debug=true&typekart_room=rocket-salad-tiger"
+        );
+    }
+
+    #[test]
+    fn track_window_keeps_anchor_with_context() {
+        let GalleryFrame::Race(snapshot) = scenario_frame(SCENARIOS[2]) else {
+            unreachable!();
+        };
+        let anchor = snapshot.players.first().unwrap();
+        let window = build_track_window(&snapshot, Some(anchor));
+
+        assert!(window.start_word <= anchor.word_index);
+        assert!(window.end_word > anchor.word_index);
+        assert!(window.words.len() <= 10);
+    }
+
+    #[test]
+    fn marker_position_tracks_current_character() {
+        let GalleryFrame::Race(snapshot) = scenario_frame(SCENARIOS[2]) else {
+            unreachable!();
+        };
+        assert_eq!(snapshot.phase, NetworkRacePhase::Racing);
+        let player = snapshot.players.first().unwrap();
+        let window = build_track_window(&snapshot, Some(player));
+        let word = window
+            .words
+            .iter()
+            .find(|word| word.index == player.word_index)
+            .unwrap();
+
+        assert_eq!(
+            marker_position(player, &window).column,
+            word.start_ch + player.input.chars().count()
         );
     }
 }
@@ -434,6 +470,10 @@ fn RacePanel(
 ) -> impl IntoView {
     let players = snapshot.players.clone();
     let local_player_id = players.first().map(|player| player.id);
+    let local_player = players.first().cloned();
+    let track_window = build_track_window(&snapshot, local_player.as_ref());
+    let track_width_ch = track_window.width_ch;
+    let lane_window = track_window.clone();
     let minimap_snapshot = snapshot.clone();
     let events = snapshot.events.clone();
 
@@ -445,21 +485,27 @@ fn RacePanel(
                 <span>{snapshot.mod_config.item_pack_name.clone()}</span>
                 <span>{snapshot.mod_config.combined_hash.clone()}</span>
             </div>
-            <BonusStack snapshot=snapshot.clone() />
-            <TrackWords snapshot=snapshot.clone() />
-            <For
-                each={move || players.clone()}
-                key=|player: &PlayerSnapshot| player.id
-                children={move |player| {
-                    view! {
-                        <RacerLane
-                            player=player.clone()
-                            local=Some(player.id) == local_player_id
-                            unicode_icons=unicode_icons
-                        />
-                    }
-                }}
-            />
+            <div
+                class="race-window"
+                style={format!("--track-ch: {};", track_width_ch)}
+            >
+                <BonusStack bonuses=snapshot.bonuses.clone() window=track_window.clone() />
+                <TrackWords snapshot=snapshot.clone() window=track_window.clone() local_player=local_player.clone() />
+                <For
+                    each={move || players.clone()}
+                    key=|player: &PlayerSnapshot| player.id
+                    children={move |player| {
+                        view! {
+                            <RacerLane
+                                player=player.clone()
+                                window=lane_window.clone()
+                                local=Some(player.id) == local_player_id
+                                unicode_icons=unicode_icons
+                            />
+                        }
+                    }}
+                />
+            </div>
             <Minimap snapshot=minimap_snapshot />
             <EventFeed events=events />
         </section>
@@ -467,15 +513,15 @@ fn RacePanel(
 }
 
 #[component]
-fn BonusStack(snapshot: RaceSnapshot) -> impl IntoView {
+fn BonusStack(bonuses: Vec<BonusPointSnapshot>, window: TrackWindow) -> impl IntoView {
     view! {
-        <div class="bonus-row">
+        <div class="bonus-layer">
             <For
-                each={move || snapshot.bonuses.clone()}
-                key=|bonus| bonus.after_word_index
-                children={|bonus| {
+                each={move || visible_bonus_columns(&bonuses, &window)}
+                key=|(bonus, _)| bonus.after_word_index
+                children={|(bonus, column)| {
                     view! {
-                        <div class="bonus-stack">
+                        <div class="bonus-stack" style={format!("left: {column}ch")}>
                             <For
                                 each=move || bonus.choices.clone()
                                 key=|choice| choice.word.clone()
@@ -498,18 +544,32 @@ fn BonusStack(snapshot: RaceSnapshot) -> impl IntoView {
 }
 
 #[component]
-fn TrackWords(snapshot: RaceSnapshot) -> impl IntoView {
-    let words = snapshot.track_words.clone();
-    let word_snapshot = snapshot.clone();
-
+fn TrackWords(
+    snapshot: RaceSnapshot,
+    window: TrackWindow,
+    local_player: Option<PlayerSnapshot>,
+) -> impl IntoView {
     view! {
         <div class="track-text">
             <For
-                each={move || words.clone().into_iter().enumerate()}
-                key=|(index, _)| *index
-                children={move |(index, word)| {
+                each={move || window.words.clone()}
+                key=|word| word.index
+                children={move |word| {
+                    let rendered = render_word_segments(&snapshot, local_player.as_ref(), &word);
                     view! {
-                        <span>{display_word(&word_snapshot, index, &word)}</span>
+                        <span class="track-word">
+                            <For
+                                each=move || rendered.clone().into_iter().enumerate()
+                                key=|(index, _)| *index
+                                children={|(_index, segment)| {
+                                    view! {
+                                        <span class=segment.class>
+                                            {segment.text}
+                                        </span>
+                                    }
+                                }}
+                            />
+                        </span>
                     }
                 }}
             />
@@ -520,6 +580,7 @@ fn TrackWords(snapshot: RaceSnapshot) -> impl IntoView {
 #[component]
 fn RacerLane(
     player: PlayerSnapshot,
+    window: TrackWindow,
     local: bool,
     unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
@@ -533,6 +594,8 @@ fn RacerLane(
         .as_ref()
         .filter(|cue| cue.placement == ItemCuePlacementSnapshot::After)
         .map(|cue| cue_label(cue, unicode_icons()).to_string());
+    let marker = marker_position(&player, &window);
+    let offscreen = marker.offscreen_class();
 
     view! {
         <div
@@ -542,15 +605,20 @@ fn RacerLane(
             class:disconnected=!player.connected
         >
             <span class="lane-name">{player.name.clone()}</span>
-            <span class:typo=player.typo_index.is_some() class="lane-progress">{player.input.clone()}</span>
-            <span class="lane-marker-wrap">
-                {cue_before}
-                <span class={format!("marker {}", color_class(player.color))}>
-                    {effect_prefix(&player, unicode_icons())}
-                    {"███"}
-                    {impact_label(player.impact_cue, unicode_icons())}
+            <span class="lane-kind">{kind_label(player.kind)}</span>
+            <span class="lane-track">
+                <span
+                    class={format!("lane-marker-wrap {offscreen}")}
+                    style={format!("left: {}ch", marker.column)}
+                >
+                    {cue_before}
+                    <span class={format!("marker {}", color_class(player.color))}>
+                        {effect_prefix(&player, unicode_icons())}
+                        {marker.glyph}
+                        {impact_label(player.impact_cue, unicode_icons())}
+                    </span>
+                    {cue_after}
                 </span>
-                {cue_after}
             </span>
             <span class="lane-status">{status_label(&player)}</span>
         </div>
@@ -625,6 +693,210 @@ fn EventFeed(events: Vec<String>) -> impl IntoView {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrackWindow {
+    start_word: usize,
+    end_word: usize,
+    width_ch: usize,
+    words: Vec<VisibleWord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisibleWord {
+    index: usize,
+    start_ch: usize,
+    end_ch: usize,
+    text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WordSegment {
+    text: String,
+    class: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OffscreenSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MarkerPosition {
+    column: usize,
+    glyph: &'static str,
+    offscreen: Option<OffscreenSide>,
+}
+
+impl MarkerPosition {
+    fn offscreen_class(self) -> &'static str {
+        match self.offscreen {
+            Some(OffscreenSide::Left) => "offscreen-left",
+            Some(OffscreenSide::Right) => "offscreen-right",
+            None => "",
+        }
+    }
+}
+
+fn build_track_window(snapshot: &RaceSnapshot, anchor: Option<&PlayerSnapshot>) -> TrackWindow {
+    let word_count = snapshot.track_words.len();
+    if word_count == 0 {
+        return TrackWindow {
+            start_word: 0,
+            end_word: 0,
+            width_ch: 1,
+            words: Vec::new(),
+        };
+    }
+
+    let anchor_word = anchor
+        .map(|player| player.word_index.min(word_count.saturating_sub(1)))
+        .unwrap_or(0);
+    let mut start_word = anchor_word.saturating_sub(WEB_TRACK_WORDS_BEHIND);
+    let mut end_word = (start_word + WEB_TRACK_VISIBLE_WORDS).min(word_count);
+    if end_word - start_word < WEB_TRACK_VISIBLE_WORDS {
+        start_word = end_word.saturating_sub(WEB_TRACK_VISIBLE_WORDS);
+    }
+    end_word = end_word.max(start_word + 1).min(word_count);
+
+    let mut cursor = 0usize;
+    let mut words = Vec::new();
+    for index in start_word..end_word {
+        if index > start_word {
+            cursor += 1;
+        }
+        let text = word_for_player(snapshot, anchor, index);
+        let start_ch = cursor;
+        cursor += text.chars().count();
+        words.push(VisibleWord {
+            index,
+            start_ch,
+            end_ch: cursor,
+            text,
+        });
+    }
+
+    TrackWindow {
+        start_word,
+        end_word,
+        width_ch: cursor.max(1),
+        words,
+    }
+}
+
+fn visible_bonus_columns(
+    bonuses: &[BonusPointSnapshot],
+    window: &TrackWindow,
+) -> Vec<(BonusPointSnapshot, usize)> {
+    bonuses
+        .iter()
+        .filter_map(|bonus| {
+            let word = window
+                .words
+                .iter()
+                .find(|word| word.index == bonus.after_word_index)?;
+            if bonus.after_word_index + 1 >= window.end_word {
+                return None;
+            }
+            Some((bonus.clone(), word.end_ch + 1))
+        })
+        .collect()
+}
+
+fn render_word_segments(
+    snapshot: &RaceSnapshot,
+    local_player: Option<&PlayerSnapshot>,
+    word: &VisibleWord,
+) -> Vec<WordSegment> {
+    let Some(player) = local_player else {
+        return vec![WordSegment {
+            text: word.text.clone(),
+            class: "",
+        }];
+    };
+
+    if word.index != player.word_index || player.input.is_empty() {
+        return vec![WordSegment {
+            text: word.text.clone(),
+            class: word_state_class(snapshot.phase),
+        }];
+    }
+
+    let typo_index = player.typo_index.unwrap_or(usize::MAX);
+    let mut segments = Vec::new();
+    for (index, ch) in word.text.chars().enumerate() {
+        let class = if index >= typo_index {
+            "typed typo"
+        } else if index < player.input.chars().count() {
+            "typed"
+        } else if index == player.input.chars().count() {
+            "cursor"
+        } else {
+            word_state_class(snapshot.phase)
+        };
+        segments.push(WordSegment {
+            text: ch.to_string(),
+            class,
+        });
+    }
+    segments
+}
+
+fn word_state_class(phase: NetworkRacePhase) -> &'static str {
+    match phase {
+        NetworkRacePhase::Lobby
+        | NetworkRacePhase::WaitingForHost
+        | NetworkRacePhase::Countdown { .. } => "pending",
+        NetworkRacePhase::Racing | NetworkRacePhase::Finished => "",
+    }
+}
+
+fn marker_position(player: &PlayerSnapshot, window: &TrackWindow) -> MarkerPosition {
+    if window.words.is_empty() {
+        return MarkerPosition {
+            column: 0,
+            glyph: "███",
+            offscreen: None,
+        };
+    }
+
+    if player.word_index < window.start_word {
+        return MarkerPosition {
+            column: 0,
+            glyph: "<",
+            offscreen: Some(OffscreenSide::Left),
+        };
+    }
+
+    if player.word_index >= window.end_word {
+        return MarkerPosition {
+            column: window.width_ch,
+            glyph: if player.finished { ">!" } else { ">" },
+            offscreen: Some(OffscreenSide::Right),
+        };
+    }
+
+    let word = window
+        .words
+        .iter()
+        .find(|word| word.index == player.word_index)
+        .expect("visible player word must exist in track window");
+    let input_chars = player.input.chars().count();
+    let typo_index = player.typo_index.unwrap_or(input_chars);
+    let progress_chars = input_chars.min(typo_index).min(word.text.chars().count());
+    let column = if player.finished {
+        word.end_ch
+    } else {
+        word.start_ch + progress_chars
+    };
+
+    MarkerPosition {
+        column,
+        glyph: "███",
+        offscreen: None,
+    }
+}
+
 fn phase_label(phase: NetworkRacePhase) -> String {
     match phase {
         NetworkRacePhase::Lobby => "Lobby".to_string(),
@@ -637,11 +909,25 @@ fn phase_label(phase: NetworkRacePhase) -> String {
     }
 }
 
-fn display_word(snapshot: &RaceSnapshot, index: usize, word: &str) -> String {
-    let Some(local_player) = snapshot.players.first() else {
-        return word.to_string();
+fn word_for_player(
+    snapshot: &RaceSnapshot,
+    player: Option<&PlayerSnapshot>,
+    index: usize,
+) -> String {
+    let Some(base_word) = snapshot.track_words.get(index) else {
+        return String::new();
     };
-    fixtures::masked_word(local_player, index, word)
+    let Some(player) = player else {
+        return base_word.clone();
+    };
+    if let Some(override_word) = player
+        .word_overrides
+        .iter()
+        .find(|override_word| override_word.word_index == index)
+    {
+        return override_word.word.clone();
+    }
+    fixtures::masked_word(player, index, base_word)
 }
 
 fn effect_prefix(player: &PlayerSnapshot, unicode_icons: bool) -> &'static str {
