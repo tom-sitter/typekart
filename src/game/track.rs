@@ -49,6 +49,10 @@ impl Track {
     pub fn len(&self) -> usize {
         self.words.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.words.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

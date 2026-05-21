@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "typekart-protocol"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "typekart-web"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "console_error_panic_hook",
  "futures-channel",

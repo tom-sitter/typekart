@@ -1,6 +1,6 @@
 [package]
 name = "typekart-protocol"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "Shared TypeKart JSON protocol types"
 license = "GPL-3.0-or-later"
