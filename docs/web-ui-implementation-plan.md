@@ -15,6 +15,57 @@ the existing WebSocket relay.
 - Preserve the terminal app as a supported client.
 - Leave a path open for future server-authoritative hosted rooms.
 
+## Current Status
+
+The web port is currently an early browser joiner for CLI-hosted online rooms.
+It is useful for validating the shared relay/protocol path and the browser race
+renderer, but it is not yet a browser-hosted game.
+
+Implemented:
+
+- Standalone Leptos CSR app in `web/typekart-web`.
+- Separate web `Cargo.lock` so Leptos dependencies do not enter the terminal
+  release/package dependency graph.
+- Shared protocol crate in `crates/typekart-protocol`.
+- Static renderer gallery backed by protocol-shaped lobby, race, and results
+  fixtures.
+- Browser `Join room` mode that connects directly to the existing WebSocket
+  relay.
+- Browser can join a CLI-hosted online room, receive welcome/lobby/race/result
+  messages, and render live snapshots/deltas.
+- Browser can send ready/unready/start and key input messages through the relay.
+- Browser typing works against a CLI host.
+- Browser renderer anchors to the browser player's game id while using the
+  relay participant id for outbound routing.
+- Browser race lanes render the local browser player first.
+- Track text, bonus words, racer lanes, markers, minimap, and event feed are
+  aligned in a terminal-inspired layout.
+
+Known limitations:
+
+- Browser users can join/play only in a CLI-hosted online room.
+- Browser cannot create or host a room.
+- Browser host-authoritative game loop does not exist yet.
+- Browser lobby controls are minimal and not phase-aware.
+- Browser start control is wired, but the CLI host only honors it when the
+  browser is the host player, which is not true in the current joiner flow.
+- Browser renderer is close enough for development, but not yet full parity with
+  the terminal renderer.
+- Browser focus handling is basic; users must focus the race panel before
+  typing.
+- Reconnect, host-left, and game-closed UX are still minimal.
+- No browser screenshots or cross-browser smoke tests are automated yet.
+
+Recent manual validation:
+
+- Browser can join a CLI-hosted room through a relay.
+- Browser can ready up.
+- Browser can see the race.
+- Browser can type during the race.
+- Browser input updates the authoritative race state and appears correctly in
+  the terminal UI.
+- Browser perspective now tracks the browser player's typed text and lane order.
+
 ## Non-Goals
 
 - Public matchmaking.
@@ -240,7 +291,7 @@ Validation:
 
 Goal: connect a browser to a real relay room as an observer/joiner renderer.
 
-Initial slice:
+Implemented:
 
 - Shared relay envelope types (`RoomCode`, `RelayClientMessage`,
   `RelayServerMessage`) are now part of the shared protocol contract.
@@ -250,6 +301,8 @@ Initial slice:
   decodes host direct/broadcast payloads as `ServerMessage`, and renders lobby,
   full race snapshots, race deltas after a full snapshot, and race results.
 - Gallery mode remains available for static renderer work.
+- The live browser renderer uses a fixed track window, stacked bonus choices,
+  per-racer lanes, local-player perspective, minimap, and event feed.
 
 Tasks:
 
@@ -273,21 +326,34 @@ Validation:
 
 Goal: make browser joiners playable clients.
 
+Implemented:
+
+- Browser join mode now keeps a WebSocket write path open after joining a relay
+  room.
+- Ready, unready, and start controls send the same `ClientMessage` variants as
+  the terminal client, wrapped in `RelayClientMessage::ClientToHost`.
+- The live race panel is focusable and maps browser keydown events for letters,
+  Space, and Backspace to protocol key input messages.
+- Browser key input uses monotonically increasing client sequence numbers.
+- Browser stores separate relay and game player ids:
+  - relay participant id for outbound `ClientToHost` routing
+  - game player id from `Welcome` for local rendering perspective
+- Browser race lanes render the local player first.
+
 Tasks:
 
-- Map browser keyboard events to existing race input messages.
-- Implement lobby commands:
-  - ready
-  - unready, if still supported
-  - rename
+- Complete lobby commands:
   - leave
-- Preserve typing semantics:
+  - rename, if the web flow keeps editable names after join
+  - cancel/rematch once browser hosting exists
+- Improve focus management so normal browser shortcuts do not interfere with
+  race typing more than necessary.
+- Verify typing semantics against the terminal client:
   - spaces are explicit input
   - backspace fixes typo state
   - bonus word typing works at the correct gap
   - input pauses during relevant effects
-- Add focus management so normal browser shortcuts do not interfere with race
-  typing more than necessary.
+- Add browser-side affordances for race focus and connection state.
 
 Deliverable:
 
@@ -295,9 +361,38 @@ Deliverable:
 
 Validation:
 
-- Manual race with CLI host and browser joiner.
-- Item effects from the CLI host affect the browser player correctly.
-- Browser input affects race state identically to terminal input.
+- Manual race with CLI host and browser joiner passes.
+- Browser input affects race state and is visible in the terminal host UI.
+- Still needed: item/effect validation for browser players.
+- Still needed: bonus word validation from the browser.
+
+## Immediate Next Steps
+
+The next practical work should finish browser joiner parity before browser
+hosting. That keeps the feedback loop small because the CLI host remains the
+authoritative reference implementation.
+
+Recommended order:
+
+1. Add a browser manual validation checklist covering join, ready, countdown,
+   typing, spaces, backspace, typo recovery, bonus words, and each item effect.
+2. Polish browser joiner UX:
+   - clearer connected/player status
+   - explicit "click race to type" state
+   - phase-aware controls
+   - leave/disconnect action
+3. Bring the live browser renderer closer to terminal parity:
+   - better countdown display
+   - better impact blink/effect styling
+   - results and lobby layout polish
+   - responsive desktop-width constraints
+4. Validate item effects against browser players:
+   - Mushroom input pause and boost indicator
+   - Shield/Focus marker overlays
+   - Banana/Cyclone/Squid Ink impacts
+   - bonus word cooldown/availability rendering
+5. Decide whether browser joiners should remain compatible with CLI hosts long
+   term or whether this is only a migration/testing bridge.
 
 ## Milestone 7: Browser Host Core Loop
 

@@ -18,6 +18,7 @@ Use these docs for the current application. Historical milestone plans have been
 - [Relay Deployment](relay-deployment.md): run the WebSocket relay locally or in the cloud.
 - [Network Protocol](network-protocol.md): JSON relay envelopes and host-authoritative game messages.
 - [Development Guide](development.md): local setup, checks, release flow, and repository layout.
+- [Web UI](web-ui.md): current browser UI capabilities, local testing, and known limitations.
 - [Web UI Implementation Plan](web-ui-implementation-plan.md): milestones for browser-hosted online play.
 - [LAN Validation Checklist](lan-validation-checklist.md): structured manual multiplayer testing.
 - [Codebase Tour](codebase-tour.md): Rust module walkthrough.

@@ -58,8 +58,12 @@ then use the web app's `Join room` mode with the same relay URL and room code:
 cargo run -- relay --bind 127.0.0.1:8080
 cargo run -- host --name host --relay ws://127.0.0.1:8080
 cd web/typekart-web
-trunk serve
+trunk serve --port 8081
 ```
+
+The browser UI currently supports joining and playing in CLI-hosted online
+rooms. Browser hosting is not implemented yet. See [Web UI](web-ui.md) and
+[Web UI Implementation Plan](web-ui-implementation-plan.md).
 
 Check the web package from the repository root:
 

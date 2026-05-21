@@ -1612,6 +1612,7 @@ name = "typekart-web"
 version = "0.1.5"
 dependencies = [
  "console_error_panic_hook",
+ "futures-channel",
  "futures-util",
  "gloo-net",
  "leptos",

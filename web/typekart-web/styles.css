@@ -124,11 +124,23 @@ h2 {
   overflow-x: auto;
 }
 
+.track-panel:focus {
+  outline: 2px solid #8bd6ff;
+  outline-offset: 3px;
+}
+
 .join-grid {
   display: grid;
   grid-template-columns: minmax(260px, 1.4fr) minmax(180px, 0.8fr) minmax(160px, 0.8fr) auto;
   gap: 12px;
   align-items: end;
+}
+
+.browser-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .join-grid label {
@@ -182,14 +194,16 @@ input[type="text"] {
 }
 
 .race-window {
+  --lane-gutter: 18ch;
   width: max-content;
-  min-width: calc(var(--track-ch) * 1ch);
+  min-width: calc(var(--lane-gutter) + var(--track-ch) * 1ch);
 }
 
 .bonus-layer {
   position: relative;
   height: 82px;
   width: calc(var(--track-ch) * 1ch);
+  margin-left: var(--lane-gutter);
 }
 
 .bonus-stack {
@@ -214,6 +228,7 @@ input[type="text"] {
   padding-bottom: 10px;
   border-bottom: 1px solid #344039;
   width: calc(var(--track-ch) * 1ch);
+  margin-left: var(--lane-gutter);
 }
 
 .track-word .pending {

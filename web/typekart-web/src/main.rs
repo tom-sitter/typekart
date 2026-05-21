@@ -4,20 +4,28 @@ use fixtures::{
     GalleryFrame, GalleryScenario, LobbyFrame, ResultsFrame, SCENARIOS, color_class,
     minimap_position, scenario_frame,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use futures_util::{SinkExt, StreamExt, select};
 use gloo_net::websocket::{Message, futures::WebSocket};
 use leptos::prelude::*;
 use typekart_protocol::{
-    BonusChoiceSnapshotStatus, BonusPointSnapshot, ImpactCueSnapshot, ImpactCueSnapshotKind,
-    ItemCuePlacementSnapshot, ItemCueSnapshot, LobbyPlayer, NetworkRacePhase, PlayerKind,
-    PlayerSnapshot, RaceDeltaSnapshot, RaceResultStatus, RaceSnapshot, RelayClientMessage,
-    RelayServerMessage, RoomCode, ServerMessage,
+    BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage, ClientSequence,
+    ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot, ItemCueSnapshot,
+    LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey,
+    RaceDeltaSnapshot, RaceResultStatus, RaceSnapshot, RelayClientMessage, RelayServerMessage,
+    RoomCode, ServerMessage,
 };
 use wasm_bindgen_futures::spawn_local;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const WEB_TRACK_WORDS_BEHIND: usize = 3;
 const WEB_TRACK_VISIBLE_WORDS: usize = 10;
+
+#[derive(Debug, Clone)]
+struct OutboundClientMessage {
+    player_id: PlayerId,
+    message: ClientMessage,
+}
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -67,11 +75,11 @@ fn App() -> impl IntoView {
                     />
                     <GalleryFrameView
                         scenario=current_scenario
-                        unicode_icons=move || unicode_icons.get()
+                        unicode_icons=unicode_icons
                     />
                 }.into_any(),
                 AppMode::Join => view! {
-                    <JoinRoomPanel unicode_icons=move || unicode_icons.get() />
+                    <JoinRoomPanel unicode_icons=unicode_icons />
                 }.into_any(),
             }}
         </main>
@@ -132,26 +140,61 @@ fn GalleryControls(
 }
 
 #[component]
-fn JoinRoomPanel(unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static) -> impl IntoView {
+fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
     let (relay_url, set_relay_url) = signal("wss://typekart-relay.fly.dev".to_string());
     let (room_code, set_room_code) = signal(String::new());
     let (name, set_name) = signal("web-player".to_string());
     let (status, set_status) = signal("Not connected".to_string());
     let (live_frame, set_live_frame) = signal(None::<GalleryFrame>);
+    let (relay_player_id, set_relay_player_id) = signal(None::<PlayerId>);
+    let (game_player_id, set_game_player_id) = signal(None::<PlayerId>);
+    let (outbound, set_outbound) = signal(None::<UnboundedSender<OutboundClientMessage>>);
+    let (input_sequence, set_input_sequence) = signal(0u64);
 
     let join = move |_| {
         let relay = relay_url.get_untracked();
         let room = room_code.get_untracked();
         let name = name.get_untracked();
+        let (outbound_tx, outbound_rx) = unbounded();
+        set_outbound.set(Some(outbound_tx));
+        set_relay_player_id.set(None);
+        set_game_player_id.set(None);
+        set_input_sequence.set(0);
         set_status.set("Connecting...".to_string());
         set_live_frame.set(None);
 
         spawn_local(async move {
-            match observe_room(relay, room, name, set_status, set_live_frame).await {
+            match observe_room(
+                relay,
+                room,
+                name,
+                outbound_rx,
+                set_status,
+                set_live_frame,
+                set_relay_player_id,
+                set_game_player_id,
+            )
+            .await
+            {
                 Ok(()) => set_status.set("Connection closed".to_string()),
                 Err(error) => set_status.set(error),
             }
         });
+    };
+
+    let send_key = move |key| {
+        let sequence = input_sequence.get_untracked() + 1;
+        set_input_sequence.set(sequence);
+        send_browser_client_message(
+            outbound.get_untracked(),
+            relay_player_id.get_untracked(),
+            ClientMessage::KeyInput {
+                sequence: ClientSequence(sequence),
+                key,
+            },
+            "Key sent",
+            set_status,
+        );
     };
 
     view! {
@@ -185,13 +228,66 @@ fn JoinRoomPanel(unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static
                 <button type="button" on:click=join>"Observe"</button>
             </div>
             <p class="note">{move || status.get()}</p>
+            <div class="browser-controls">
+                <button
+                    type="button"
+                    on:click=move |_| {
+                        send_browser_client_message(
+                            outbound.get_untracked(),
+                            relay_player_id.get_untracked(),
+                            ClientMessage::SetReady { ready: true },
+                            "Ready sent",
+                            set_status,
+                        );
+                    }
+                >
+                    "Ready"
+                </button>
+                <button
+                    type="button"
+                    class="secondary"
+                    on:click=move |_| {
+                        send_browser_client_message(
+                            outbound.get_untracked(),
+                            relay_player_id.get_untracked(),
+                            ClientMessage::SetReady { ready: false },
+                            "Unready sent",
+                            set_status,
+                        );
+                    }
+                >
+                    "Unready"
+                </button>
+                <button
+                    type="button"
+                    class="secondary"
+                    on:click=move |_| {
+                        send_browser_client_message(
+                            outbound.get_untracked(),
+                            relay_player_id.get_untracked(),
+                            ClientMessage::StartCountdown,
+                            "Start sent",
+                            set_status,
+                        );
+                    }
+                >
+                    "Start"
+                </button>
+            </div>
         </section>
 
         {move || live_frame.get().map(|frame| {
             match frame {
                 GalleryFrame::Lobby(snapshot) => view! { <LobbyPanel snapshot=snapshot /> }.into_any(),
                 GalleryFrame::Race(snapshot) => {
-                    view! { <RacePanel snapshot=snapshot unicode_icons=unicode_icons /> }.into_any()
+                    view! {
+                        <RacePanel
+                            snapshot=snapshot
+                            local_player_id=game_player_id.get()
+                            unicode_icons=unicode_icons
+                            on_key=send_key
+                        />
+                    }.into_any()
                 }
                 GalleryFrame::Results(snapshot) => view! { <ResultsPanel snapshot=snapshot /> }.into_any(),
             }
@@ -199,18 +295,63 @@ fn JoinRoomPanel(unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static
     }
 }
 
+fn send_browser_client_message(
+    outbound: Option<UnboundedSender<OutboundClientMessage>>,
+    player_id: Option<PlayerId>,
+    message: ClientMessage,
+    success_status: &'static str,
+    set_status: WriteSignal<String>,
+) {
+    let Some(outbound) = outbound else {
+        set_status.set("Not connected to a room".to_string());
+        return;
+    };
+    let Some(player_id) = player_id else {
+        set_status.set("Waiting for player assignment".to_string());
+        return;
+    };
+    if outbound
+        .unbounded_send(OutboundClientMessage { player_id, message })
+        .is_err()
+    {
+        set_status.set("Connection writer is closed".to_string());
+    } else {
+        set_status.set(success_status.to_string());
+    }
+}
+
+fn keyboard_event_to_protocol_key(event: &leptos::ev::KeyboardEvent) -> Option<ProtocolKey> {
+    key_name_to_protocol_key(&event.key())
+}
+
+fn key_name_to_protocol_key(key: &str) -> Option<ProtocolKey> {
+    match key {
+        "Backspace" => Some(ProtocolKey::Backspace),
+        " " | "Spacebar" => Some(ProtocolKey::Space),
+        key if key.chars().count() == 1 => key
+            .chars()
+            .next()
+            .filter(|ch| ch.is_ascii_alphabetic())
+            .map(|ch| ProtocolKey::Char(ch.to_ascii_lowercase())),
+        _ => None,
+    }
+}
+
 async fn observe_room(
     relay_url: String,
     room_code: String,
     name: String,
+    outbound: UnboundedReceiver<OutboundClientMessage>,
     set_status: WriteSignal<String>,
     set_live_frame: WriteSignal<Option<GalleryFrame>>,
+    set_relay_player_id: WriteSignal<Option<PlayerId>>,
+    set_game_player_id: WriteSignal<Option<PlayerId>>,
 ) -> Result<(), String> {
     let room = RoomCode::parse(&room_code).map_err(|error| error.to_string())?;
     let websocket_url = relay_join_url(&relay_url, &room);
     let websocket = WebSocket::open(&websocket_url)
         .map_err(|error| format!("failed to open relay websocket: {error:?}"))?;
-    let (mut writer, mut reader) = websocket.split();
+    let (mut writer, reader) = websocket.split();
     let join = RelayClientMessage::JoinRoom {
         room: room.clone(),
         name,
@@ -225,15 +366,48 @@ async fn observe_room(
     set_status.set(format!("Connected to relay, observing {}", room.display()));
 
     let mut current_race: Option<RaceSnapshot> = None;
-    while let Some(message) = reader.next().await {
-        let Message::Text(text) =
-            message.map_err(|error| format!("failed to read relay message: {error:?}"))?
-        else {
-            continue;
-        };
-        let relay_message = serde_json::from_str::<RelayServerMessage>(&text)
-            .map_err(|error| format!("failed to decode relay message: {error}"))?;
-        handle_relay_message(relay_message, &mut current_race, set_status, set_live_frame)?;
+    let mut reader = reader.fuse();
+    let mut outbound = outbound.fuse();
+    loop {
+        select! {
+            message = reader.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                let Message::Text(text) =
+                    message.map_err(|error| format!("failed to read relay message: {error:?}"))?
+                else {
+                    continue;
+                };
+                let relay_message = serde_json::from_str::<RelayServerMessage>(&text)
+                    .map_err(|error| format!("failed to decode relay message: {error}"))?;
+                handle_relay_message(
+                    relay_message,
+                    &mut current_race,
+                    set_status,
+                    set_live_frame,
+                    set_relay_player_id,
+                    set_game_player_id,
+                )?;
+            },
+            outbound_message = outbound.next() => {
+                let Some(outbound_message) = outbound_message else {
+                    continue;
+                };
+                let relay_message = RelayClientMessage::ClientToHost {
+                    room: room.clone(),
+                    player_id: outbound_message.player_id,
+                    message: serde_json::to_value(&outbound_message.message)
+                        .map_err(|error| format!("failed to encode client message: {error}"))?,
+                };
+                let encoded = serde_json::to_string(&relay_message)
+                    .map_err(|error| format!("failed to encode relay message: {error}"))?;
+                writer
+                    .send(Message::Text(encoded))
+                    .await
+                    .map_err(|error| format!("failed to send client message: {error:?}"))?;
+            },
+        }
     }
 
     Ok(())
@@ -244,13 +418,37 @@ fn handle_relay_message(
     current_race: &mut Option<RaceSnapshot>,
     set_status: WriteSignal<String>,
     set_live_frame: WriteSignal<Option<GalleryFrame>>,
+    set_relay_player_id: WriteSignal<Option<PlayerId>>,
+    set_game_player_id: WriteSignal<Option<PlayerId>>,
 ) -> Result<(), String> {
     match relay_message {
-        RelayServerMessage::HostToClient { message, .. }
-        | RelayServerMessage::HostBroadcast { message, .. } => {
+        RelayServerMessage::HostToClient {
+            player_id, message, ..
+        } => {
             let server_message = serde_json::from_value::<ServerMessage>(message)
                 .map_err(|error| format!("failed to decode host message: {error}"))?;
-            handle_server_message(server_message, current_race, set_status, set_live_frame);
+            handle_server_message(
+                server_message,
+                current_race,
+                set_status,
+                set_live_frame,
+                set_relay_player_id,
+                set_game_player_id,
+                Some(player_id),
+            );
+        }
+        RelayServerMessage::HostBroadcast { message, .. } => {
+            let server_message = serde_json::from_value::<ServerMessage>(message)
+                .map_err(|error| format!("failed to decode host message: {error}"))?;
+            handle_server_message(
+                server_message,
+                current_race,
+                set_status,
+                set_live_frame,
+                set_relay_player_id,
+                set_game_player_id,
+                None,
+            );
         }
         RelayServerMessage::Error { message } => {
             set_status.set(format!("Relay error: {message}"));
@@ -274,12 +472,18 @@ fn handle_server_message(
     current_race: &mut Option<RaceSnapshot>,
     set_status: WriteSignal<String>,
     set_live_frame: WriteSignal<Option<GalleryFrame>>,
+    set_relay_player_id: WriteSignal<Option<PlayerId>>,
+    set_game_player_id: WriteSignal<Option<PlayerId>>,
+    relay_player_id: Option<PlayerId>,
 ) {
     match message {
         ServerMessage::Welcome {
             player_id,
             assigned_color,
         } => {
+            let outbound_player_id = relay_player_id.unwrap_or(player_id);
+            set_relay_player_id.set(Some(outbound_player_id));
+            set_game_player_id.set(Some(player_id));
             set_status.set(format!(
                 "Joined as player {} ({assigned_color:?})",
                 player_id.0
@@ -358,9 +562,12 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_track_window, marker_position, relay_join_url};
+    use super::{
+        build_track_window, key_name_to_protocol_key, marker_position,
+        ordered_players_for_local_perspective, relay_join_url,
+    };
     use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
-    use typekart_protocol::{NetworkRacePhase, RoomCode};
+    use typekart_protocol::{NetworkRacePhase, ProtocolKey, RoomCode};
 
     #[test]
     fn relay_join_url_adds_room_query_to_plain_relay_url() {
@@ -414,18 +621,50 @@ mod tests {
             word.start_ch + player.input.chars().count()
         );
     }
+
+    #[test]
+    fn local_player_is_rendered_first() {
+        let GalleryFrame::Race(snapshot) = scenario_frame(SCENARIOS[2]) else {
+            unreachable!();
+        };
+        let local_player_id = snapshot.players[1].id;
+
+        let ordered =
+            ordered_players_for_local_perspective(&snapshot.players, Some(local_player_id));
+
+        assert_eq!(ordered[0].id, local_player_id);
+        assert_eq!(ordered.len(), snapshot.players.len());
+    }
+
+    #[test]
+    fn keyboard_mapping_preserves_typing_controls() {
+        assert_eq!(key_name_to_protocol_key("a"), Some(ProtocolKey::Char('a')));
+        assert_eq!(key_name_to_protocol_key("A"), Some(ProtocolKey::Char('a')));
+        assert_eq!(key_name_to_protocol_key(" "), Some(ProtocolKey::Space));
+        assert_eq!(
+            key_name_to_protocol_key("Backspace"),
+            Some(ProtocolKey::Backspace)
+        );
+        assert_eq!(key_name_to_protocol_key("Enter"), None);
+    }
 }
 
 #[component]
 fn GalleryFrameView(
     scenario: impl Fn() -> GalleryScenario + Copy + Send + Sync + 'static,
-    unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static,
+    unicode_icons: ReadSignal<bool>,
 ) -> impl IntoView {
     move || match scenario_frame(scenario()) {
         GalleryFrame::Lobby(snapshot) => view! { <LobbyPanel snapshot=snapshot /> }.into_any(),
-        GalleryFrame::Race(snapshot) => {
-            view! { <RacePanel snapshot=snapshot unicode_icons=unicode_icons /> }.into_any()
+        GalleryFrame::Race(snapshot) => view! {
+                <RacePanel
+                    snapshot=snapshot
+                    local_player_id=None
+                    unicode_icons=unicode_icons
+                    on_key=|_key| {}
+                />
         }
+        .into_any(),
         GalleryFrame::Results(snapshot) => view! { <ResultsPanel snapshot=snapshot /> }.into_any(),
     }
 }
@@ -466,11 +705,16 @@ fn LobbyPanel(snapshot: LobbyFrame) -> impl IntoView {
 #[component]
 fn RacePanel(
     snapshot: RaceSnapshot,
-    unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static,
+    local_player_id: Option<PlayerId>,
+    unicode_icons: ReadSignal<bool>,
+    on_key: impl Fn(ProtocolKey) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let players = snapshot.players.clone();
-    let local_player_id = players.first().map(|player| player.id);
-    let local_player = players.first().cloned();
+    let local_player = local_player_id
+        .and_then(|id| players.iter().find(|player| player.id == id).cloned())
+        .or_else(|| players.first().cloned());
+    let local_player_id = local_player.as_ref().map(|player| player.id);
+    let display_players = ordered_players_for_local_perspective(&players, local_player_id);
     let track_window = build_track_window(&snapshot, local_player.as_ref());
     let track_width_ch = track_window.width_ch;
     let lane_window = track_window.clone();
@@ -478,7 +722,17 @@ fn RacePanel(
     let events = snapshot.events.clone();
 
     view! {
-        <section class="panel track-panel" aria-label="Race preview">
+        <section
+            class="panel track-panel"
+            aria-label="Race preview"
+            tabindex="0"
+            on:keydown=move |event| {
+                if let Some(key) = keyboard_event_to_protocol_key(&event) {
+                    event.prevent_default();
+                    on_key(key);
+                }
+            }
+        >
             <div class="phase">{phase_label(snapshot.phase)} " · seq " {snapshot.sequence}</div>
             <div class="mod-strip">
                 <span>{snapshot.mod_config.word_set_name.clone()}</span>
@@ -492,7 +746,7 @@ fn RacePanel(
                 <BonusStack bonuses=snapshot.bonuses.clone() window=track_window.clone() />
                 <TrackWords snapshot=snapshot.clone() window=track_window.clone() local_player=local_player.clone() />
                 <For
-                    each={move || players.clone()}
+                    each={move || display_players.clone()}
                     key=|player: &PlayerSnapshot| player.id
                     children={move |player| {
                         view! {
@@ -510,6 +764,26 @@ fn RacePanel(
             <EventFeed events=events />
         </section>
     }
+}
+
+fn ordered_players_for_local_perspective(
+    players: &[PlayerSnapshot],
+    local_player_id: Option<PlayerId>,
+) -> Vec<PlayerSnapshot> {
+    let Some(local_player_id) = local_player_id else {
+        return players.to_vec();
+    };
+    let mut ordered = Vec::with_capacity(players.len());
+    if let Some(local_player) = players.iter().find(|player| player.id == local_player_id) {
+        ordered.push(local_player.clone());
+    }
+    ordered.extend(
+        players
+            .iter()
+            .filter(|player| player.id != local_player_id)
+            .cloned(),
+    );
+    ordered
 }
 
 #[component]
@@ -582,18 +856,19 @@ fn RacerLane(
     player: PlayerSnapshot,
     window: TrackWindow,
     local: bool,
-    unicode_icons: impl Fn() -> bool + Copy + Send + Sync + 'static,
+    unicode_icons: ReadSignal<bool>,
 ) -> impl IntoView {
+    let use_unicode_icons = unicode_icons.get();
     let cue_before = player
         .item_cue
         .as_ref()
         .filter(|cue| cue.placement == ItemCuePlacementSnapshot::Before)
-        .map(|cue| cue_label(cue, unicode_icons()).to_string());
+        .map(|cue| cue_label(cue, use_unicode_icons).to_string());
     let cue_after = player
         .item_cue
         .as_ref()
         .filter(|cue| cue.placement == ItemCuePlacementSnapshot::After)
-        .map(|cue| cue_label(cue, unicode_icons()).to_string());
+        .map(|cue| cue_label(cue, use_unicode_icons).to_string());
     let marker = marker_position(&player, &window);
     let offscreen = marker.offscreen_class();
 
@@ -613,9 +888,9 @@ fn RacerLane(
                 >
                     {cue_before}
                     <span class={format!("marker {}", color_class(player.color))}>
-                        {effect_prefix(&player, unicode_icons())}
+                        {effect_prefix(&player, use_unicode_icons)}
                         {marker.glyph}
-                        {impact_label(player.impact_cue, unicode_icons())}
+                        {impact_label(player.impact_cue, use_unicode_icons)}
                     </span>
                     {cue_after}
                 </span>
