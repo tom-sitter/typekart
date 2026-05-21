@@ -225,12 +225,16 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                         on:input=move |event| set_name.set(event_target_value(&event))
                     />
                 </label>
-                <button type="button" on:click=join>"Observe"</button>
+                <button type="button" on:click=join>"Join"</button>
             </div>
             <p class="note">{move || status.get()}</p>
             <div class="browser-controls">
                 <button
                     type="button"
+                    hidden=move || {
+                        let frame = live_frame.get();
+                        !browser_controls(frame.as_ref(), game_player_id.get()).show_ready
+                    }
                     on:click=move |_| {
                         send_browser_client_message(
                             outbound.get_untracked(),
@@ -246,6 +250,10 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                 <button
                     type="button"
                     class="secondary"
+                    hidden=move || {
+                        let frame = live_frame.get();
+                        !browser_controls(frame.as_ref(), game_player_id.get()).show_unready
+                    }
                     on:click=move |_| {
                         send_browser_client_message(
                             outbound.get_untracked(),
@@ -261,6 +269,10 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                 <button
                     type="button"
                     class="secondary"
+                    hidden=move || {
+                        let frame = live_frame.get();
+                        !browser_controls(frame.as_ref(), game_player_id.get()).show_start
+                    }
                     on:click=move |_| {
                         send_browser_client_message(
                             outbound.get_untracked(),
@@ -272,6 +284,25 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                     }
                 >
                     "Start"
+                </button>
+                <button
+                    type="button"
+                    class="secondary"
+                    hidden=move || {
+                        let frame = live_frame.get();
+                        !browser_controls(frame.as_ref(), game_player_id.get()).show_rematch_ready
+                    }
+                    on:click=move |_| {
+                        send_browser_client_message(
+                            outbound.get_untracked(),
+                            relay_player_id.get_untracked(),
+                            ClientMessage::SetReady { ready: true },
+                            "Ready for rematch sent",
+                            set_status,
+                        );
+                    }
+                >
+                    "Ready for rematch"
                 </button>
             </div>
         </section>
@@ -292,6 +323,45 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                 GalleryFrame::Results(snapshot) => view! { <ResultsPanel snapshot=snapshot /> }.into_any(),
             }
         })}
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BrowserControls {
+    show_ready: bool,
+    show_unready: bool,
+    show_start: bool,
+    show_rematch_ready: bool,
+}
+
+fn browser_controls(
+    frame: Option<&GalleryFrame>,
+    local_player_id: Option<PlayerId>,
+) -> BrowserControls {
+    match frame {
+        Some(GalleryFrame::Lobby(lobby)) => {
+            let Some(local_player_id) = local_player_id else {
+                return BrowserControls::default();
+            };
+            let Some(local_player) = lobby
+                .players
+                .iter()
+                .find(|player| player.id == local_player_id)
+            else {
+                return BrowserControls::default();
+            };
+            BrowserControls {
+                show_ready: !local_player.ready,
+                show_unready: local_player.ready,
+                show_start: lobby.host_id == local_player_id && local_player.ready,
+                show_rematch_ready: false,
+            }
+        }
+        Some(GalleryFrame::Results(_)) => BrowserControls {
+            show_rematch_ready: local_player_id.is_some(),
+            ..BrowserControls::default()
+        },
+        Some(GalleryFrame::Race(_)) | None => BrowserControls::default(),
     }
 }
 
@@ -563,7 +633,7 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_track_window, key_name_to_protocol_key, marker_position,
+        browser_controls, build_track_window, key_name_to_protocol_key, marker_position,
         ordered_players_for_local_perspective, relay_join_url,
     };
     use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
@@ -646,6 +716,54 @@ mod tests {
             Some(ProtocolKey::Backspace)
         );
         assert_eq!(key_name_to_protocol_key("Enter"), None);
+    }
+
+    #[test]
+    fn browser_controls_show_ready_for_unready_lobby_joiner() {
+        let GalleryFrame::Lobby(mut lobby) = scenario_frame(SCENARIOS[0]) else {
+            unreachable!();
+        };
+        let local_player_id = lobby.players[1].id;
+        lobby.players[1].ready = false;
+        let frame = GalleryFrame::Lobby(lobby);
+
+        let controls = browser_controls(Some(&frame), Some(local_player_id));
+
+        assert!(controls.show_ready);
+        assert!(!controls.show_unready);
+        assert!(!controls.show_start);
+    }
+
+    #[test]
+    fn browser_controls_show_start_only_for_ready_lobby_host() {
+        let GalleryFrame::Lobby(lobby) = scenario_frame(SCENARIOS[0]) else {
+            unreachable!();
+        };
+        let host_id = lobby.host_id;
+        let joiner_id = lobby.players[1].id;
+        let frame = GalleryFrame::Lobby(lobby);
+
+        let host_controls = browser_controls(Some(&frame), Some(host_id));
+        let joiner_controls = browser_controls(Some(&frame), Some(joiner_id));
+
+        assert!(host_controls.show_unready);
+        assert!(host_controls.show_start);
+        assert!(joiner_controls.show_unready);
+        assert!(!joiner_controls.show_start);
+    }
+
+    #[test]
+    fn browser_controls_offer_rematch_ready_after_results() {
+        let GalleryFrame::Results(results) = scenario_frame(SCENARIOS[8]) else {
+            unreachable!();
+        };
+        let frame = GalleryFrame::Results(results);
+
+        let controls = browser_controls(Some(&frame), Some(typekart_protocol::PlayerId(2)));
+
+        assert!(controls.show_rematch_ready);
+        assert!(!controls.show_ready);
+        assert!(!controls.show_start);
     }
 }
 

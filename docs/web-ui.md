@@ -11,6 +11,8 @@ cannot host a room yet.
 - Join an existing online room through the TypeKart relay.
 - Render lobby, race, and results messages from a CLI host.
 - Ready and unready from the browser.
+- Show lobby and rematch controls only when they are valid for the browser
+  player's current phase.
 - Type during a race with letter keys, Space, and Backspace.
 - Render the browser player as the first race lane.
 - Render track words, bonus words, racer markers, item/effect cues, minimap,
@@ -22,8 +24,6 @@ cannot host a room yet.
 - Browser hosting is not implemented.
 - Browser lobby controls are minimal.
 - The race panel must be focused before typing.
-- The `Start` button is wired, but a CLI host ignores start requests from
-  non-host players.
 - Reconnect and host-left messaging are basic.
 - Renderer parity with the terminal UI is incomplete.
 - Browser item/effect behavior needs structured manual validation.
@@ -59,8 +59,21 @@ Room:  the room code printed by the CLI host
 Name:  any player name
 ```
 
-Click `Observe`, then `Ready`. During the race, click the race panel before
+Click `Join`, then `Ready`. During the race, click the race panel before
 typing.
+
+## Browser Gameplay Validation
+
+Use this checklist while browser parity is still in progress:
+
+1. Start a CLI-hosted online room against the local relay.
+2. Join from the browser and confirm the lobby shows the browser player.
+3. Confirm only phase-valid controls are visible: `Ready` before readying,
+   `Unready` after readying, and no host-only `Start` button for joiners.
+4. Start the race from the CLI host and confirm the browser sees the countdown.
+5. Type from the browser during `Racing` and confirm only the browser player's
+   marker advances.
+6. Finish the race and confirm results render with `Ready for rematch`.
 
 ## Checks
 
