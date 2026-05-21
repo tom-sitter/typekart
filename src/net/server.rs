@@ -1919,19 +1919,31 @@ fn apply_network_banana_to_player(
     if let Some(ai) = state.ai_racers.get_mut(&target_id) {
         ai.char_budget = 0.0;
     }
+    let target_is_ai = state.ai_racers.contains_key(&target_id);
     let effects = state.player_effects.entry(target_id).or_default();
     let banana = state.item_registry.banana_effect();
-    effects.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
+    if target_is_ai {
+        effects.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
+    } else {
+        effects.stunned_until = None;
+    }
     effects.impact_cue = Some(NetworkImpactCue {
         kind: ImpactCueSnapshotKind::Banana,
         until: now + Duration::from_millis(banana.impact_blink_ms),
     });
     push_network_log(
         &state.debug_log,
-        format!(
-            "{target_name} spun out at word={word_index}; stun_ms={} impact_blink_ms={}",
-            banana.stun_ms, banana.impact_blink_ms
-        ),
+        if target_is_ai {
+            format!(
+                "{target_name} spun out at word={word_index}; stun_ms={} impact_blink_ms={}",
+                banana.stun_ms, banana.impact_blink_ms
+            )
+        } else {
+            format!(
+                "{target_name} reset to word start at word={word_index}; impact_blink_ms={}",
+                banana.impact_blink_ms
+            )
+        },
     );
     Some(BananaResolution::SpunOut)
 }
@@ -3616,7 +3628,7 @@ mod tests {
     }
 
     #[test]
-    fn network_ai_racer_can_claim_bonus_and_hit_human_with_banana() {
+    fn network_ai_racer_can_claim_bonus_and_reset_human_with_banana() {
         let now = Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.players[1].kind = PlayerKind::Bot;
@@ -3640,7 +3652,14 @@ mod tests {
                 .player_effects
                 .get(&PlayerId(1))
                 .and_then(|effects| effects.stunned_until)
-                .is_some_and(|until| until > now)
+                .is_none()
+        );
+        assert!(
+            state
+                .player_effects
+                .get(&PlayerId(1))
+                .and_then(|effects| effects.impact_cue)
+                .is_some_and(|cue| cue.kind == ImpactCueSnapshotKind::Banana && cue.until > now)
         );
         assert!(
             state
@@ -4195,7 +4214,7 @@ mod tests {
     }
 
     #[test]
-    fn network_banana_stuns_nearest_target_and_clears_input() {
+    fn network_banana_resets_human_target_to_word_start_without_stun() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.race.players[0].state.word_index = 1;
@@ -4211,12 +4230,20 @@ mod tests {
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.input, "");
+        assert_eq!(alex.state.typo_index, None);
         assert!(
             state
                 .player_effects
                 .get(&PlayerId(2))
                 .and_then(|effects| effects.stunned_until)
-                .is_some_and(|until| until > now)
+                .is_none()
+        );
+        assert!(
+            state
+                .player_effects
+                .get(&PlayerId(2))
+                .and_then(|effects| effects.impact_cue)
+                .is_some_and(|cue| cue.until > now && cue.kind == ImpactCueSnapshotKind::Banana)
         );
         assert!(
             state

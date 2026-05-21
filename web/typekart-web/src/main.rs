@@ -743,7 +743,7 @@ fn RacePanel(
                 class="race-window"
                 style={format!("--track-ch: {};", track_width_ch)}
             >
-                <BonusStack bonuses=snapshot.bonuses.clone() window=track_window.clone() />
+                <BonusStack bonuses=snapshot.bonuses.clone() window=track_window.clone() local_player=local_player.clone() />
                 <TrackWords snapshot=snapshot.clone() window=track_window.clone() local_player=local_player.clone() />
                 <For
                     each={move || display_players.clone()}
@@ -787,22 +787,31 @@ fn ordered_players_for_local_perspective(
 }
 
 #[component]
-fn BonusStack(bonuses: Vec<BonusPointSnapshot>, window: TrackWindow) -> impl IntoView {
+fn BonusStack(
+    bonuses: Vec<BonusPointSnapshot>,
+    window: TrackWindow,
+    local_player: Option<PlayerSnapshot>,
+) -> impl IntoView {
     view! {
         <div class="bonus-layer">
             <For
                 each={move || visible_bonus_columns(&bonuses, &window)}
                 key=|(bonus, _)| bonus.after_word_index
-                children={|(bonus, column)| {
+                children={move |(bonus, column)| {
+                    let point = bonus.clone();
+                    let choices = bonus.choices.clone();
+                    let local_player = local_player.clone();
                     view! {
                         <div class="bonus-stack" style={format!("left: {column}ch")}>
                             <For
-                                each=move || bonus.choices.clone()
+                                each=move || choices.clone()
                                 key=|choice| choice.word.clone()
-                                children={|choice| {
-                                    let unavailable = matches!(choice.status, BonusChoiceSnapshotStatus::Cooldown { .. });
+                                children={move |choice| {
+                                    let available_to_local = local_player.as_ref().is_some_and(|player| {
+                                        bonus_choice_available_to_player(player, &point, &choice)
+                                    });
                                     view! {
-                                        <span class:cooldown=unavailable>
+                                        <span class:cooldown=move || !available_to_local>
                                             {choice.word}
                                             {cooldown_label(choice.status)}
                                         </span>
@@ -815,6 +824,22 @@ fn BonusStack(bonuses: Vec<BonusPointSnapshot>, window: TrackWindow) -> impl Int
             />
         </div>
     }
+}
+
+fn bonus_choice_available_to_player(
+    player: &PlayerSnapshot,
+    point: &BonusPointSnapshot,
+    choice: &typekart_protocol::BonusChoiceSnapshot,
+) -> bool {
+    matches!(choice.status, BonusChoiceSnapshotStatus::Available)
+        && player.word_index == point.after_word_index.saturating_add(1)
+        && !player.finished
+        && !player.shielded
+        && !player.focused
+        && !player.boosted
+        && !player.stunned
+        && player.typo_index.is_none()
+        && (player.input.is_empty() || choice.word.starts_with(&player.input))
 }
 
 #[component]

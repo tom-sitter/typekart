@@ -1110,7 +1110,7 @@ fn track_view<'a>(
         .or_else(|| snapshot.players.first().map(|player| player.word_index))
         .unwrap_or(0);
     let window = NetworkTrackWindow::new(&snapshot.track_words, current_word_index, width);
-    let mut lines = network_bonus_lines(&window, snapshot);
+    let mut lines = network_bonus_lines(&window, snapshot, local);
     lines.push(network_track_word_line(&window, local));
     lines.extend(network_racer_lines(&window, state, snapshot));
     lines.push(network_minimap_line(state, snapshot, width));
@@ -1566,6 +1566,7 @@ fn network_typed_char_style(stream_index: usize, typo_index: Option<usize>) -> S
 fn network_bonus_lines<'a>(
     window: &NetworkTrackWindow<'_>,
     snapshot: &'a RaceSnapshot,
+    local: Option<&PlayerSnapshot>,
 ) -> Vec<Line<'a>> {
     let Some(point) = visible_network_bonus_point(window, snapshot) else {
         return vec![Line::from(""), Line::from(""), Line::from("")];
@@ -1581,22 +1582,40 @@ fn network_bonus_lines<'a>(
                 super::protocol::BonusChoiceSnapshotStatus::Cooldown { .. } => "---".to_string(),
             };
             let start = network_bonus_column(window, point.after_word_index, text.chars().count());
+            let available_to_local = local.is_some_and(|player| {
+                network_bonus_choice_available_to_player(player, point, choice)
+            });
             Line::from(vec![
                 Span::raw(" ".repeat(start)),
                 Span::styled(
                     text,
-                    match choice.status {
-                        super::protocol::BonusChoiceSnapshotStatus::Available => {
-                            Style::default().fg(Color::Magenta)
-                        }
-                        super::protocol::BonusChoiceSnapshotStatus::Cooldown { .. } => {
-                            Style::default().fg(Color::DarkGray)
-                        }
+                    if available_to_local {
+                        Style::default().fg(Color::Magenta)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
                     },
                 ),
             ])
         })
         .collect()
+}
+
+fn network_bonus_choice_available_to_player(
+    player: &PlayerSnapshot,
+    point: &super::protocol::BonusPointSnapshot,
+    choice: &super::protocol::BonusChoiceSnapshot,
+) -> bool {
+    matches!(
+        choice.status,
+        super::protocol::BonusChoiceSnapshotStatus::Available
+    ) && player.word_index == point.after_word_index.saturating_add(1)
+        && !player.finished
+        && !player.shielded
+        && !player.focused
+        && !player.boosted
+        && !player.stunned
+        && player.typo_index.is_none()
+        && (player.input.is_empty() || choice.word.starts_with(&player.input))
 }
 
 fn visible_network_bonus_point<'a>(
@@ -2343,10 +2362,10 @@ mod tests {
         AssignedColor, NetworkMarkerPosition, NetworkTrackWindow, NetworkViewState, PlayerId,
         PlayerSnapshot, display_word_number, enter_sets_ready, host_cancel_key,
         join_rejection_message, lifecycle_command_message, network_bonus_column,
-        network_help_lines, network_minimap_column, network_racer_label, network_racer_line,
-        network_track_word_line, phase_accepts_typed_commands, primary_command_help,
-        rename_prefill, space_starts_countdown, starts_rename_mode, stream_index_for_word_char,
-        visible_network_bonus_point,
+        network_bonus_lines, network_help_lines, network_minimap_column, network_racer_label,
+        network_racer_line, network_track_word_line, phase_accepts_typed_commands,
+        primary_command_help, rename_prefill, space_starts_countdown, starts_rename_mode,
+        stream_index_for_word_char, visible_network_bonus_point,
     };
     use crate::net::protocol::{
         BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
@@ -2465,6 +2484,50 @@ mod tests {
         let window = NetworkTrackWindow::new(&words, 0, 20);
 
         assert_eq!(network_bonus_column(&window, 0, 4), 1);
+    }
+
+    #[test]
+    fn network_bonus_words_are_magenta_only_when_local_player_can_claim_them() {
+        let words = words(["one", "two", "three"]);
+        let window = NetworkTrackWindow::new(&words, 0, 20);
+        let snapshot = snapshot_with_bonus(0);
+
+        let before_gap = player(PlayerId(1), 0, "", None, false);
+        let claimable = player(PlayerId(1), 1, "", None, false);
+        let bonus_attempt = player(PlayerId(1), 1, "d", None, false);
+        let next_word_started = player(PlayerId(1), 1, "t", None, false);
+        let after_gap = player(PlayerId(1), 2, "", None, false);
+
+        assert_eq!(
+            network_bonus_lines(&window, &snapshot, Some(&claimable))[0].spans[1]
+                .style
+                .fg,
+            Some(Color::Magenta)
+        );
+        assert_eq!(
+            network_bonus_lines(&window, &snapshot, Some(&bonus_attempt))[0].spans[1]
+                .style
+                .fg,
+            Some(Color::Magenta)
+        );
+        assert_eq!(
+            network_bonus_lines(&window, &snapshot, Some(&before_gap))[0].spans[1]
+                .style
+                .fg,
+            Some(Color::DarkGray)
+        );
+        assert_eq!(
+            network_bonus_lines(&window, &snapshot, Some(&next_word_started))[0].spans[1]
+                .style
+                .fg,
+            Some(Color::DarkGray)
+        );
+        assert_eq!(
+            network_bonus_lines(&window, &snapshot, Some(&after_gap))[0].spans[1]
+                .style
+                .fg,
+            Some(Color::DarkGray)
+        );
     }
 
     #[test]
