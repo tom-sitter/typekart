@@ -197,6 +197,23 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
         );
     };
 
+    let global_key_handler = move |event: leptos::ev::KeyboardEvent| {
+        if !should_capture_global_gameplay_key(
+            live_frame.get_untracked().as_ref(),
+            game_player_id.get_untracked(),
+        ) || browser_text_entry_is_active()
+        {
+            return;
+        }
+
+        if let Some(key) = keyboard_event_to_protocol_key(&event) {
+            event.prevent_default();
+            send_key(key);
+        }
+    };
+    let global_key_listener = window_event_listener(leptos::ev::keydown, global_key_handler);
+    on_cleanup(move || global_key_listener.remove());
+
     view! {
         <section class="panel join-panel">
             <div class="join-grid">
@@ -363,6 +380,37 @@ fn browser_controls(
         },
         Some(GalleryFrame::Race(_)) | None => BrowserControls::default(),
     }
+}
+
+fn should_capture_global_gameplay_key(
+    frame: Option<&GalleryFrame>,
+    local_player_id: Option<PlayerId>,
+) -> bool {
+    let Some(local_player_id) = local_player_id else {
+        return false;
+    };
+    let Some(GalleryFrame::Race(snapshot)) = frame else {
+        return false;
+    };
+    snapshot.phase == NetworkRacePhase::Racing
+        && snapshot
+            .players
+            .iter()
+            .any(|player| player.id == local_player_id && player.connected && !player.finished)
+}
+
+fn browser_text_entry_is_active() -> bool {
+    let Some(active_element) = document().active_element() else {
+        return false;
+    };
+    let tag_name = active_element.tag_name();
+
+    tag_name.eq_ignore_ascii_case("input")
+        || tag_name.eq_ignore_ascii_case("textarea")
+        || tag_name.eq_ignore_ascii_case("select")
+        || active_element
+            .get_attribute("contenteditable")
+            .is_some_and(|value| !value.eq_ignore_ascii_case("false"))
 }
 
 fn send_browser_client_message(
@@ -634,7 +682,7 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 mod tests {
     use super::{
         browser_controls, build_track_window, key_name_to_protocol_key, marker_position,
-        ordered_players_for_local_perspective, relay_join_url,
+        ordered_players_for_local_perspective, relay_join_url, should_capture_global_gameplay_key,
     };
     use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
     use typekart_protocol::{NetworkRacePhase, ProtocolKey, RoomCode};
@@ -765,6 +813,42 @@ mod tests {
         assert!(!controls.show_ready);
         assert!(!controls.show_start);
     }
+
+    #[test]
+    fn global_gameplay_keys_capture_only_during_active_local_race() {
+        let GalleryFrame::Race(countdown) = scenario_frame(SCENARIOS[1]) else {
+            unreachable!();
+        };
+        let GalleryFrame::Race(racing) = scenario_frame(SCENARIOS[2]) else {
+            unreachable!();
+        };
+        let local_player_id = racing.players[0].id;
+
+        assert!(!should_capture_global_gameplay_key(
+            Some(&GalleryFrame::Race(countdown)),
+            Some(local_player_id)
+        ));
+        assert!(should_capture_global_gameplay_key(
+            Some(&GalleryFrame::Race(racing)),
+            Some(local_player_id)
+        ));
+        assert!(!should_capture_global_gameplay_key(
+            Some(&GalleryFrame::Race(scenario_race_with_finished_local())),
+            Some(local_player_id)
+        ));
+        assert!(!should_capture_global_gameplay_key(
+            None,
+            Some(local_player_id)
+        ));
+    }
+
+    fn scenario_race_with_finished_local() -> typekart_protocol::RaceSnapshot {
+        let GalleryFrame::Race(mut racing) = scenario_frame(SCENARIOS[2]) else {
+            unreachable!();
+        };
+        racing.players[0].finished = true;
+        racing
+    }
 }
 
 #[component]
@@ -847,6 +931,7 @@ fn RacePanel(
             on:keydown=move |event| {
                 if let Some(key) = keyboard_event_to_protocol_key(&event) {
                     event.prevent_default();
+                    event.stop_propagation();
                     on_key(key);
                 }
             }
