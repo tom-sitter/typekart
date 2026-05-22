@@ -122,7 +122,8 @@ h2 {
 .track-panel,
 .lobby-panel,
 .results-panel,
-.join-panel {
+.join-panel,
+.lobby-management {
   padding: 16px;
   font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   overflow-x: auto;
@@ -147,7 +148,46 @@ h2 {
   margin-top: 12px;
 }
 
+.rename-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.host-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.management-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.management-player {
+  display: grid;
+  grid-template-columns: 3ch 12ch 8ch 12ch repeat(3, auto);
+  gap: 1ch;
+  align-items: center;
+  min-height: 36px;
+}
+
+.danger {
+  border-color: #ff9b9b;
+  color: #ffb8b8;
+}
+
 .join-grid label {
+  display: grid;
+  gap: 6px;
+  color: #91a399;
+}
+
+.rename-row label {
   display: grid;
   gap: 6px;
   color: #91a399;
@@ -372,6 +412,11 @@ input[type="text"] {
   }
 
   .join-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .rename-row,
+  .management-player {
     grid-template-columns: 1fr;
   }
 

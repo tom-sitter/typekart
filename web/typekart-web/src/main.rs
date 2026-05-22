@@ -9,11 +9,11 @@ use futures_util::{SinkExt, StreamExt, select};
 use gloo_net::websocket::{Message, futures::WebSocket};
 use leptos::prelude::*;
 use typekart_protocol::{
-    BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage, ClientSequence,
-    ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot, ItemCueSnapshot,
-    LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey,
-    RaceDeltaSnapshot, RaceResultStatus, RaceSnapshot, RelayClientMessage, RelayServerMessage,
-    RoomCode, ServerMessage,
+    AiDifficultySnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
+    ClientSequence, ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot,
+    ItemCueSnapshot, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot,
+    ProtocolKey, RaceDeltaSnapshot, RaceResultStatus, RaceSnapshot, RelayClientMessage,
+    RelayServerMessage, RoomCode, ServerMessage,
 };
 use wasm_bindgen_futures::spawn_local;
 
@@ -52,6 +52,25 @@ impl ConnectionState {
             Self::Closed { reason } => format!("Room closed: {reason}"),
             Self::Failed { message } => message.clone(),
         }
+    }
+}
+
+#[derive(Clone)]
+struct BrowserCommandSink {
+    outbound: Option<UnboundedSender<BrowserOutboundMessage>>,
+    relay_player_id: Option<PlayerId>,
+    set_connection: WriteSignal<ConnectionState>,
+}
+
+impl BrowserCommandSink {
+    fn send(&self, message: ClientMessage, success_status: &'static str) {
+        send_browser_client_message(
+            self.outbound.clone(),
+            self.relay_player_id,
+            message,
+            success_status,
+            self.set_connection,
+        );
     }
 }
 
@@ -401,7 +420,16 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
 
         {move || live_frame.get().map(|frame| {
             match frame {
-                GalleryFrame::Lobby(snapshot) => view! { <LobbyPanel snapshot=snapshot /> }.into_any(),
+                GalleryFrame::Lobby(snapshot) => view! {
+                    <LobbyPanel snapshot=snapshot.clone() local_player_id=game_player_id.get() />
+                    <BrowserLobbyManagement
+                        snapshot=snapshot
+                        local_player_id=game_player_id.get()
+                        relay_player_id=relay_player_id.get()
+                        outbound=outbound.get()
+                        set_connection=set_connection
+                    />
+                }.into_any(),
                 GalleryFrame::Race(snapshot) => {
                     view! {
                         <RacePanel
@@ -974,7 +1002,10 @@ fn GalleryFrameView(
     unicode_icons: ReadSignal<bool>,
 ) -> impl IntoView {
     move || match scenario_frame(scenario()) {
-        GalleryFrame::Lobby(snapshot) => view! { <LobbyPanel snapshot=snapshot /> }.into_any(),
+        GalleryFrame::Lobby(snapshot) => view! {
+            <LobbyPanel snapshot=snapshot local_player_id=None />
+        }
+        .into_any(),
         GalleryFrame::Race(snapshot) => view! {
                 <RacePanel
                     snapshot=snapshot
@@ -989,7 +1020,7 @@ fn GalleryFrameView(
 }
 
 #[component]
-fn LobbyPanel(snapshot: LobbyFrame) -> impl IntoView {
+fn LobbyPanel(snapshot: LobbyFrame, local_player_id: Option<PlayerId>) -> impl IntoView {
     view! {
         <section class="panel lobby-panel" aria-label="Lobby preview">
             <div class="phase">"Lobby"</div>
@@ -1004,7 +1035,7 @@ fn LobbyPanel(snapshot: LobbyFrame) -> impl IntoView {
                     key=|player: &LobbyPlayer| player.id
                     children={move |player| {
                         view! {
-                            <div class="lobby-player">
+                            <div class="lobby-player" class:self-lane=Some(player.id) == local_player_id>
                                 <span class={format!("marker {}", color_class(player.color))}>{"●"}</span>
                                 <span>{player.name}</span>
                                 <span>{kind_label(player.kind)}</span>
@@ -1017,6 +1048,185 @@ fn LobbyPanel(snapshot: LobbyFrame) -> impl IntoView {
                 />
             </div>
             <EventFeed events=snapshot.events />
+        </section>
+    }
+}
+
+#[component]
+fn BrowserLobbyManagement(
+    snapshot: LobbyFrame,
+    local_player_id: Option<PlayerId>,
+    relay_player_id: Option<PlayerId>,
+    outbound: Option<UnboundedSender<BrowserOutboundMessage>>,
+    set_connection: WriteSignal<ConnectionState>,
+) -> impl IntoView {
+    let (rename_value, set_rename_value) = signal(String::new());
+    let local_player = local_player_id
+        .and_then(|id| snapshot.players.iter().find(|player| player.id == id))
+        .cloned();
+    let is_host = local_player_id == Some(snapshot.host_id);
+    let can_send = relay_player_id.is_some() && outbound.is_some();
+    let management_rows = snapshot.players.clone();
+    let command_sink = BrowserCommandSink {
+        outbound,
+        relay_player_id,
+        set_connection,
+    };
+
+    view! {
+        <section class="panel lobby-management" aria-label="Lobby management">
+            <div class="phase">"Lobby controls"</div>
+            <div class="rename-row">
+                <label>
+                    <span>"Display name"</span>
+                    <input
+                        type="text"
+                        placeholder={local_player.as_ref().map(|player| player.name.clone()).unwrap_or_else(|| "name".to_string())}
+                        prop:value=move || rename_value.get()
+                        disabled=move || !can_send
+                        on:input=move |event| set_rename_value.set(event_target_value(&event))
+                    />
+                </label>
+                <button
+                    type="button"
+                    disabled=move || !can_send || rename_value.get().trim().is_empty()
+                    on:click={
+                        let command_sink = command_sink.clone();
+                        move |_| {
+                        let name = rename_value.get_untracked().trim().to_string();
+                        if name.is_empty() {
+                            return;
+                        }
+                        command_sink.send(ClientMessage::Rename { name }, "Rename sent");
+                        set_rename_value.set(String::new());
+                    }
+                    }
+                >
+                    "Rename"
+                </button>
+            </div>
+
+            <div class="host-controls" hidden=move || !is_host>
+                <button
+                    type="button"
+                    disabled=move || !can_send
+                    on:click={
+                        let command_sink = command_sink.clone();
+                        move |_| command_sink.send(ClientMessage::AddAi, "Add AI sent")
+                    }
+                >
+                    "Add AI"
+                </button>
+                <button
+                    type="button"
+                    class="secondary"
+                    disabled=move || !can_send
+                    on:click={
+                        let command_sink = command_sink.clone();
+                        move |_| {
+                        command_sink.send(
+                            ClientMessage::SetAiDifficulty {
+                                player_id: None,
+                                difficulty: AiDifficultySnapshot::Easy,
+                            },
+                            "Set AI difficulty sent",
+                        )
+                    }
+                    }
+                >
+                    "All AI Easy"
+                </button>
+                <button
+                    type="button"
+                    class="secondary"
+                    disabled=move || !can_send
+                    on:click={
+                        let command_sink = command_sink.clone();
+                        move |_| {
+                        command_sink.send(
+                            ClientMessage::SetAiDifficulty {
+                                player_id: None,
+                                difficulty: AiDifficultySnapshot::Hard,
+                            },
+                            "Set AI difficulty sent",
+                        )
+                    }
+                    }
+                >
+                    "All AI Hard"
+                </button>
+            </div>
+
+            <div class="management-list" hidden=move || !is_host>
+                <For
+                    each=move || management_rows.clone()
+                    key=|player: &LobbyPlayer| player.id
+                    children={move |player| {
+                        let target_id = player.id;
+                        let is_self = Some(target_id) == local_player_id;
+                        let is_bot = player.kind == PlayerKind::Bot;
+                        let easy_sink = command_sink.clone();
+                        let hard_sink = command_sink.clone();
+                        let remove_sink = command_sink.clone();
+                        view! {
+                            <div class="management-player">
+                                <span class={format!("marker {}", color_class(player.color))}>{"●"}</span>
+                                <span>{player.name.clone()}</span>
+                                <span>{kind_label(player.kind)}</span>
+                                <span>{ai_detail_label(&player)}</span>
+                                <button
+                                    type="button"
+                                    class="secondary"
+                                    hidden=move || !is_bot
+                                    disabled=move || !can_send
+                                    on:click=move |_| {
+                                        easy_sink.send(
+                                            ClientMessage::SetAiDifficulty {
+                                                player_id: Some(target_id),
+                                                difficulty: AiDifficultySnapshot::Easy,
+                                            },
+                                            "Set AI difficulty sent",
+                                        )
+                                    }
+                                >
+                                    "Easy"
+                                </button>
+                                <button
+                                    type="button"
+                                    class="secondary"
+                                    hidden=move || !is_bot
+                                    disabled=move || !can_send
+                                    on:click=move |_| {
+                                        hard_sink.send(
+                                            ClientMessage::SetAiDifficulty {
+                                                player_id: Some(target_id),
+                                                difficulty: AiDifficultySnapshot::Hard,
+                                            },
+                                            "Set AI difficulty sent",
+                                        )
+                                    }
+                                >
+                                    "Hard"
+                                </button>
+                                <button
+                                    type="button"
+                                    class="secondary danger"
+                                    hidden=move || is_self
+                                    disabled=move || !can_send
+                                    on:click=move |_| {
+                                        remove_sink.send(
+                                            ClientMessage::RemoveLobbyPlayer { player_id: target_id },
+                                            "Remove player sent",
+                                        )
+                                    }
+                                >
+                                    {if is_bot { "Remove" } else { "Kick" }}
+                                </button>
+                            </div>
+                        }
+                    }}
+                />
+            </div>
         </section>
     }
 }
@@ -1605,6 +1815,14 @@ fn kind_label(kind: PlayerKind) -> &'static str {
     match kind {
         PlayerKind::Human => "human",
         PlayerKind::Bot => "ai",
+    }
+}
+
+fn ai_detail_label(player: &LobbyPlayer) -> String {
+    match (player.ai_difficulty, player.ai_wpm) {
+        (Some(difficulty), Some(wpm)) => format!("{difficulty:?} {wpm}wpm"),
+        (Some(difficulty), None) => format!("{difficulty:?}"),
+        (None, _) => String::new(),
     }
 }
 

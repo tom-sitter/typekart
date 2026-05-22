@@ -13,8 +13,12 @@ cannot host a room yet.
   failure or closed room.
 - Render lobby, race, and results messages from a CLI host.
 - Ready and unready from the browser.
+- Rename the browser player from the lobby.
 - Show lobby and rematch controls only when they are valid for the browser
   player's current phase.
+- Show host-only lobby management controls for adding AI racers, changing AI
+  difficulty, and removing lobby players. These are mostly preparatory until
+  browser hosting is implemented.
 - Type during a race with letter keys, Space, and Backspace without manually
   focusing the race panel.
 - Render the browser player as the first race lane.
@@ -25,7 +29,8 @@ cannot host a room yet.
 ## Known Limitations
 
 - Browser hosting is not implemented.
-- Browser lobby controls are minimal.
+- Host-only browser lobby controls are present but require a browser-hosted
+  player to be useful.
 - Automatic reconnect is not implemented.
 - Renderer parity with the terminal UI is incomplete.
 - Browser item/effect behavior needs structured manual validation.
@@ -77,13 +82,22 @@ Use this checklist while browser parity is still in progress:
 2. Join from the browser and confirm the lobby shows the browser player.
 3. Confirm only phase-valid controls are visible: `Ready` before readying,
    `Unready` after readying, and no host-only `Start` button for joiners.
-4. Start the race from the CLI host and confirm the browser sees the countdown.
-5. Type from the browser during `Racing` without clicking the track first and
+4. Rename the browser player and confirm the lobby roster updates.
+5. Start the race from the CLI host and confirm the browser sees the countdown.
+6. Type from the browser during `Racing` without clicking the track first and
    confirm only the browser player's marker advances.
-6. Finish the race and confirm results render with `Ready for rematch`.
-7. Click `Disconnect` and confirm the live lobby/race view clears.
-8. Close the CLI host and confirm the browser reports the closed room without
+7. Finish the race and confirm results render with `Ready for rematch`.
+8. Click `Disconnect` and confirm the live lobby/race view clears.
+9. Close the CLI host and confirm the browser reports the closed room without
    leaving stale race UI behind.
+
+Host-only lobby controls should be validated once browser hosting exists:
+
+- Add AI racer.
+- Remove AI racer.
+- Kick a non-host human player.
+- Change one AI racer's difficulty.
+- Change all AI racers to Easy or Hard.
 
 ## Checks
 
@@ -132,4 +146,6 @@ hosting:
 - Improve focus and phase-aware controls.
 - Validate bonus words and all item effects against browser players.
 - Add automatic reconnect if manual retry feels insufficient.
+- Implement browser hosting so host-only lobby controls can be exercised from
+  the browser.
 - Continue renderer parity work.
