@@ -22,9 +22,37 @@ const WEB_TRACK_WORDS_BEHIND: usize = 3;
 const WEB_TRACK_VISIBLE_WORDS: usize = 10;
 
 #[derive(Debug, Clone)]
-struct OutboundClientMessage {
-    player_id: PlayerId,
-    message: ClientMessage,
+enum BrowserOutboundMessage {
+    Client {
+        player_id: PlayerId,
+        message: ClientMessage,
+    },
+    Disconnect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected { message: String },
+    Closed { reason: String },
+    Failed { message: String },
+}
+
+impl ConnectionState {
+    fn is_active(&self) -> bool {
+        matches!(self, Self::Connecting | Self::Connected { .. })
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Disconnected => "Not connected".to_string(),
+            Self::Connecting => "Connecting...".to_string(),
+            Self::Connected { message } => message.clone(),
+            Self::Closed { reason } => format!("Room closed: {reason}"),
+            Self::Failed { message } => message.clone(),
+        }
+    }
 }
 
 fn main() {
@@ -144,14 +172,17 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
     let (relay_url, set_relay_url) = signal("wss://typekart-relay.fly.dev".to_string());
     let (room_code, set_room_code) = signal(String::new());
     let (name, set_name) = signal("web-player".to_string());
-    let (status, set_status) = signal("Not connected".to_string());
+    let (connection, set_connection) = signal(ConnectionState::Disconnected);
     let (live_frame, set_live_frame) = signal(None::<GalleryFrame>);
     let (relay_player_id, set_relay_player_id) = signal(None::<PlayerId>);
     let (game_player_id, set_game_player_id) = signal(None::<PlayerId>);
-    let (outbound, set_outbound) = signal(None::<UnboundedSender<OutboundClientMessage>>);
+    let (outbound, set_outbound) = signal(None::<UnboundedSender<BrowserOutboundMessage>>);
     let (input_sequence, set_input_sequence) = signal(0u64);
 
     let join = move |_| {
+        if connection.get_untracked().is_active() {
+            return;
+        }
         let relay = relay_url.get_untracked();
         let room = room_code.get_untracked();
         let name = name.get_untracked();
@@ -160,7 +191,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
         set_relay_player_id.set(None);
         set_game_player_id.set(None);
         set_input_sequence.set(0);
-        set_status.set("Connecting...".to_string());
+        set_connection.set(ConnectionState::Connecting);
         set_live_frame.set(None);
 
         spawn_local(async move {
@@ -169,17 +200,42 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                 room,
                 name,
                 outbound_rx,
-                set_status,
+                set_connection,
                 set_live_frame,
                 set_relay_player_id,
                 set_game_player_id,
             )
             .await
             {
-                Ok(()) => set_status.set("Connection closed".to_string()),
-                Err(error) => set_status.set(error),
+                Ok(()) => {
+                    if connection.get_untracked().is_active() {
+                        set_connection.set(ConnectionState::Disconnected);
+                        set_live_frame.set(None);
+                    }
+                    set_outbound.set(None);
+                    set_relay_player_id.set(None);
+                    set_game_player_id.set(None);
+                }
+                Err(error) => {
+                    set_connection.set(ConnectionState::Failed { message: error });
+                    set_outbound.set(None);
+                    set_live_frame.set(None);
+                    set_relay_player_id.set(None);
+                    set_game_player_id.set(None);
+                }
             }
         });
+    };
+
+    let disconnect = move |_| {
+        if let Some(outbound) = outbound.get_untracked() {
+            let _ = outbound.unbounded_send(BrowserOutboundMessage::Disconnect);
+        }
+        set_outbound.set(None);
+        set_live_frame.set(None);
+        set_relay_player_id.set(None);
+        set_game_player_id.set(None);
+        set_connection.set(ConnectionState::Disconnected);
     };
 
     let send_key = move |key| {
@@ -193,7 +249,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                 key,
             },
             "Key sent",
-            set_status,
+            set_connection,
         );
     };
 
@@ -222,6 +278,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                     <input
                         type="text"
                         prop:value=move || relay_url.get()
+                        disabled=move || connection.get().is_active()
                         on:input=move |event| set_relay_url.set(event_target_value(&event))
                     />
                 </label>
@@ -231,6 +288,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                         type="text"
                         placeholder="rocket-salad-tiger"
                         prop:value=move || room_code.get()
+                        disabled=move || connection.get().is_active()
                         on:input=move |event| set_room_code.set(event_target_value(&event))
                     />
                 </label>
@@ -239,13 +297,30 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                     <input
                         type="text"
                         prop:value=move || name.get()
+                        disabled=move || connection.get().is_active()
                         on:input=move |event| set_name.set(event_target_value(&event))
                     />
                 </label>
-                <button type="button" on:click=join>"Join"</button>
+                <button
+                    type="button"
+                    disabled=move || connection.get().is_active()
+                    on:click=join
+                >
+                    "Join"
+                </button>
             </div>
-            <p class="note">{move || status.get()}</p>
+            <p class={move || connection_note_class(&connection.get())}>
+                {move || connection.get().label()}
+            </p>
             <div class="browser-controls">
+                <button
+                    type="button"
+                    class="secondary"
+                    hidden=move || !connection.get().is_active()
+                    on:click=disconnect
+                >
+                    "Disconnect"
+                </button>
                 <button
                     type="button"
                     hidden=move || {
@@ -258,7 +333,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                             relay_player_id.get_untracked(),
                             ClientMessage::SetReady { ready: true },
                             "Ready sent",
-                            set_status,
+                            set_connection,
                         );
                     }
                 >
@@ -277,7 +352,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                             relay_player_id.get_untracked(),
                             ClientMessage::SetReady { ready: false },
                             "Unready sent",
-                            set_status,
+                            set_connection,
                         );
                     }
                 >
@@ -296,7 +371,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                             relay_player_id.get_untracked(),
                             ClientMessage::StartCountdown,
                             "Start sent",
-                            set_status,
+                            set_connection,
                         );
                     }
                 >
@@ -315,7 +390,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                             relay_player_id.get_untracked(),
                             ClientMessage::SetReady { ready: true },
                             "Ready for rematch sent",
-                            set_status,
+                            set_connection,
                         );
                     }
                 >
@@ -413,28 +488,43 @@ fn browser_text_entry_is_active() -> bool {
             .is_some_and(|value| !value.eq_ignore_ascii_case("false"))
 }
 
+fn connection_note_class(connection: &ConnectionState) -> &'static str {
+    match connection {
+        ConnectionState::Closed { .. } | ConnectionState::Failed { .. } => "note error",
+        _ => "note",
+    }
+}
+
 fn send_browser_client_message(
-    outbound: Option<UnboundedSender<OutboundClientMessage>>,
+    outbound: Option<UnboundedSender<BrowserOutboundMessage>>,
     player_id: Option<PlayerId>,
     message: ClientMessage,
     success_status: &'static str,
-    set_status: WriteSignal<String>,
+    set_connection: WriteSignal<ConnectionState>,
 ) {
     let Some(outbound) = outbound else {
-        set_status.set("Not connected to a room".to_string());
+        set_connection.set(ConnectionState::Failed {
+            message: "Not connected to a room".to_string(),
+        });
         return;
     };
     let Some(player_id) = player_id else {
-        set_status.set("Waiting for player assignment".to_string());
+        set_connection.set(ConnectionState::Connected {
+            message: "Waiting for player assignment".to_string(),
+        });
         return;
     };
     if outbound
-        .unbounded_send(OutboundClientMessage { player_id, message })
+        .unbounded_send(BrowserOutboundMessage::Client { player_id, message })
         .is_err()
     {
-        set_status.set("Connection writer is closed".to_string());
+        set_connection.set(ConnectionState::Failed {
+            message: "Connection writer is closed".to_string(),
+        });
     } else {
-        set_status.set(success_status.to_string());
+        set_connection.set(ConnectionState::Connected {
+            message: success_status.to_string(),
+        });
     }
 }
 
@@ -459,8 +549,8 @@ async fn observe_room(
     relay_url: String,
     room_code: String,
     name: String,
-    outbound: UnboundedReceiver<OutboundClientMessage>,
-    set_status: WriteSignal<String>,
+    outbound: UnboundedReceiver<BrowserOutboundMessage>,
+    set_connection: WriteSignal<ConnectionState>,
     set_live_frame: WriteSignal<Option<GalleryFrame>>,
     set_relay_player_id: WriteSignal<Option<PlayerId>>,
     set_game_player_id: WriteSignal<Option<PlayerId>>,
@@ -481,7 +571,9 @@ async fn observe_room(
         .send(Message::Text(encoded_join))
         .await
         .map_err(|error| format!("failed to send join request: {error:?}"))?;
-    set_status.set(format!("Connected to relay, observing {}", room.display()));
+    set_connection.set(ConnectionState::Connected {
+        message: format!("Connected to relay, joining {}", room.display()),
+    });
 
     let mut current_race: Option<RaceSnapshot> = None;
     let mut reader = reader.fuse();
@@ -499,24 +591,35 @@ async fn observe_room(
                 };
                 let relay_message = serde_json::from_str::<RelayServerMessage>(&text)
                     .map_err(|error| format!("failed to decode relay message: {error}"))?;
-                handle_relay_message(
+                let keep_running = handle_relay_message(
                     relay_message,
                     &mut current_race,
-                    set_status,
+                    set_connection,
                     set_live_frame,
                     set_relay_player_id,
                     set_game_player_id,
                 )?;
+                if !keep_running {
+                    break;
+                }
             },
             outbound_message = outbound.next() => {
                 let Some(outbound_message) = outbound_message else {
                     continue;
                 };
-                let relay_message = RelayClientMessage::ClientToHost {
-                    room: room.clone(),
-                    player_id: outbound_message.player_id,
-                    message: serde_json::to_value(&outbound_message.message)
-                        .map_err(|error| format!("failed to encode client message: {error}"))?,
+                let disconnecting = matches!(outbound_message, BrowserOutboundMessage::Disconnect);
+                let relay_message = match outbound_message {
+                    BrowserOutboundMessage::Client { player_id, message } => {
+                        RelayClientMessage::ClientToHost {
+                            room: room.clone(),
+                            player_id,
+                            message: serde_json::to_value(&message)
+                                .map_err(|error| format!("failed to encode client message: {error}"))?,
+                        }
+                    }
+                    BrowserOutboundMessage::Disconnect => RelayClientMessage::LeaveRoom {
+                        room: room.clone(),
+                    },
                 };
                 let encoded = serde_json::to_string(&relay_message)
                     .map_err(|error| format!("failed to encode relay message: {error}"))?;
@@ -524,6 +627,10 @@ async fn observe_room(
                     .send(Message::Text(encoded))
                     .await
                     .map_err(|error| format!("failed to send client message: {error:?}"))?;
+                if disconnecting {
+                    let _ = writer.close().await;
+                    break;
+                }
             },
         }
     }
@@ -534,11 +641,11 @@ async fn observe_room(
 fn handle_relay_message(
     relay_message: RelayServerMessage,
     current_race: &mut Option<RaceSnapshot>,
-    set_status: WriteSignal<String>,
+    set_connection: WriteSignal<ConnectionState>,
     set_live_frame: WriteSignal<Option<GalleryFrame>>,
     set_relay_player_id: WriteSignal<Option<PlayerId>>,
     set_game_player_id: WriteSignal<Option<PlayerId>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     match relay_message {
         RelayServerMessage::HostToClient {
             player_id, message, ..
@@ -548,7 +655,7 @@ fn handle_relay_message(
             handle_server_message(
                 server_message,
                 current_race,
-                set_status,
+                set_connection,
                 set_live_frame,
                 set_relay_player_id,
                 set_game_player_id,
@@ -561,7 +668,7 @@ fn handle_relay_message(
             handle_server_message(
                 server_message,
                 current_race,
-                set_status,
+                set_connection,
                 set_live_frame,
                 set_relay_player_id,
                 set_game_player_id,
@@ -569,26 +676,33 @@ fn handle_relay_message(
             );
         }
         RelayServerMessage::Error { message } => {
-            set_status.set(format!("Relay error: {message}"));
+            set_connection.set(ConnectionState::Failed { message });
+            set_live_frame.set(None);
+            return Ok(false);
         }
         RelayServerMessage::RoomClosed { reason } => {
-            set_status.set(format!("Room closed: {reason}"));
+            set_connection.set(ConnectionState::Closed { reason });
             set_live_frame.set(None);
+            set_relay_player_id.set(None);
+            set_game_player_id.set(None);
+            return Ok(false);
         }
         RelayServerMessage::ParticipantDisconnected { player_id, .. } => {
-            set_status.set(format!("Participant {} disconnected", player_id.0));
+            set_connection.set(ConnectionState::Connected {
+                message: format!("Participant {} disconnected", player_id.0),
+            });
         }
         RelayServerMessage::RoomCreated { .. }
         | RelayServerMessage::JoinForwarded { .. }
         | RelayServerMessage::ClientToHost { .. } => {}
     }
-    Ok(())
+    Ok(true)
 }
 
 fn handle_server_message(
     message: ServerMessage,
     current_race: &mut Option<RaceSnapshot>,
-    set_status: WriteSignal<String>,
+    set_connection: WriteSignal<ConnectionState>,
     set_live_frame: WriteSignal<Option<GalleryFrame>>,
     set_relay_player_id: WriteSignal<Option<PlayerId>>,
     set_game_player_id: WriteSignal<Option<PlayerId>>,
@@ -602,10 +716,9 @@ fn handle_server_message(
             let outbound_player_id = relay_player_id.unwrap_or(player_id);
             set_relay_player_id.set(Some(outbound_player_id));
             set_game_player_id.set(Some(player_id));
-            set_status.set(format!(
-                "Joined as player {} ({assigned_color:?})",
-                player_id.0
-            ));
+            set_connection.set(ConnectionState::Connected {
+                message: format!("Joined as player {} ({assigned_color:?})", player_id.0),
+            });
         }
         ServerMessage::LobbySnapshot {
             players,
@@ -629,11 +742,13 @@ fn handle_server_message(
                 *current_race = Some(snapshot.clone());
                 set_live_frame.set(Some(GalleryFrame::Race(snapshot)));
             } else {
-                set_status.set("Received race delta before full race snapshot".to_string());
+                set_connection.set(ConnectionState::Failed {
+                    message: "Received race delta before full race snapshot".to_string(),
+                });
             }
         }
         ServerMessage::RaceEvent { message } => {
-            set_status.set(message);
+            set_connection.set(ConnectionState::Connected { message });
         }
         ServerMessage::RaceResults { placements, rows } => {
             set_live_frame.set(Some(GalleryFrame::Results(ResultsFrame {
@@ -643,7 +758,9 @@ fn handle_server_message(
             })));
         }
         ServerMessage::Error { message } => {
-            set_status.set(format!("Host error: {message}"));
+            set_connection.set(ConnectionState::Failed {
+                message: format!("Host error: {message}"),
+            });
         }
     }
 }

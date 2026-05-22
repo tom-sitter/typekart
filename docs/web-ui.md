@@ -9,6 +9,8 @@ cannot host a room yet.
 ## Current Capabilities
 
 - Join an existing online room through the TypeKart relay.
+- Disconnect from an active browser relay session and retry joining after a
+  failure or closed room.
 - Render lobby, race, and results messages from a CLI host.
 - Ready and unready from the browser.
 - Show lobby and rematch controls only when they are valid for the browser
@@ -24,7 +26,7 @@ cannot host a room yet.
 
 - Browser hosting is not implemented.
 - Browser lobby controls are minimal.
-- Reconnect and host-left messaging are basic.
+- Automatic reconnect is not implemented.
 - Renderer parity with the terminal UI is incomplete.
 - Browser item/effect behavior needs structured manual validation.
 
@@ -62,6 +64,11 @@ Name:  any player name
 Click `Join`, then `Ready`. During the race, type with letter keys, Space, and
 Backspace.
 
+The browser disables the connection fields while connected. Use `Disconnect` to
+leave the current relay session, edit the connection fields, and join again.
+If the host closes the room or the relay rejects the join, the browser clears
+the live view and leaves the fields editable for another attempt.
+
 ## Browser Gameplay Validation
 
 Use this checklist while browser parity is still in progress:
@@ -74,6 +81,9 @@ Use this checklist while browser parity is still in progress:
 5. Type from the browser during `Racing` without clicking the track first and
    confirm only the browser player's marker advances.
 6. Finish the race and confirm results render with `Ready for rematch`.
+7. Click `Disconnect` and confirm the live lobby/race view clears.
+8. Close the CLI host and confirm the browser reports the closed room without
+   leaving stale race UI behind.
 
 ## Checks
 
@@ -121,5 +131,5 @@ hosting:
 - Add a manual browser validation checklist.
 - Improve focus and phase-aware controls.
 - Validate bonus words and all item effects against browser players.
-- Improve reconnect and room-closed UX.
+- Add automatic reconnect if manual retry feels insufficient.
 - Continue renderer parity work.
