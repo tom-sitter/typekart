@@ -20,6 +20,7 @@ Use these docs for the current application. Historical milestone plans have been
 - [Development Guide](development.md): local setup, checks, release flow, and repository layout.
 - [Web UI](web-ui.md): current browser UI capabilities, local testing, and known limitations.
 - [Web UI Implementation Plan](web-ui-implementation-plan.md): milestones for browser-hosted online play.
+- [Shared Logic Refactor Plan](shared-logic-refactor-plan.md): remaining work to unify terminal, network, and browser gameplay logic.
 - [LAN Validation Checklist](lan-validation-checklist.md): structured manual multiplayer testing.
 - [Codebase Tour](codebase-tour.md): Rust module walkthrough.
 - [Distribution Notes](install/distribution.md): maintainer packaging notes.
