@@ -1,5 +1,7 @@
 mod fixtures;
 
+use std::{collections::HashMap, rc::Rc};
+
 use fixtures::{
     GalleryFrame, GalleryScenario, LobbyFrame, ResultsFrame, SCENARIOS, color_class,
     minimap_position, scenario_frame,
@@ -9,11 +11,11 @@ use futures_util::{SinkExt, StreamExt, select};
 use gloo_net::websocket::{Message, futures::WebSocket};
 use leptos::prelude::*;
 use typekart_protocol::{
-    AiDifficultySnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
-    ClientSequence, ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot,
-    ItemCueSnapshot, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot,
-    ProtocolKey, RaceDeltaSnapshot, RaceResultStatus, RaceSnapshot, RelayClientMessage,
-    RelayServerMessage, RoomCode, ServerMessage,
+    AiDifficultySnapshot, AssignedColor, BonusChoiceSnapshotStatus, BonusPointSnapshot,
+    ClientMessage, ClientSequence, ImpactCueSnapshot, ImpactCueSnapshotKind,
+    ItemCuePlacementSnapshot, ItemCueSnapshot, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase,
+    PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot, RaceResultStatus,
+    RaceSnapshot, RelayClientMessage, RelayServerMessage, RoomCode, ServerMessage,
 };
 use wasm_bindgen_futures::spawn_local;
 
@@ -28,6 +30,12 @@ enum BrowserOutboundMessage {
         message: ClientMessage,
     },
     Disconnect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserSessionKind {
+    Joiner,
+    Host,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,7 +206,7 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
     let (outbound, set_outbound) = signal(None::<UnboundedSender<BrowserOutboundMessage>>);
     let (input_sequence, set_input_sequence) = signal(0u64);
 
-    let join = move |_| {
+    let start_session = Rc::new(move |session_kind: BrowserSessionKind| {
         if connection.get_untracked().is_active() {
             return;
         }
@@ -214,18 +222,36 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
         set_live_frame.set(None);
 
         spawn_local(async move {
-            match observe_room(
-                relay,
-                room,
-                name,
-                outbound_rx,
-                set_connection,
-                set_live_frame,
-                set_relay_player_id,
-                set_game_player_id,
-            )
-            .await
-            {
+            let result = match session_kind {
+                BrowserSessionKind::Joiner => {
+                    join_browser_room(
+                        relay,
+                        room,
+                        name,
+                        outbound_rx,
+                        set_connection,
+                        set_live_frame,
+                        set_relay_player_id,
+                        set_game_player_id,
+                    )
+                    .await
+                }
+                BrowserSessionKind::Host => {
+                    host_browser_lobby(
+                        relay,
+                        name,
+                        outbound_rx,
+                        set_room_code,
+                        set_connection,
+                        set_live_frame,
+                        set_relay_player_id,
+                        set_game_player_id,
+                    )
+                    .await
+                }
+            };
+
+            match result {
                 Ok(()) => {
                     if connection.get_untracked().is_active() {
                         set_connection.set(ConnectionState::Disconnected);
@@ -244,6 +270,14 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                 }
             }
         });
+    });
+    let join = {
+        let start_session = Rc::clone(&start_session);
+        move |_| start_session(BrowserSessionKind::Joiner)
+    };
+    let create_room = {
+        let start_session = Rc::clone(&start_session);
+        move |_| start_session(BrowserSessionKind::Host)
     };
 
     let disconnect = move |_| {
@@ -326,6 +360,14 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
                     on:click=join
                 >
                     "Join"
+                </button>
+                <button
+                    type="button"
+                    class="secondary"
+                    disabled=move || connection.get().is_active()
+                    on:click=create_room
+                >
+                    "Create room"
                 </button>
             </div>
             <p class={move || connection_note_class(&connection.get())}>
@@ -573,7 +615,7 @@ fn key_name_to_protocol_key(key: &str) -> Option<ProtocolKey> {
     }
 }
 
-async fn observe_room(
+async fn join_browser_room(
     relay_url: String,
     room_code: String,
     name: String,
@@ -664,6 +706,516 @@ async fn observe_room(
     }
 
     Ok(())
+}
+
+async fn host_browser_lobby(
+    relay_url: String,
+    host_name: String,
+    outbound: UnboundedReceiver<BrowserOutboundMessage>,
+    set_room_code: WriteSignal<String>,
+    set_connection: WriteSignal<ConnectionState>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+    set_relay_player_id: WriteSignal<Option<PlayerId>>,
+    set_game_player_id: WriteSignal<Option<PlayerId>>,
+) -> Result<(), String> {
+    let websocket = WebSocket::open(&relay_url)
+        .map_err(|error| format!("failed to open relay websocket: {error:?}"))?;
+    let (mut writer, reader) = websocket.split();
+    let create = RelayClientMessage::CreateRoom {
+        host_version: APP_VERSION.to_string(),
+    };
+    writer
+        .send(Message::Text(serde_json::to_string(&create).map_err(
+            |error| format!("failed to encode room create request: {error}"),
+        )?))
+        .await
+        .map_err(|error| format!("failed to send room create request: {error:?}"))?;
+
+    set_connection.set(ConnectionState::Connected {
+        message: "Creating room...".to_string(),
+    });
+
+    let mut state: Option<BrowserHostLobby> = None;
+    let mut reader = reader.fuse();
+    let mut outbound = outbound.fuse();
+    loop {
+        select! {
+            message = reader.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                let Message::Text(text) =
+                    message.map_err(|error| format!("failed to read relay message: {error:?}"))?
+                else {
+                    continue;
+                };
+                let relay_message = serde_json::from_str::<RelayServerMessage>(&text)
+                    .map_err(|error| format!("failed to decode relay message: {error}"))?;
+                let keep_running = handle_browser_host_relay_message(
+                    relay_message,
+                    &mut state,
+                    &host_name,
+                    &mut writer,
+                    set_room_code,
+                    set_connection,
+                    set_live_frame,
+                    set_relay_player_id,
+                    set_game_player_id,
+                )
+                .await?;
+                if !keep_running {
+                    break;
+                }
+            },
+            outbound_message = outbound.next() => {
+                let Some(outbound_message) = outbound_message else {
+                    continue;
+                };
+                if matches!(outbound_message, BrowserOutboundMessage::Disconnect) {
+                    if let Some(state) = &state {
+                        let leave = RelayClientMessage::LeaveRoom {
+                            room: state.room.clone(),
+                        };
+                        writer
+                            .send(Message::Text(
+                                serde_json::to_string(&leave)
+                                    .map_err(|error| format!("failed to encode leave message: {error}"))?,
+                            ))
+                            .await
+                            .map_err(|error| format!("failed to send leave message: {error:?}"))?;
+                    }
+                    let _ = writer.close().await;
+                    break;
+                }
+
+                let Some(state) = state.as_mut() else {
+                    continue;
+                };
+                if let BrowserOutboundMessage::Client { player_id, message } = outbound_message {
+                    process_browser_host_client_message(state, player_id, message, set_connection);
+                    publish_browser_host_lobby(state, &mut writer, set_live_frame).await?;
+                }
+            },
+        }
+    }
+
+    Ok(())
+}
+
+struct BrowserHostLobby {
+    room: RoomCode,
+    players: Vec<LobbyPlayer>,
+    relay_players: HashMap<PlayerId, PlayerId>,
+    next_player_id: u64,
+    events: Vec<String>,
+    mod_config: ModConfigSnapshot,
+}
+
+impl BrowserHostLobby {
+    fn new(room: RoomCode, host_name: String) -> Self {
+        Self {
+            room,
+            players: vec![LobbyPlayer {
+                id: PlayerId(1),
+                name: browser_lobby_name_or_default(&host_name, "host"),
+                kind: PlayerKind::Human,
+                color: AssignedColor::Cyan,
+                ready: true,
+                connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
+            }],
+            relay_players: HashMap::new(),
+            next_player_id: 2,
+            events: vec!["host created room".to_string()],
+            mod_config: browser_default_mod_config(),
+        }
+    }
+
+    fn game_player_id_for_relay(&self, relay_player_id: PlayerId) -> Option<PlayerId> {
+        if relay_player_id == PlayerId(1) {
+            return Some(PlayerId(1));
+        }
+        self.relay_players.get(&relay_player_id).copied()
+    }
+
+    fn frame(&self) -> LobbyFrame {
+        LobbyFrame {
+            host_id: PlayerId(1),
+            players: self.players.clone(),
+            mod_config: self.mod_config.clone(),
+            events: self.events.clone(),
+        }
+    }
+
+    fn push_event(&mut self, event: impl Into<String>) {
+        self.events.push(event.into());
+        const MAX_EVENTS: usize = 8;
+        if self.events.len() > MAX_EVENTS {
+            self.events.drain(0..self.events.len() - MAX_EVENTS);
+        }
+    }
+}
+
+async fn handle_browser_host_relay_message(
+    relay_message: RelayServerMessage,
+    state: &mut Option<BrowserHostLobby>,
+    host_name: &str,
+    writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    set_room_code: WriteSignal<String>,
+    set_connection: WriteSignal<ConnectionState>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+    set_relay_player_id: WriteSignal<Option<PlayerId>>,
+    set_game_player_id: WriteSignal<Option<PlayerId>>,
+) -> Result<bool, String> {
+    match relay_message {
+        RelayServerMessage::RoomCreated { room } => {
+            set_room_code.set(room.display());
+            set_relay_player_id.set(Some(PlayerId(1)));
+            set_game_player_id.set(Some(PlayerId(1)));
+            set_connection.set(ConnectionState::Connected {
+                message: format!("Hosting room {}", room.display()),
+            });
+            let lobby = BrowserHostLobby::new(room, host_name.to_string());
+            *state = Some(lobby);
+            if let Some(state) = state {
+                publish_browser_host_lobby(state, writer, set_live_frame).await?;
+            }
+        }
+        RelayServerMessage::JoinForwarded {
+            pending_player_id,
+            name,
+            ..
+        } => {
+            let Some(state) = state else {
+                return Ok(true);
+            };
+            let assigned = add_browser_lobby_human(state, pending_player_id, &name);
+            let welcome = ServerMessage::Welcome {
+                player_id: assigned.id,
+                assigned_color: assigned.color,
+            };
+            send_browser_host_direct(state, writer, pending_player_id, welcome).await?;
+            state.push_event(format!("{} joined", assigned.name));
+            publish_browser_host_lobby(state, writer, set_live_frame).await?;
+        }
+        RelayServerMessage::ClientToHost {
+            player_id, message, ..
+        } => {
+            let Some(state) = state else {
+                return Ok(true);
+            };
+            let Some(game_player_id) = state.game_player_id_for_relay(player_id) else {
+                state.push_event(format!("unknown relay player {} ignored", player_id.0));
+                publish_browser_host_lobby(state, writer, set_live_frame).await?;
+                return Ok(true);
+            };
+            let message = serde_json::from_value::<ClientMessage>(message)
+                .map_err(|error| format!("failed to decode client message: {error}"))?;
+            process_browser_host_client_message(state, game_player_id, message, set_connection);
+            publish_browser_host_lobby(state, writer, set_live_frame).await?;
+        }
+        RelayServerMessage::ParticipantDisconnected { player_id, .. } => {
+            if let Some(state) = state {
+                let Some(game_player_id) = state.relay_players.remove(&player_id) else {
+                    return Ok(true);
+                };
+                if let Some(player) = state
+                    .players
+                    .iter_mut()
+                    .find(|player| player.id == game_player_id)
+                {
+                    player.connected = false;
+                    let name = player.name.clone();
+                    state.push_event(format!("{name} disconnected"));
+                    publish_browser_host_lobby(state, writer, set_live_frame).await?;
+                }
+            }
+        }
+        RelayServerMessage::Error { message } => {
+            set_connection.set(ConnectionState::Failed { message });
+            set_live_frame.set(None);
+            return Ok(false);
+        }
+        RelayServerMessage::RoomClosed { reason } => {
+            set_connection.set(ConnectionState::Closed { reason });
+            set_live_frame.set(None);
+            return Ok(false);
+        }
+        RelayServerMessage::HostToClient { .. } | RelayServerMessage::HostBroadcast { .. } => {}
+    }
+    Ok(true)
+}
+
+fn process_browser_host_client_message(
+    state: &mut BrowserHostLobby,
+    player_id: PlayerId,
+    message: ClientMessage,
+    set_connection: WriteSignal<ConnectionState>,
+) {
+    match message {
+        ClientMessage::Rename { name } => {
+            let name = name.trim();
+            if name.is_empty() {
+                return;
+            }
+            if let Some(index) = state
+                .players
+                .iter()
+                .position(|player| player.id == player_id)
+            {
+                let unique_name = browser_unique_lobby_name(
+                    state
+                        .players
+                        .iter()
+                        .filter(|candidate| candidate.id != player_id),
+                    name,
+                );
+                state.players[index].name = unique_name;
+                let renamed = state.players[index].name.clone();
+                state.push_event(format!("{renamed} renamed"));
+            }
+        }
+        ClientMessage::SetReady { ready } => {
+            if let Some(player) = state
+                .players
+                .iter_mut()
+                .find(|player| player.id == player_id)
+            {
+                player.ready = ready;
+                let name = player.name.clone();
+                state.push_event(format!(
+                    "{name} {}",
+                    if ready { "ready" } else { "not ready" }
+                ));
+            }
+        }
+        ClientMessage::AddAi if player_id == PlayerId(1) => {
+            if state.players.len() >= 6 {
+                state.push_event("lobby is full");
+                return;
+            }
+            let id = browser_next_lobby_player_id(state);
+            let ai_number = state
+                .players
+                .iter()
+                .filter(|player| player.kind == PlayerKind::Bot)
+                .count()
+                + 1;
+            let name = browser_unique_lobby_name(state.players.iter(), &format!("ai-{ai_number}"));
+            state.players.push(LobbyPlayer {
+                id,
+                name: name.clone(),
+                kind: PlayerKind::Bot,
+                color: browser_color_for_slot(state.players.len()),
+                ready: true,
+                connected: true,
+                ai_difficulty: Some(AiDifficultySnapshot::Easy),
+                ai_wpm: Some(browser_ai_wpm(AiDifficultySnapshot::Easy)),
+            });
+            state.push_event(format!("{name} added"));
+        }
+        ClientMessage::RemoveLobbyPlayer { player_id: target } if player_id == PlayerId(1) => {
+            if target == PlayerId(1) {
+                return;
+            }
+            if let Some(index) = state.players.iter().position(|player| player.id == target) {
+                let removed = state.players.remove(index);
+                state.push_event(format!("{} removed", removed.name));
+            }
+        }
+        ClientMessage::SetAiDifficulty {
+            player_id: target,
+            difficulty,
+        } if player_id == PlayerId(1) => {
+            let mut changed = 0usize;
+            for player in &mut state.players {
+                if player.kind != PlayerKind::Bot {
+                    continue;
+                }
+                if target.is_some() && target != Some(player.id) {
+                    continue;
+                }
+                player.ai_difficulty = Some(difficulty);
+                player.ai_wpm = Some(browser_ai_wpm(difficulty));
+                changed += 1;
+            }
+            if changed > 0 {
+                state.push_event(format!("updated {changed} AI racer difficulty"));
+            }
+        }
+        ClientMessage::StartCountdown if player_id == PlayerId(1) => {
+            set_connection.set(ConnectionState::Connected {
+                message: "Browser race hosting is not implemented yet".to_string(),
+            });
+            state.push_event("browser race hosting is not implemented yet");
+        }
+        ClientMessage::Leave => {
+            if let Some(player) = state
+                .players
+                .iter_mut()
+                .find(|player| player.id == player_id)
+            {
+                player.connected = false;
+                let name = player.name.clone();
+                state.push_event(format!("{name} left"));
+            }
+        }
+        ClientMessage::KeyInput { .. } | ClientMessage::RestartRace => {}
+        _ => {}
+    }
+}
+
+async fn publish_browser_host_lobby(
+    state: &BrowserHostLobby,
+    writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+) -> Result<(), String> {
+    let frame = state.frame();
+    set_live_frame.set(Some(GalleryFrame::Lobby(frame.clone())));
+    let message = ServerMessage::LobbySnapshot {
+        players: frame.players,
+        host_id: frame.host_id,
+        mod_config: frame.mod_config,
+        events: frame.events,
+    };
+    send_browser_host_broadcast(state, writer, message).await
+}
+
+async fn send_browser_host_direct(
+    state: &BrowserHostLobby,
+    writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    player_id: PlayerId,
+    message: ServerMessage,
+) -> Result<(), String> {
+    let relay_message = RelayClientMessage::HostToClient {
+        room: state.room.clone(),
+        player_id,
+        message: serde_json::to_value(message)
+            .map_err(|error| format!("failed to encode host direct message: {error}"))?,
+    };
+    writer
+        .send(Message::Text(
+            serde_json::to_string(&relay_message)
+                .map_err(|error| format!("failed to encode relay message: {error}"))?,
+        ))
+        .await
+        .map_err(|error| format!("failed to send host direct message: {error:?}"))
+}
+
+async fn send_browser_host_broadcast(
+    state: &BrowserHostLobby,
+    writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    message: ServerMessage,
+) -> Result<(), String> {
+    let relay_message = RelayClientMessage::HostBroadcast {
+        room: state.room.clone(),
+        message: serde_json::to_value(message)
+            .map_err(|error| format!("failed to encode host broadcast message: {error}"))?,
+    };
+    writer
+        .send(Message::Text(
+            serde_json::to_string(&relay_message)
+                .map_err(|error| format!("failed to encode relay message: {error}"))?,
+        ))
+        .await
+        .map_err(|error| format!("failed to send host broadcast message: {error:?}"))
+}
+
+fn add_browser_lobby_human(
+    state: &mut BrowserHostLobby,
+    relay_player_id: PlayerId,
+    name: &str,
+) -> LobbyPlayer {
+    let name = browser_unique_lobby_name(
+        state.players.iter(),
+        &browser_lobby_name_or_default(name, "player"),
+    );
+    let player_id = browser_next_lobby_player_id(state);
+    let player = LobbyPlayer {
+        id: player_id,
+        name,
+        kind: PlayerKind::Human,
+        color: browser_color_for_slot(state.players.len()),
+        ready: false,
+        connected: true,
+        ai_difficulty: None,
+        ai_wpm: None,
+    };
+    state.players.push(player.clone());
+    state.next_player_id = state.next_player_id.max(player_id.0 + 1);
+    state.relay_players.insert(relay_player_id, player_id);
+    player
+}
+
+fn browser_next_lobby_player_id(state: &mut BrowserHostLobby) -> PlayerId {
+    while state
+        .players
+        .iter()
+        .any(|player| player.id == PlayerId(state.next_player_id))
+    {
+        state.next_player_id += 1;
+    }
+    let player_id = PlayerId(state.next_player_id);
+    state.next_player_id += 1;
+    player_id
+}
+
+fn browser_lobby_name_or_default(name: &str, fallback: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn browser_unique_lobby_name<'a>(
+    players: impl Iterator<Item = &'a LobbyPlayer>,
+    requested: &str,
+) -> String {
+    let base = browser_lobby_name_or_default(requested, "player");
+    let existing: Vec<&str> = players.map(|player| player.name.as_str()).collect();
+    if !existing.iter().any(|name| *name == base) {
+        return base;
+    }
+    for suffix in 2..100 {
+        let candidate = format!("{base}{suffix}");
+        if !existing.iter().any(|name| *name == candidate) {
+            return candidate;
+        }
+    }
+    base
+}
+
+fn browser_color_for_slot(slot: usize) -> AssignedColor {
+    const COLORS: [AssignedColor; 6] = [
+        AssignedColor::Cyan,
+        AssignedColor::Red,
+        AssignedColor::Green,
+        AssignedColor::Blue,
+        AssignedColor::Yellow,
+        AssignedColor::Magenta,
+    ];
+    COLORS[slot % COLORS.len()]
+}
+
+fn browser_ai_wpm(difficulty: AiDifficultySnapshot) -> u32 {
+    match difficulty {
+        AiDifficultySnapshot::Easy => 45,
+        AiDifficultySnapshot::Hard => 85,
+    }
+}
+
+fn browser_default_mod_config() -> ModConfigSnapshot {
+    ModConfigSnapshot {
+        word_set_id: "classic".to_string(),
+        word_set_name: "Classic".to_string(),
+        word_set_hash: "0000000000000001".to_string(),
+        item_pack_name: "classic".to_string(),
+        item_registry_hash: "0000000000000002".to_string(),
+        combined_hash: "a598dc2b".to_string(),
+    }
 }
 
 fn handle_relay_message(
@@ -826,11 +1378,15 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        browser_controls, build_track_window, key_name_to_protocol_key, marker_position,
+        BrowserHostLobby, add_browser_lobby_human, browser_ai_wpm, browser_controls,
+        browser_unique_lobby_name, build_track_window, key_name_to_protocol_key, marker_position,
         ordered_players_for_local_perspective, relay_join_url, should_capture_global_gameplay_key,
     };
     use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
-    use typekart_protocol::{NetworkRacePhase, ProtocolKey, RoomCode};
+    use typekart_protocol::{
+        AiDifficultySnapshot, AssignedColor, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind,
+        ProtocolKey, RoomCode,
+    };
 
     #[test]
     fn relay_join_url_adds_room_query_to_plain_relay_url() {
@@ -985,6 +1541,96 @@ mod tests {
             None,
             Some(local_player_id)
         ));
+    }
+
+    #[test]
+    fn browser_host_lobby_starts_with_ready_host() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let lobby = BrowserHostLobby::new(room, "web-host".to_string());
+
+        assert_eq!(lobby.players.len(), 1);
+        assert_eq!(lobby.players[0].id, PlayerId(1));
+        assert_eq!(lobby.players[0].name, "web-host");
+        assert_eq!(lobby.players[0].color, AssignedColor::Cyan);
+        assert!(lobby.players[0].ready);
+    }
+
+    #[test]
+    fn browser_host_assigns_joiner_from_relay_pending_id() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+
+        let player = add_browser_lobby_human(&mut lobby, PlayerId(4), "laura");
+
+        assert_eq!(player.id, PlayerId(2));
+        assert_eq!(player.name, "laura");
+        assert_eq!(player.color, AssignedColor::Red);
+        assert!(!player.ready);
+        assert_eq!(lobby.next_player_id, 3);
+        assert_eq!(
+            lobby.game_player_id_for_relay(PlayerId(4)),
+            Some(PlayerId(2))
+        );
+    }
+
+    #[test]
+    fn browser_host_joiner_id_does_not_collide_with_existing_ai() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        lobby.players.push(LobbyPlayer {
+            id: PlayerId(2),
+            name: "ai-1".to_string(),
+            kind: PlayerKind::Bot,
+            color: AssignedColor::Red,
+            ready: true,
+            connected: true,
+            ai_difficulty: Some(AiDifficultySnapshot::Easy),
+            ai_wpm: Some(browser_ai_wpm(AiDifficultySnapshot::Easy)),
+        });
+
+        let player = add_browser_lobby_human(&mut lobby, PlayerId(2), "laura");
+
+        assert_eq!(lobby.players[1].name, "ai-1");
+        assert_eq!(player.id, PlayerId(3));
+        assert_eq!(
+            lobby.game_player_id_for_relay(PlayerId(2)),
+            Some(PlayerId(3))
+        );
+    }
+
+    #[test]
+    fn browser_lobby_names_are_deduped() {
+        let existing = vec![
+            LobbyPlayer {
+                id: PlayerId(1),
+                name: "tom".to_string(),
+                kind: PlayerKind::Human,
+                color: AssignedColor::Cyan,
+                ready: true,
+                connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
+            },
+            LobbyPlayer {
+                id: PlayerId(2),
+                name: "tom2".to_string(),
+                kind: PlayerKind::Human,
+                color: AssignedColor::Red,
+                ready: false,
+                connected: true,
+                ai_difficulty: None,
+                ai_wpm: None,
+            },
+        ];
+
+        assert_eq!(browser_unique_lobby_name(existing.iter(), "tom"), "tom3");
+    }
+
+    #[test]
+    fn browser_ai_wpm_tracks_difficulty() {
+        assert!(
+            browser_ai_wpm(AiDifficultySnapshot::Hard) > browser_ai_wpm(AiDifficultySnapshot::Easy)
+        );
     }
 
     fn scenario_race_with_finished_local() -> typekart_protocol::RaceSnapshot {
