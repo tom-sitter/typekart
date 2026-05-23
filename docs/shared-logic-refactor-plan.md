@@ -49,9 +49,12 @@ Likely changes:
 
 - Move browser connection/session loop code from `web/typekart-web/src/main.rs`
   into `session.rs`.
+- Move browser join-client relay code into `client.rs`.
 - Move browser host lobby/race authority code into `host.rs`.
 - Move renderer helpers and Leptos components into `render.rs` or
   `components.rs`.
+- Move browser setup/session UI into `setup.rs`, leaving `main.rs` as the app
+  shell.
 - Keep fixtures in `fixtures.rs`.
 
 Validation:
@@ -65,11 +68,13 @@ Notes:
 - This should be mostly movement, not behavior changes.
 - Do this before adding more browser parity work.
 - Progress: browser session/control primitives have been extracted to
-  `web/typekart-web/src/session.rs`, and browser host authority has been moved
-  to `web/typekart-web/src/host.rs`. Host-specific tests now live beside the
-  host module, so `main.rs` only keeps session, relay-join, and renderer tests.
-  Renderer components and layout helpers have been extracted to
-  `web/typekart-web/src/render.rs`.
+  `web/typekart-web/src/session.rs`, browser join-client relay code has been
+  extracted to `web/typekart-web/src/client.rs`, and browser host authority has
+  been moved to `web/typekart-web/src/host.rs`. Host, client, and render tests
+  now live beside their modules. Renderer components and layout helpers have
+  been extracted to `web/typekart-web/src/render.rs`. Browser setup/session UI
+  has been extracted to `web/typekart-web/src/setup.rs`, and session tests now
+  live beside `web/typekart-web/src/session.rs`.
 
 ### 2. Shared Race Host Facade
 

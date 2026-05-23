@@ -318,7 +318,7 @@ pub(crate) fn RacePanel(
     }
 }
 
-pub(crate) fn ordered_players_for_local_perspective(
+fn ordered_players_for_local_perspective(
     players: &[PlayerSnapshot],
     local_player_id: Option<PlayerId>,
 ) -> Vec<PlayerSnapshot> {
@@ -546,19 +546,19 @@ fn EventFeed(events: Vec<String>) -> impl IntoView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TrackWindow {
-    pub(crate) start_word: usize,
-    pub(crate) end_word: usize,
-    pub(crate) width_ch: usize,
-    pub(crate) words: Vec<VisibleWord>,
+struct TrackWindow {
+    start_word: usize,
+    end_word: usize,
+    width_ch: usize,
+    words: Vec<VisibleWord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct VisibleWord {
-    pub(crate) index: usize,
-    pub(crate) start_ch: usize,
-    pub(crate) end_ch: usize,
-    pub(crate) text: String,
+struct VisibleWord {
+    index: usize,
+    start_ch: usize,
+    end_ch: usize,
+    text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -568,16 +568,16 @@ struct WordSegment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OffscreenSide {
+enum OffscreenSide {
     Left,
     Right,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MarkerPosition {
-    pub(crate) column: usize,
-    pub(crate) glyph: &'static str,
-    pub(crate) offscreen: Option<OffscreenSide>,
+struct MarkerPosition {
+    column: usize,
+    glyph: &'static str,
+    offscreen: Option<OffscreenSide>,
 }
 
 impl MarkerPosition {
@@ -590,7 +590,7 @@ impl MarkerPosition {
     }
 }
 
-pub(crate) fn build_track_window(snapshot: &RaceSnapshot, anchor: Option<&PlayerSnapshot>) -> TrackWindow {
+fn build_track_window(snapshot: &RaceSnapshot, anchor: Option<&PlayerSnapshot>) -> TrackWindow {
     let word_count = snapshot.track_words.len();
     if word_count == 0 {
         return TrackWindow {
@@ -703,7 +703,7 @@ fn word_state_class(phase: NetworkRacePhase) -> &'static str {
     }
 }
 
-pub(crate) fn marker_position(player: &PlayerSnapshot, window: &TrackWindow) -> MarkerPosition {
+fn marker_position(player: &PlayerSnapshot, window: &TrackWindow) -> MarkerPosition {
     if window.words.is_empty() {
         return MarkerPosition {
             column: 0,
@@ -860,5 +860,59 @@ fn cooldown_label(status: BonusChoiceSnapshotStatus) -> String {
     match status {
         BonusChoiceSnapshotStatus::Available => String::new(),
         BonusChoiceSnapshotStatus::Cooldown { remaining_ms } => format!(" ({remaining_ms}ms)"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_track_window, marker_position, ordered_players_for_local_perspective};
+    use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
+    use typekart_protocol::NetworkRacePhase;
+
+    #[test]
+    fn track_window_keeps_anchor_with_context() {
+        let GalleryFrame::Race(snapshot) = scenario_frame(SCENARIOS[2]) else {
+            unreachable!();
+        };
+        let anchor = snapshot.players.first().unwrap();
+        let window = build_track_window(&snapshot, Some(anchor));
+
+        assert!(window.start_word <= anchor.word_index);
+        assert!(window.end_word > anchor.word_index);
+        assert!(window.words.len() <= 10);
+    }
+
+    #[test]
+    fn marker_position_tracks_current_character() {
+        let GalleryFrame::Race(snapshot) = scenario_frame(SCENARIOS[2]) else {
+            unreachable!();
+        };
+        assert_eq!(snapshot.phase, NetworkRacePhase::Racing);
+        let player = snapshot.players.first().unwrap();
+        let window = build_track_window(&snapshot, Some(player));
+        let word = window
+            .words
+            .iter()
+            .find(|word| word.index == player.word_index)
+            .unwrap();
+
+        assert_eq!(
+            marker_position(player, &window).column,
+            word.start_ch + player.input.chars().count()
+        );
+    }
+
+    #[test]
+    fn local_player_is_rendered_first() {
+        let GalleryFrame::Race(snapshot) = scenario_frame(SCENARIOS[2]) else {
+            unreachable!();
+        };
+        let local_player_id = snapshot.players[1].id;
+
+        let ordered =
+            ordered_players_for_local_perspective(&snapshot.players, Some(local_player_id));
+
+        assert_eq!(ordered[0].id, local_player_id);
+        assert_eq!(ordered.len(), snapshot.players.len());
     }
 }
