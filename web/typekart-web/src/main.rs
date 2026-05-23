@@ -1097,14 +1097,8 @@ fn process_browser_host_client_message(
                 state.push_event(format!("{name} left"));
             }
         }
-        ClientMessage::KeyInput { .. } => {
-            set_connection.set(ConnectionState::Connected {
-                message: "Browser-hosted gameplay input is not implemented yet".to_string(),
-            });
-            if let Some(race) = &mut state.active_race {
-                race.events =
-                    vec!["browser-hosted gameplay input is not implemented yet".to_string()];
-            }
+        ClientMessage::KeyInput { key, .. } => {
+            apply_browser_host_race_key_input(state, player_id, key, set_connection);
         }
         ClientMessage::RestartRace => {}
         _ => {}
@@ -1243,6 +1237,85 @@ fn browser_host_player_snapshot(player: &LobbyPlayer) -> PlayerSnapshot {
         impact_cue: None,
         item_cue: None,
     }
+}
+
+fn apply_browser_host_race_key_input(
+    state: &mut BrowserHostLobby,
+    player_id: PlayerId,
+    key: ProtocolKey,
+    set_connection: WriteSignal<ConnectionState>,
+) {
+    let Some(race) = &mut state.active_race else {
+        return;
+    };
+    if race.phase != NetworkRacePhase::Racing {
+        return;
+    }
+    let Some(player) = race
+        .players
+        .iter_mut()
+        .find(|player| player.id == player_id)
+    else {
+        return;
+    };
+    if player.finished {
+        return;
+    }
+    let Some(target) = race.track_words.get(player.word_index) else {
+        player.finished = true;
+        return;
+    };
+
+    match key {
+        ProtocolKey::Char(ch) => {
+            player.input.push(ch);
+            player.typo_index = browser_first_typo_index(&player.input, target);
+        }
+        ProtocolKey::Space => {
+            if player.input == *target {
+                advance_browser_host_player(player, race.track_words.len());
+            } else {
+                player.input.push(' ');
+                player.typo_index = browser_first_typo_index(&player.input, target);
+            }
+        }
+        ProtocolKey::Backspace => {
+            player.input.pop();
+            player.typo_index = browser_first_typo_index(&player.input, target);
+        }
+    }
+
+    if let Some(target) = race.track_words.get(player.word_index)
+        && player.typo_index.is_none()
+        && player.input == *target
+        && player.word_index + 1 >= race.track_words.len()
+    {
+        advance_browser_host_player(player, race.track_words.len());
+    }
+
+    state.race_sequence += 1;
+    race.sequence = state.race_sequence;
+    race.events = vec![format!("{} typed", player.name)];
+    set_connection.set(ConnectionState::Connected {
+        message: format!("{} typed", player.name),
+    });
+}
+
+fn advance_browser_host_player(player: &mut PlayerSnapshot, track_len: usize) {
+    player.word_index += 1;
+    player.input.clear();
+    player.typo_index = None;
+    if player.word_index >= track_len {
+        player.finished = true;
+        player.word_index = track_len.saturating_sub(1);
+    }
+}
+
+fn browser_first_typo_index(input: &str, target: &str) -> Option<usize> {
+    input
+        .chars()
+        .enumerate()
+        .find_map(|(index, ch)| (target.chars().nth(index) != Some(ch)).then_some(index))
 }
 
 fn browser_host_track_words() -> Vec<String> {
@@ -1550,12 +1623,13 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserHostLobby, add_browser_lobby_human, browser_ai_wpm, browser_controls,
-        browser_host_race_snapshot, browser_unique_lobby_name, build_track_window,
-        key_name_to_protocol_key, marker_position, ordered_players_for_local_perspective,
-        relay_join_url, should_capture_global_gameplay_key,
+        BrowserHostLobby, add_browser_lobby_human, apply_browser_host_race_key_input,
+        browser_ai_wpm, browser_controls, browser_host_race_snapshot, browser_unique_lobby_name,
+        build_track_window, key_name_to_protocol_key, marker_position,
+        ordered_players_for_local_perspective, relay_join_url, should_capture_global_gameplay_key,
     };
     use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
+    use leptos::prelude::signal;
     use typekart_protocol::{
         AiDifficultySnapshot, AssignedColor, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind,
         ProtocolKey, RoomCode,
@@ -1838,6 +1912,77 @@ mod tests {
             Some("spark")
         );
         assert!(snapshot.bonuses.is_empty());
+    }
+
+    #[test]
+    fn browser_host_race_key_input_advances_words() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        let racers = vec![lobby.players[0].clone()];
+        lobby.active_race = Some(browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        ));
+        let (_connection, set_connection) = signal(super::ConnectionState::Disconnected);
+
+        for ch in "spark".chars() {
+            apply_browser_host_race_key_input(
+                &mut lobby,
+                PlayerId(1),
+                ProtocolKey::Char(ch),
+                set_connection,
+            );
+        }
+        apply_browser_host_race_key_input(
+            &mut lobby,
+            PlayerId(1),
+            ProtocolKey::Space,
+            set_connection,
+        );
+
+        let player = &lobby.active_race.as_ref().unwrap().players[0];
+        assert_eq!(player.word_index, 1);
+        assert_eq!(player.input, "");
+        assert_eq!(player.typo_index, None);
+    }
+
+    #[test]
+    fn browser_host_race_key_input_marks_and_clears_typos() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        let racers = vec![lobby.players[0].clone()];
+        lobby.active_race = Some(browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        ));
+        let (_connection, set_connection) = signal(super::ConnectionState::Disconnected);
+
+        apply_browser_host_race_key_input(
+            &mut lobby,
+            PlayerId(1),
+            ProtocolKey::Char('x'),
+            set_connection,
+        );
+        assert_eq!(
+            lobby.active_race.as_ref().unwrap().players[0].typo_index,
+            Some(0)
+        );
+
+        apply_browser_host_race_key_input(
+            &mut lobby,
+            PlayerId(1),
+            ProtocolKey::Backspace,
+            set_connection,
+        );
+        let player = &lobby.active_race.as_ref().unwrap().players[0];
+        assert_eq!(player.input, "");
+        assert_eq!(player.typo_index, None);
     }
 
     fn scenario_race_with_finished_local() -> typekart_protocol::RaceSnapshot {

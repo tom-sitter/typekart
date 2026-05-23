@@ -4,8 +4,8 @@ TypeKart has an early browser UI in `web/typekart-web`. The web app is a Leptos
 CSR application served by Trunk.
 
 The current browser build can join and play in a CLI-hosted online room. It can
-also create a browser-hosted relay room, manage the lobby, and broadcast a
-race-shell countdown. Browser-hosted gameplay input does not advance racers yet.
+also create a browser-hosted relay room, manage the lobby, broadcast a
+race-shell countdown, and advance racers through a fixed demo track.
 
 ## Current Capabilities
 
@@ -31,9 +31,9 @@ race-shell countdown. Browser-hosted gameplay input does not advance racers yet.
 
 ## Known Limitations
 
-- Browser-hosted race gameplay is not implemented.
-- Browser-hosted race input currently reports that gameplay input is not
-  implemented and does not advance racers.
+- Browser-hosted race gameplay is minimal: typing advances words on a fixed
+  demo track, but bonuses, items, AI movement, results, and rematches are not
+  implemented.
 - Automatic reconnect is not implemented.
 - Renderer parity with the terminal UI is incomplete.
 - Browser item/effect behavior needs structured manual validation.
@@ -78,7 +78,7 @@ or terminal clients can join that room and appear in the lobby. The browser host
 can rename itself, add AI racers, change AI difficulty, remove AI racers, and
 kick non-host human players. Pressing `Start` broadcasts a race shell with
 `WaitingForHost`, a `3 -> 2 -> 1` countdown, and a `Racing` snapshot. Typing
-after that does not advance racers yet.
+after that advances racers through the fixed demo track.
 
 The browser disables the connection fields while connected. Use `Disconnect` to
 leave the current relay session, edit the connection fields, and join again.
@@ -116,8 +116,8 @@ Browser-hosted lobby validation:
 10. Change all AI racers to Easy or Hard.
 11. Click `Start` and confirm the host and joiners render the race track.
 12. Confirm the countdown advances `3 -> 2 -> 1` and then reaches `Racing`.
-13. Type from a browser or terminal joiner and confirm the UI reports that
-    browser-hosted gameplay input is not implemented yet.
+13. Type from a browser or terminal joiner and confirm that player's marker
+    advances through the fixed demo track.
 
 ## Checks
 
@@ -150,7 +150,8 @@ maintains a small authoritative lobby model in the browser, handles
 messages, and broadcasts `LobbySnapshot` updates. It can also synthesize a
 temporary `RaceSnapshot` sequence for the browser-hosted race shell. The race
 shell uses fixed demo track words and no bonus words; it exists to validate
-host-driven race phases before the shared game engine runs in the browser.
+host-driven race phases and basic typing before the shared game engine runs in
+the browser.
 
 The browser stores two ids after joining:
 
