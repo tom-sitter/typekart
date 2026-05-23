@@ -1628,6 +1628,7 @@ dependencies = [
  "futures-util",
  "gloo-net",
  "gloo-timers",
+ "js-sys",
  "leptos",
  "serde_json",
  "typekart-protocol",

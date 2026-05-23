@@ -22,6 +22,7 @@ race-shell countdown, and advance racers through a fixed demo track.
   difficulty, and removing lobby players.
 - Start a browser-hosted race shell that broadcasts `WaitingForHost`,
   `Countdown`, and `Racing` snapshots to connected clients.
+- Move browser-hosted AI racers during `Racing` based on their lobby WPM.
 - Type during a race with letter keys, Space, and Backspace without manually
   focusing the race panel.
 - Render the browser player as the first race lane.
@@ -32,8 +33,8 @@ race-shell countdown, and advance racers through a fixed demo track.
 ## Known Limitations
 
 - Browser-hosted race gameplay is minimal: typing advances words on a fixed
-  demo track, but bonuses, items, AI movement, results, and rematches are not
-  implemented.
+  demo track and AI racers move, but bonuses, items, results, and rematches are
+  not implemented.
 - Automatic reconnect is not implemented.
 - Renderer parity with the terminal UI is incomplete.
 - Browser item/effect behavior needs structured manual validation.
@@ -78,7 +79,8 @@ or terminal clients can join that room and appear in the lobby. The browser host
 can rename itself, add AI racers, change AI difficulty, remove AI racers, and
 kick non-host human players. Pressing `Start` broadcasts a race shell with
 `WaitingForHost`, a `3 -> 2 -> 1` countdown, and a `Racing` snapshot. Typing
-after that advances racers through the fixed demo track.
+after that advances racers through the fixed demo track, and AI racers advance
+automatically from their lobby WPM.
 
 The browser disables the connection fields while connected. Use `Disconnect` to
 leave the current relay session, edit the connection fields, and join again.
@@ -118,6 +120,7 @@ Browser-hosted lobby validation:
 12. Confirm the countdown advances `3 -> 2 -> 1` and then reaches `Racing`.
 13. Type from a browser or terminal joiner and confirm that player's marker
     advances through the fixed demo track.
+14. Confirm AI racers advance without keyboard input.
 
 ## Checks
 
@@ -149,9 +152,9 @@ maintains a small authoritative lobby model in the browser, handles
 `JoinForwarded` and `ClientToHost` relay envelopes, sends direct `Welcome`
 messages, and broadcasts `LobbySnapshot` updates. It can also synthesize a
 temporary `RaceSnapshot` sequence for the browser-hosted race shell. The race
-shell uses fixed demo track words and no bonus words; it exists to validate
-host-driven race phases and basic typing before the shared game engine runs in
-the browser.
+shell uses fixed demo track words and no bonus words. Human input and AI ticks
+mutate the synthetic `RaceSnapshot`; this validates host-driven race phases and
+basic movement before the shared game engine runs in the browser.
 
 The browser stores two ids after joining:
 

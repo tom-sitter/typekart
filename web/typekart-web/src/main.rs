@@ -9,7 +9,7 @@ use fixtures::{
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures_util::{SinkExt, StreamExt, select};
 use gloo_net::websocket::{Message, futures::WebSocket};
-use gloo_timers::future::TimeoutFuture;
+use gloo_timers::future::{IntervalStream, TimeoutFuture};
 use leptos::prelude::*;
 use typekart_protocol::{
     AiDifficultySnapshot, AssignedColor, BonusChoiceSnapshotStatus, BonusPointSnapshot,
@@ -23,6 +23,7 @@ use wasm_bindgen_futures::spawn_local;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const WEB_TRACK_WORDS_BEHIND: usize = 3;
 const WEB_TRACK_VISIBLE_WORDS: usize = 10;
+const BROWSER_HOST_AI_TICK_MS: u32 = 250;
 
 #[derive(Debug, Clone)]
 enum BrowserOutboundMessage {
@@ -739,6 +740,7 @@ async fn host_browser_lobby(
     let mut state: Option<BrowserHostLobby> = None;
     let mut reader = reader.fuse();
     let mut outbound = outbound.fuse();
+    let mut ai_ticks = IntervalStream::new(BROWSER_HOST_AI_TICK_MS).fuse();
     loop {
         select! {
             message = reader.next() => {
@@ -804,6 +806,14 @@ async fn host_browser_lobby(
                     .await?;
                 }
             },
+            _ = ai_ticks.next() => {
+                let Some(state) = state.as_mut() else {
+                    continue;
+                };
+                if apply_browser_host_ai_tick(state, BROWSER_HOST_AI_TICK_MS) {
+                    publish_browser_host_state(state, &mut writer, set_live_frame).await?;
+                }
+            },
         }
     }
 
@@ -817,6 +827,8 @@ struct BrowserHostLobby {
     next_player_id: u64,
     race_sequence: u64,
     active_race: Option<RaceSnapshot>,
+    ai_char_budget: HashMap<PlayerId, f64>,
+    ai_last_tick_ms: Option<f64>,
     events: Vec<String>,
     mod_config: ModConfigSnapshot,
 }
@@ -839,6 +851,8 @@ impl BrowserHostLobby {
             next_player_id: 2,
             race_sequence: 0,
             active_race: None,
+            ai_char_budget: HashMap::new(),
+            ai_last_tick_ms: None,
             events: vec!["host created room".to_string()],
             mod_config: browser_default_mod_config(),
         }
@@ -1195,6 +1209,8 @@ async fn run_browser_host_countdown(
         &racers,
         vec!["browser-hosted gameplay input is not implemented yet".to_string()],
     ));
+    state.ai_char_budget.clear();
+    state.ai_last_tick_ms = Some(browser_now_ms());
     publish_browser_host_state(state, writer, set_live_frame).await
 }
 
@@ -1301,6 +1317,108 @@ fn apply_browser_host_race_key_input(
     });
 }
 
+fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> bool {
+    let elapsed_ms = browser_host_ai_elapsed_ms(state, tick_ms);
+    if elapsed_ms <= 0.0 {
+        return false;
+    }
+
+    let ai_wpm_by_id: HashMap<PlayerId, u32> = state
+        .players
+        .iter()
+        .filter(|player| player.kind == PlayerKind::Bot)
+        .map(|player| {
+            (
+                player.id,
+                player
+                    .ai_wpm
+                    .unwrap_or_else(|| browser_ai_wpm(AiDifficultySnapshot::Easy)),
+            )
+        })
+        .collect();
+
+    let Some(race) = &mut state.active_race else {
+        return false;
+    };
+    if race.phase != NetworkRacePhase::Racing {
+        return false;
+    }
+
+    let mut changed = false;
+    for player in race
+        .players
+        .iter_mut()
+        .filter(|player| player.kind == PlayerKind::Bot)
+    {
+        if player.finished {
+            continue;
+        }
+        let wpm = ai_wpm_by_id
+            .get(&player.id)
+            .copied()
+            .unwrap_or_else(|| browser_ai_wpm(AiDifficultySnapshot::Easy));
+        let budget = state.ai_char_budget.entry(player.id).or_default();
+        *budget += browser_ai_chars_for_elapsed_ms(wpm, elapsed_ms);
+
+        while *budget >= 1.0 && !player.finished {
+            *budget -= 1.0;
+            changed |= advance_browser_host_ai_char(player, &race.track_words);
+        }
+    }
+
+    if changed {
+        state.race_sequence += 1;
+        race.sequence = state.race_sequence;
+        race.events = vec!["AI racers advanced".to_string()];
+    }
+
+    changed
+}
+
+fn browser_host_ai_elapsed_ms(state: &mut BrowserHostLobby, tick_ms: u32) -> f64 {
+    let Some(last_tick_ms) = state.ai_last_tick_ms else {
+        return f64::from(tick_ms);
+    };
+
+    let now_ms = browser_now_ms();
+    let elapsed_ms = now_ms - last_tick_ms;
+    let minimum_real_tick_ms = f64::from(tick_ms) * 0.5;
+    if elapsed_ms < minimum_real_tick_ms {
+        return 0.0;
+    }
+
+    state.ai_last_tick_ms = Some(now_ms);
+    elapsed_ms.min(1000.0)
+}
+
+fn browser_ai_chars_for_elapsed_ms(wpm: u32, elapsed_ms: f64) -> f64 {
+    f64::from(wpm) * 5.0 * elapsed_ms / 60_000.0
+}
+
+fn advance_browser_host_ai_char(player: &mut PlayerSnapshot, track_words: &[String]) -> bool {
+    let Some(target) = track_words.get(player.word_index) else {
+        player.finished = true;
+        return true;
+    };
+
+    let input_len = player.input.chars().count();
+    if let Some(ch) = target.chars().nth(input_len) {
+        player.input.push(ch);
+        player.typo_index = None;
+        if player.input == *target && player.word_index + 1 >= track_words.len() {
+            advance_browser_host_player(player, track_words.len());
+        }
+        return true;
+    }
+
+    if player.input == *target {
+        advance_browser_host_player(player, track_words.len());
+        return true;
+    }
+
+    false
+}
+
 fn advance_browser_host_player(player: &mut PlayerSnapshot, track_len: usize) {
     player.word_index += 1;
     player.input.clear();
@@ -1316,6 +1434,20 @@ fn browser_first_typo_index(input: &str, target: &str) -> Option<usize> {
         .chars()
         .enumerate()
         .find_map(|(index, ch)| (target.chars().nth(index) != Some(ch)).then_some(index))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_now_ms() -> f64 {
+    js_sys::Date::now()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn browser_now_ms() -> f64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as f64
 }
 
 fn browser_host_track_words() -> Vec<String> {
@@ -1623,10 +1755,12 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserHostLobby, add_browser_lobby_human, apply_browser_host_race_key_input,
-        browser_ai_wpm, browser_controls, browser_host_race_snapshot, browser_unique_lobby_name,
+        BROWSER_HOST_AI_TICK_MS, BrowserHostLobby, add_browser_lobby_human,
+        apply_browser_host_ai_tick, apply_browser_host_race_key_input, browser_ai_wpm,
+        browser_controls, browser_host_race_snapshot, browser_unique_lobby_name,
         build_track_window, key_name_to_protocol_key, marker_position,
-        ordered_players_for_local_perspective, relay_join_url, should_capture_global_gameplay_key,
+        ordered_players_for_local_perspective, process_browser_host_client_message, relay_join_url,
+        should_capture_global_gameplay_key,
     };
     use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
     use leptos::prelude::signal;
@@ -1983,6 +2117,119 @@ mod tests {
         let player = &lobby.active_race.as_ref().unwrap().players[0];
         assert_eq!(player.input, "");
         assert_eq!(player.typo_index, None);
+    }
+
+    #[test]
+    fn browser_host_ai_tick_advances_bot_racers() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        process_browser_host_client_message(
+            &mut lobby,
+            PlayerId(1),
+            typekart_protocol::ClientMessage::AddAi,
+            signal(super::ConnectionState::Disconnected).1,
+        );
+        let racers = lobby.players.clone();
+        lobby.active_race = Some(browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        ));
+
+        assert!(apply_browser_host_ai_tick(&mut lobby, 1_000));
+
+        let ai = lobby
+            .active_race
+            .as_ref()
+            .unwrap()
+            .players
+            .iter()
+            .find(|player| player.kind == PlayerKind::Bot)
+            .unwrap();
+        assert!(!ai.input.is_empty() || ai.word_index > 0);
+    }
+
+    #[test]
+    fn browser_host_ai_tick_finishes_bot_with_enough_budget() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        process_browser_host_client_message(
+            &mut lobby,
+            PlayerId(1),
+            typekart_protocol::ClientMessage::AddAi,
+            signal(super::ConnectionState::Disconnected).1,
+        );
+        let ai_id = lobby
+            .players
+            .iter()
+            .find(|player| player.kind == PlayerKind::Bot)
+            .unwrap()
+            .id;
+        lobby
+            .players
+            .iter_mut()
+            .find(|player| player.id == ai_id)
+            .unwrap()
+            .ai_wpm = Some(1000);
+        let racers = lobby.players.clone();
+        lobby.active_race = Some(browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        ));
+
+        assert!(apply_browser_host_ai_tick(&mut lobby, 60_000));
+
+        let ai = lobby
+            .active_race
+            .as_ref()
+            .unwrap()
+            .players
+            .iter()
+            .find(|player| player.id == ai_id)
+            .unwrap();
+        assert!(ai.finished);
+    }
+
+    #[test]
+    fn browser_host_ai_tick_ignores_queued_countdown_ticks() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        process_browser_host_client_message(
+            &mut lobby,
+            PlayerId(1),
+            typekart_protocol::ClientMessage::AddAi,
+            signal(super::ConnectionState::Disconnected).1,
+        );
+        let racers = lobby.players.clone();
+        lobby.active_race = Some(browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        ));
+        lobby.ai_last_tick_ms = Some(super::browser_now_ms());
+
+        assert!(!apply_browser_host_ai_tick(
+            &mut lobby,
+            BROWSER_HOST_AI_TICK_MS
+        ));
+
+        let ai = lobby
+            .active_race
+            .as_ref()
+            .unwrap()
+            .players
+            .iter()
+            .find(|player| player.kind == PlayerKind::Bot)
+            .unwrap();
+        assert_eq!(ai.word_index, 0);
+        assert_eq!(ai.input, "");
     }
 
     fn scenario_race_with_finished_local() -> typekart_protocol::RaceSnapshot {
