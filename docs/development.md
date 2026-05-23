@@ -61,8 +61,8 @@ cd web/typekart-web
 trunk serve --port 8081
 ```
 
-The browser UI currently supports joining and playing in CLI-hosted online
-rooms. Browser hosting is not implemented yet. See [Web UI](web-ui.md) and
+The browser UI supports joining CLI-hosted rooms and creating browser-hosted
+rooms with a playable host-authoritative race loop. See [Web UI](web-ui.md) and
 [Web UI Implementation Plan](web-ui-implementation-plan.md).
 
 Check the web package from the repository root:

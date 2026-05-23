@@ -235,7 +235,8 @@ WPM uses the common typing convention of five characters per word.
 
 ### `src/game/typing.rs`
 
-This is the most important module in Milestone 1. It contains the deterministic typing engine.
+This module contains the deterministic typing engine shared by local, network,
+and browser-hosted races.
 
 Main types:
 

@@ -17,9 +17,9 @@ the existing WebSocket relay.
 
 ## Current Status
 
-The web port is currently an early browser joiner for CLI-hosted online rooms.
-It is useful for validating the shared relay/protocol path and the browser race
-renderer, but it is not yet a browser-hosted game.
+The web port can join CLI-hosted online rooms and can create browser-hosted
+relay rooms with a playable host-authoritative race loop. It is still a parity
+workstream rather than a production web release.
 
 Implemented:
 
@@ -40,19 +40,18 @@ Implemented:
 - Browser race lanes render the local browser player first.
 - Track text, bonus words, racer lanes, markers, minimap, and event feed are
   aligned in a terminal-inspired layout.
+- Browser can create a relay room, manage lobby racers, start countdowns, run
+  browser-hosted races, process typing and AI progress, and publish results.
 
 Known limitations:
 
-- Browser users can join/play only in a CLI-hosted online room.
-- Browser cannot create or host a room.
-- Browser host-authoritative game loop does not exist yet.
-- Browser lobby controls are minimal and not phase-aware.
-- Browser start control is wired, but the CLI host only honors it when the
-  browser is the host player, which is not true in the current joiner flow.
+- Browser-hosted games are playable, but still need structured manual item and
+  cross-client validation.
+- Browser word-pack and item-pack selection is not implemented.
 - Browser renderer is close enough for development, but not yet full parity with
   the terminal renderer.
-- Browser focus handling is basic; users must focus the race panel before
-  typing.
+- Browser focus handling captures gameplay keys during active races, but still
+  needs broader browser smoke testing.
 - Reconnect, host-left, and game-closed UX are still minimal.
 - No browser screenshots or cross-browser smoke tests are automated yet.
 
@@ -65,6 +64,8 @@ Recent manual validation:
 - Browser input updates the authoritative race state and appears correctly in
   the terminal UI.
 - Browser perspective now tracks the browser player's typed text and lane order.
+- Browser-hosted rooms can run countdowns, accept browser and terminal joiners,
+  advance racers, and produce results.
 
 ## Non-Goals
 
@@ -212,8 +213,7 @@ Initial slice:
   Trunk.
 - The web app intentionally keeps its own `Cargo.lock` so Leptos dependencies
   do not enter the terminal app's release/package dependency graph.
-- The web shell renders home/create/join placeholders plus a static race
-  preview.
+- The web shell renders gallery, join, and create-room flows.
 - Development docs include the WASM target, Trunk, serve, and check commands.
 
 Tasks:
@@ -531,9 +531,8 @@ Validation:
 - Should the public relay impose different rate limits for browser-hosted rooms?
 - Do we need host pause/resume behavior when the host tab is backgrounded?
 
-## Recommended First Slice
+## Recommended Next Slice
 
-Start with Milestone 1 and Milestone 2. The web UI will be much easier if the
-core game loop and protocol boundary are clean before adding Leptos. The first
-visible browser work should be the renderer gallery, because it can move quickly
-without depending on live networking.
+Continue from the current browser-hosted race loop. The next useful work is
+manual browser-hosted validation, renderer parity, mod selection, reconnect UX,
+and deployment preparation.

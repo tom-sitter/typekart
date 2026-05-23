@@ -1,7 +1,7 @@
 //! Player race state.
 //!
-//! For Milestone 1 there is only one local player, but this type is shaped so
-//! it can later become the per-player state stored by a multiplayer server.
+//! This is the per-racer typing/effect state used by local, network, and
+//! browser-hosted races.
 
 use std::{collections::HashMap, time::Instant};
 

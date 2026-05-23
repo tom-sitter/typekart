@@ -6,9 +6,13 @@
 //! module is the migration point: pure race state that can eventually power
 //! local play, AI simulation, and network-hosted races.
 
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use super::{
+    item_effects::RaceItemEffectState,
     player::PlayerState,
     track::Track,
     typing::{KeyAction, TypingEvent, apply_key},
@@ -49,6 +53,15 @@ pub struct RacePlayer {
     pub connected: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct RaceParticipant {
+    pub id: RacePlayerId,
+    pub name: String,
+    pub color: PlayerColorId,
+    pub connected: bool,
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct RaceState {
@@ -78,12 +91,112 @@ pub struct RaceResultRow {
     pub backspaces: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaceLifecycleStatus {
+    Running,
+    Finished {
+        all_connected_finished: bool,
+        all_connected_disconnected: bool,
+        timeout_expired: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaceLifecycleUpdate {
+    pub newly_finished: Vec<RacePlayerId>,
+    pub status: RaceLifecycleStatus,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RaceLifecycleState {
+    pub placements: Vec<RacePlayerId>,
+    pub first_finished_at: Option<Instant>,
+}
+
+impl RaceLifecycleState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.placements.clear();
+        self.first_finished_at = None;
+    }
+
+    pub fn update(
+        &mut self,
+        race: &RaceState,
+        now: Instant,
+        post_first_finish_timeout: Duration,
+    ) -> RaceLifecycleUpdate {
+        update_race_lifecycle(
+            race,
+            &mut self.placements,
+            &mut self.first_finished_at,
+            now,
+            post_first_finish_timeout,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RaceRuntimeState<PlayerId, BonusAttempt> {
+    pub lifecycle: RaceLifecycleState,
+    pub bonus_attempts: HashMap<PlayerId, BonusAttempt>,
+    pub spent_bonus_gaps: HashMap<PlayerId, usize>,
+    pub player_effects: HashMap<RacePlayerId, RaceItemEffectState>,
+}
+
+impl<PlayerId, BonusAttempt> Default for RaceRuntimeState<PlayerId, BonusAttempt> {
+    fn default() -> Self {
+        Self {
+            lifecycle: RaceLifecycleState::new(),
+            bonus_attempts: HashMap::new(),
+            spent_bonus_gaps: HashMap::new(),
+            player_effects: HashMap::new(),
+        }
+    }
+}
+
+impl<PlayerId, BonusAttempt> RaceRuntimeState<PlayerId, BonusAttempt> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.lifecycle.reset();
+        self.bonus_attempts.clear();
+        self.spent_bonus_gaps.clear();
+        self.player_effects.clear();
+    }
+}
+
 #[allow(dead_code)]
 impl RaceState {
     pub fn new(track: Track) -> Self {
         Self {
             track,
             players: Vec::new(),
+        }
+    }
+
+    pub fn from_participants(
+        track: Track,
+        participants: impl IntoIterator<Item = RaceParticipant>,
+        now: Instant,
+    ) -> Self {
+        Self {
+            track,
+            players: participants
+                .into_iter()
+                .map(|participant| RacePlayer {
+                    id: participant.id,
+                    name: participant.name,
+                    color: participant.color,
+                    state: PlayerState::new(now),
+                    connected: participant.connected,
+                })
+                .collect(),
         }
     }
 
@@ -119,6 +232,91 @@ impl RaceState {
 
         Some(apply_key(&mut player.state, track, action, now))
     }
+}
+
+pub fn update_race_lifecycle(
+    race: &RaceState,
+    placements: &mut Vec<RacePlayerId>,
+    first_finished_at: &mut Option<Instant>,
+    now: Instant,
+    post_first_finish_timeout: Duration,
+) -> RaceLifecycleUpdate {
+    let mut newly_finished = Vec::new();
+    for id in race
+        .players
+        .iter()
+        .filter(|player| player.connected && player.state.is_finished())
+        .map(|player| player.id)
+    {
+        if !placements.contains(&id) {
+            placements.push(id);
+            newly_finished.push(id);
+        }
+    }
+
+    if first_finished_at.is_none() && !placements.is_empty() {
+        *first_finished_at = Some(now);
+    }
+
+    let connected_racers = race
+        .players
+        .iter()
+        .filter(|player| player.connected)
+        .count();
+    let connected_finished = race
+        .players
+        .iter()
+        .filter(|player| player.connected && player.state.is_finished())
+        .count();
+    let all_connected_finished = connected_racers > 0 && connected_finished == connected_racers;
+    let all_connected_disconnected = connected_racers == 0;
+    let timeout_expired = first_finished_at.is_some_and(|first_finished_at| {
+        now.duration_since(first_finished_at) >= post_first_finish_timeout
+    });
+
+    let status = if all_connected_finished || all_connected_disconnected || timeout_expired {
+        append_unfinished_connected_placements(race, placements);
+        RaceLifecycleStatus::Finished {
+            all_connected_finished,
+            all_connected_disconnected,
+            timeout_expired,
+        }
+    } else {
+        RaceLifecycleStatus::Running
+    };
+
+    RaceLifecycleUpdate {
+        newly_finished,
+        status,
+    }
+}
+
+pub fn append_unfinished_connected_placements(
+    race: &RaceState,
+    placements: &mut Vec<RacePlayerId>,
+) {
+    let mut remaining = race
+        .players
+        .iter()
+        .filter(|player| player.connected)
+        .map(|player| {
+            (
+                player.id,
+                player.state.word_index,
+                player.state.input.chars().count(),
+            )
+        })
+        .filter(|(id, _, _)| !placements.contains(id))
+        .collect::<Vec<_>>();
+
+    remaining.sort_by_key(|(_, word_index, input_len)| {
+        (
+            std::cmp::Reverse(*word_index),
+            std::cmp::Reverse(*input_len),
+        )
+    });
+
+    placements.extend(remaining.into_iter().map(|(id, _, _)| id));
 }
 
 pub fn build_race_result_rows(
@@ -199,9 +397,12 @@ pub fn build_race_result_rows(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
-    use super::{PlayerColorId, RacePlayerId, RaceResultStatus, RaceState};
+    use super::{
+        PlayerColorId, RaceLifecycleState, RaceLifecycleStatus, RaceParticipant, RacePlayerId,
+        RaceResultStatus, RaceState, update_race_lifecycle,
+    };
     use crate::game::{stats::TypingStats, track::Track, typing::KeyAction};
 
     fn track(words: &[&str]) -> Track {
@@ -220,6 +421,36 @@ mod tests {
         assert_eq!(player.color, PlayerColorId::Cyan);
         assert!(player.connected);
         assert_eq!(player.state.word_index, 0);
+    }
+
+    #[test]
+    fn race_state_builds_from_participants() {
+        let now = Instant::now();
+        let race = RaceState::from_participants(
+            track(&["one", "two"]),
+            [
+                RaceParticipant {
+                    id: RacePlayerId(1),
+                    name: "tom".to_string(),
+                    color: PlayerColorId::Cyan,
+                    connected: true,
+                },
+                RaceParticipant {
+                    id: RacePlayerId(2),
+                    name: "alex".to_string(),
+                    color: PlayerColorId::Red,
+                    connected: false,
+                },
+            ],
+            now,
+        );
+
+        assert_eq!(race.players.len(), 2);
+        assert_eq!(race.players[0].name, "tom");
+        assert!(race.players[0].connected);
+        assert_eq!(race.players[1].color, PlayerColorId::Red);
+        assert!(!race.players[1].connected);
+        assert_eq!(race.players[1].state.started_at, now);
     }
 
     #[test]
@@ -302,5 +533,119 @@ mod tests {
         assert_eq!(rows[1].accuracy_percent, 80);
         assert_eq!(rows[1].typo_chars, 2);
         assert_eq!(rows[1].backspaces, 3);
+    }
+
+    #[test]
+    fn lifecycle_records_finish_order_and_finishes_when_all_connected_finish() {
+        let now = Instant::now();
+        let mut race = RaceState::new(track(&["one"]));
+        race.add_player(RacePlayerId(1), "tom", PlayerColorId::Cyan, now);
+        race.add_player(RacePlayerId(2), "alex", PlayerColorId::Red, now);
+        let mut placements = Vec::new();
+        let mut first_finished_at = None;
+
+        race.players[1].state.finished_at = Some(now);
+        let update = update_race_lifecycle(
+            &race,
+            &mut placements,
+            &mut first_finished_at,
+            now,
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(update.newly_finished, vec![RacePlayerId(2)]);
+        assert_eq!(update.status, RaceLifecycleStatus::Running);
+        assert_eq!(placements, vec![RacePlayerId(2)]);
+        assert_eq!(first_finished_at, Some(now));
+
+        race.players[0].state.finished_at = Some(now);
+        let update = update_race_lifecycle(
+            &race,
+            &mut placements,
+            &mut first_finished_at,
+            now,
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(update.newly_finished, vec![RacePlayerId(1)]);
+        assert_eq!(
+            update.status,
+            RaceLifecycleStatus::Finished {
+                all_connected_finished: true,
+                all_connected_disconnected: false,
+                timeout_expired: false
+            }
+        );
+        assert_eq!(placements, vec![RacePlayerId(2), RacePlayerId(1)]);
+    }
+
+    #[test]
+    fn lifecycle_state_updates_and_resets_shared_progress() {
+        let now = Instant::now();
+        let mut race = RaceState::new(track(&["one"]));
+        race.add_player(RacePlayerId(1), "tom", PlayerColorId::Cyan, now);
+        let mut lifecycle = RaceLifecycleState::new();
+        race.players[0].state.finished_at = Some(now);
+
+        lifecycle.update(&race, now, Duration::from_secs(30));
+
+        assert_eq!(lifecycle.placements, vec![RacePlayerId(1)]);
+        assert_eq!(lifecycle.first_finished_at, Some(now));
+
+        lifecycle.reset();
+
+        assert!(lifecycle.placements.is_empty());
+        assert_eq!(lifecycle.first_finished_at, None);
+    }
+
+    #[test]
+    fn runtime_state_resets_transient_race_state() {
+        let now = Instant::now();
+        let mut runtime = super::RaceRuntimeState::<RacePlayerId, usize>::new();
+        runtime.lifecycle.placements = vec![RacePlayerId(1)];
+        runtime.lifecycle.first_finished_at = Some(now);
+        runtime.bonus_attempts.insert(RacePlayerId(1), 0);
+        runtime.spent_bonus_gaps.insert(RacePlayerId(1), 3);
+        runtime
+            .player_effects
+            .insert(RacePlayerId(1), Default::default());
+
+        runtime.reset();
+
+        assert!(runtime.lifecycle.placements.is_empty());
+        assert_eq!(runtime.lifecycle.first_finished_at, None);
+        assert!(runtime.bonus_attempts.is_empty());
+        assert!(runtime.spent_bonus_gaps.is_empty());
+        assert!(runtime.player_effects.is_empty());
+    }
+
+    #[test]
+    fn lifecycle_timeout_places_unfinished_connected_racers_by_progress() {
+        let now = Instant::now();
+        let mut race = RaceState::new(track(&["one", "two"]));
+        race.add_player(RacePlayerId(1), "tom", PlayerColorId::Cyan, now);
+        race.add_player(RacePlayerId(2), "alex", PlayerColorId::Red, now);
+        race.players[1].state.finished_at = Some(now);
+        race.players[0].state.word_index = 1;
+        let mut placements = vec![RacePlayerId(2)];
+        let mut first_finished_at = Some(now);
+
+        let update = update_race_lifecycle(
+            &race,
+            &mut placements,
+            &mut first_finished_at,
+            now + Duration::from_secs(30),
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(
+            update.status,
+            RaceLifecycleStatus::Finished {
+                all_connected_finished: false,
+                all_connected_disconnected: false,
+                timeout_expired: true
+            }
+        );
+        assert_eq!(placements, vec![RacePlayerId(2), RacePlayerId(1)]);
     }
 }

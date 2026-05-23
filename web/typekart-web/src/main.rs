@@ -3,7 +3,7 @@ mod fixtures;
 use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use fixtures::{
@@ -26,8 +26,9 @@ use typekart::game::{
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
     player::PlayerState,
     race::{
-        PlayerColorId, RacePlayer, RacePlayerId, RaceState,
-        build_race_result_rows as build_shared_race_result_rows,
+        PlayerColorId, RaceLifecycleStatus, RaceParticipant, RacePlayer,
+        RacePlayerId, RaceState, build_race_result_rows as build_shared_race_result_rows,
+        RaceRuntimeState,
     },
     track::{Track, WordList},
     typing::{KeyAction, first_typo_index},
@@ -47,7 +48,7 @@ const WEB_TRACK_WORDS_BEHIND: usize = 3;
 const WEB_TRACK_VISIBLE_WORDS: usize = 10;
 const BROWSER_HOST_TRACK_WORD_COUNT: usize = 16;
 const BROWSER_HOST_AI_TICK_MS: u32 = 250;
-const BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT_MS: f64 = 30_000.0;
+const BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 enum BrowserOutboundMessage {
@@ -68,6 +69,20 @@ struct BrowserBonusAttempt {
 enum BrowserSessionKind {
     Joiner,
     Host,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BrowserSessionSignals {
+    set_connection: WriteSignal<ConnectionState>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+    set_relay_player_id: WriteSignal<Option<PlayerId>>,
+    set_game_player_id: WriteSignal<Option<PlayerId>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BrowserHostSignals {
+    session: BrowserSessionSignals,
+    set_room_code: WriteSignal<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,32 +269,22 @@ fn JoinRoomPanel(unicode_icons: ReadSignal<bool>) -> impl IntoView {
         set_live_frame.set(None);
 
         spawn_local(async move {
+            let session_signals = BrowserSessionSignals {
+                set_connection,
+                set_live_frame,
+                set_relay_player_id,
+                set_game_player_id,
+            };
             let result = match session_kind {
                 BrowserSessionKind::Joiner => {
-                    join_browser_room(
-                        relay,
-                        room,
-                        name,
-                        outbound_rx,
-                        set_connection,
-                        set_live_frame,
-                        set_relay_player_id,
-                        set_game_player_id,
-                    )
-                    .await
+                    join_browser_room(relay, room, name, outbound_rx, session_signals).await
                 }
                 BrowserSessionKind::Host => {
-                    host_browser_lobby(
-                        relay,
-                        name,
-                        outbound_rx,
+                    let host_signals = BrowserHostSignals {
+                        session: session_signals,
                         set_room_code,
-                        set_connection,
-                        set_live_frame,
-                        set_relay_player_id,
-                        set_game_player_id,
-                    )
-                    .await
+                    };
+                    host_browser_lobby(relay, name, outbound_rx, host_signals).await
                 }
             };
 
@@ -653,10 +658,7 @@ async fn join_browser_room(
     room_code: String,
     name: String,
     outbound: UnboundedReceiver<BrowserOutboundMessage>,
-    set_connection: WriteSignal<ConnectionState>,
-    set_live_frame: WriteSignal<Option<GalleryFrame>>,
-    set_relay_player_id: WriteSignal<Option<PlayerId>>,
-    set_game_player_id: WriteSignal<Option<PlayerId>>,
+    signals: BrowserSessionSignals,
 ) -> Result<(), String> {
     let room = RoomCode::parse(&room_code).map_err(|error| error.to_string())?;
     let websocket_url = relay_join_url(&relay_url, &room);
@@ -674,7 +676,7 @@ async fn join_browser_room(
         .send(Message::Text(encoded_join))
         .await
         .map_err(|error| format!("failed to send join request: {error:?}"))?;
-    set_connection.set(ConnectionState::Connected {
+    signals.set_connection.set(ConnectionState::Connected {
         message: format!("Connected to relay, joining {}", room.display()),
     });
 
@@ -697,10 +699,10 @@ async fn join_browser_room(
                 let keep_running = handle_relay_message(
                     relay_message,
                     &mut current_race,
-                    set_connection,
-                    set_live_frame,
-                    set_relay_player_id,
-                    set_game_player_id,
+                    signals.set_connection,
+                    signals.set_live_frame,
+                    signals.set_relay_player_id,
+                    signals.set_game_player_id,
                 )?;
                 if !keep_running {
                     break;
@@ -745,11 +747,7 @@ async fn host_browser_lobby(
     relay_url: String,
     host_name: String,
     outbound: UnboundedReceiver<BrowserOutboundMessage>,
-    set_room_code: WriteSignal<String>,
-    set_connection: WriteSignal<ConnectionState>,
-    set_live_frame: WriteSignal<Option<GalleryFrame>>,
-    set_relay_player_id: WriteSignal<Option<PlayerId>>,
-    set_game_player_id: WriteSignal<Option<PlayerId>>,
+    signals: BrowserHostSignals,
 ) -> Result<(), String> {
     let websocket = WebSocket::open(&relay_url)
         .map_err(|error| format!("failed to open relay websocket: {error:?}"))?;
@@ -764,7 +762,7 @@ async fn host_browser_lobby(
         .await
         .map_err(|error| format!("failed to send room create request: {error:?}"))?;
 
-    set_connection.set(ConnectionState::Connected {
+    signals.session.set_connection.set(ConnectionState::Connected {
         message: "Creating room...".to_string(),
     });
 
@@ -790,11 +788,7 @@ async fn host_browser_lobby(
                     &mut state,
                     &host_name,
                     &mut writer,
-                    set_room_code,
-                    set_connection,
-                    set_live_frame,
-                    set_relay_player_id,
-                    set_game_player_id,
+                    signals,
                 )
                 .await?;
                 if !keep_running {
@@ -831,8 +825,8 @@ async fn host_browser_lobby(
                         player_id,
                         message,
                         &mut writer,
-                        set_connection,
-                        set_live_frame,
+                        signals.session.set_connection,
+                        signals.session.set_live_frame,
                     )
                     .await?;
                 }
@@ -842,7 +836,7 @@ async fn host_browser_lobby(
                     continue;
                 };
                 if apply_browser_host_ai_tick(state, BROWSER_HOST_AI_TICK_MS) {
-                    publish_browser_host_state(state, &mut writer, set_live_frame).await?;
+                    publish_browser_host_state(state, &mut writer, signals.session.set_live_frame).await?;
                 }
             },
         }
@@ -863,11 +857,7 @@ struct BrowserHostLobby {
     active_race: Option<RaceSnapshot>,
     active_results: Option<ResultsFrame>,
     core_race: Option<RaceState>,
-    race_placements: Vec<PlayerId>,
-    first_finished_at_ms: Option<f64>,
-    bonus_attempts: HashMap<PlayerId, BrowserBonusAttempt>,
-    spent_bonus_gaps: HashMap<PlayerId, usize>,
-    player_effects: HashMap<RacePlayerId, RaceItemEffectState>,
+    runtime: RaceRuntimeState<PlayerId, BrowserBonusAttempt>,
     ai_char_budget: HashMap<PlayerId, f64>,
     ai_last_tick_ms: Option<f64>,
     events: Vec<String>,
@@ -899,11 +889,7 @@ impl BrowserHostLobby {
             active_race: None,
             active_results: None,
             core_race: None,
-            race_placements: Vec::new(),
-            first_finished_at_ms: None,
-            bonus_attempts: HashMap::new(),
-            spent_bonus_gaps: HashMap::new(),
-            player_effects: HashMap::new(),
+            runtime: RaceRuntimeState::new(),
             ai_char_budget: HashMap::new(),
             ai_last_tick_ms: None,
             events: vec!["host created room".to_string()],
@@ -946,24 +932,20 @@ async fn handle_browser_host_relay_message(
     state: &mut Option<BrowserHostLobby>,
     host_name: &str,
     writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-    set_room_code: WriteSignal<String>,
-    set_connection: WriteSignal<ConnectionState>,
-    set_live_frame: WriteSignal<Option<GalleryFrame>>,
-    set_relay_player_id: WriteSignal<Option<PlayerId>>,
-    set_game_player_id: WriteSignal<Option<PlayerId>>,
+    signals: BrowserHostSignals,
 ) -> Result<bool, String> {
     match relay_message {
         RelayServerMessage::RoomCreated { room } => {
-            set_room_code.set(room.display());
-            set_relay_player_id.set(Some(PlayerId(1)));
-            set_game_player_id.set(Some(PlayerId(1)));
-            set_connection.set(ConnectionState::Connected {
+            signals.set_room_code.set(room.display());
+            signals.session.set_relay_player_id.set(Some(PlayerId(1)));
+            signals.session.set_game_player_id.set(Some(PlayerId(1)));
+            signals.session.set_connection.set(ConnectionState::Connected {
                 message: format!("Hosting room {}", room.display()),
             });
             let lobby = BrowserHostLobby::new(room, host_name.to_string());
             *state = Some(lobby);
             if let Some(state) = state {
-                publish_browser_host_state(state, writer, set_live_frame).await?;
+                publish_browser_host_state(state, writer, signals.session.set_live_frame).await?;
             }
         }
         RelayServerMessage::JoinForwarded {
@@ -981,7 +963,7 @@ async fn handle_browser_host_relay_message(
             };
             send_browser_host_direct(state, writer, pending_player_id, welcome).await?;
             state.push_event(format!("{} joined", assigned.name));
-            publish_browser_host_state(state, writer, set_live_frame).await?;
+            publish_browser_host_state(state, writer, signals.session.set_live_frame).await?;
         }
         RelayServerMessage::ClientToHost {
             player_id, message, ..
@@ -991,7 +973,7 @@ async fn handle_browser_host_relay_message(
             };
             let Some(game_player_id) = state.game_player_id_for_relay(player_id) else {
                 state.push_event(format!("unknown relay player {} ignored", player_id.0));
-                publish_browser_host_state(state, writer, set_live_frame).await?;
+                publish_browser_host_state(state, writer, signals.session.set_live_frame).await?;
                 return Ok(true);
             };
             let message = serde_json::from_value::<ClientMessage>(message)
@@ -1001,8 +983,8 @@ async fn handle_browser_host_relay_message(
                 game_player_id,
                 message,
                 writer,
-                set_connection,
-                set_live_frame,
+                signals.session.set_connection,
+                signals.session.set_live_frame,
             )
             .await?;
         }
@@ -1019,18 +1001,18 @@ async fn handle_browser_host_relay_message(
                     player.connected = false;
                     let name = player.name.clone();
                     state.push_event(format!("{name} disconnected"));
-                    publish_browser_host_state(state, writer, set_live_frame).await?;
+                    publish_browser_host_state(state, writer, signals.session.set_live_frame).await?;
                 }
             }
         }
         RelayServerMessage::Error { message } => {
-            set_connection.set(ConnectionState::Failed { message });
-            set_live_frame.set(None);
+            signals.session.set_connection.set(ConnectionState::Failed { message });
+            signals.session.set_live_frame.set(None);
             return Ok(false);
         }
         RelayServerMessage::RoomClosed { reason } => {
-            set_connection.set(ConnectionState::Closed { reason });
-            set_live_frame.set(None);
+            signals.session.set_connection.set(ConnectionState::Closed { reason });
+            signals.session.set_live_frame.set(None);
             return Ok(false);
         }
         RelayServerMessage::HostToClient { .. } | RelayServerMessage::HostBroadcast { .. } => {}
@@ -1178,11 +1160,7 @@ fn browser_return_host_to_lobby(state: &mut BrowserHostLobby) {
     state.active_race = None;
     state.active_results = None;
     state.core_race = None;
-    state.race_placements.clear();
-    state.first_finished_at_ms = None;
-    state.bonus_attempts.clear();
-    state.spent_bonus_gaps.clear();
-    state.player_effects.clear();
+    state.runtime.reset();
     state.ai_char_budget.clear();
     state.ai_last_tick_ms = None;
     state.push_event("returned to lobby");
@@ -1276,11 +1254,7 @@ async fn run_browser_host_countdown(
     ));
     state.active_results = None;
     state.core_race = None;
-    state.race_placements.clear();
-    state.first_finished_at_ms = None;
-    state.bonus_attempts.clear();
-    state.spent_bonus_gaps.clear();
-    state.player_effects.clear();
+    state.runtime.reset();
     state.ai_char_budget.clear();
     state.ai_last_tick_ms = None;
     publish_browser_host_state(state, writer, set_live_frame).await?;
@@ -1306,18 +1280,14 @@ async fn run_browser_host_countdown(
         &racers,
         &race_track_words,
         &state.bonuses,
-        vec!["browser-hosted gameplay input is not implemented yet".to_string()],
+        vec!["browser-hosted race started".to_string()],
     ));
     state.active_results = None;
     state.core_race = Some(browser_host_core_race(&racers, race_track_words));
     state.next_track_words = browser_generate_track_words();
-    state.race_placements.clear();
-    state.first_finished_at_ms = None;
-    state.bonus_attempts.clear();
-    state.spent_bonus_gaps.clear();
-    state.player_effects.clear();
+    state.runtime.reset();
     if let (Some(snapshot), Some(core_race)) = (&mut state.active_race, &state.core_race) {
-        browser_sync_snapshot_from_core(snapshot, core_race, &state.players, &state.player_effects);
+        browser_sync_snapshot_from_core(snapshot, core_race, &state.players, &state.runtime.player_effects);
     }
     state.ai_char_budget.clear();
     state.ai_last_tick_ms = Some(browser_now_ms());
@@ -1388,16 +1358,13 @@ fn browser_host_player_snapshot(player: &LobbyPlayer) -> PlayerSnapshot {
 
 fn browser_host_core_race(racers: &[LobbyPlayer], track_words: Vec<String>) -> RaceState {
     let now = Instant::now();
-    let mut race = RaceState::new(Track::new(track_words));
-    for racer in racers {
-        race.add_player(
-            RacePlayerId(racer.id.0),
-            racer.name.clone(),
-            browser_player_color_id(racer.color),
-            now,
-        );
-    }
-    race
+    let participants = racers.iter().map(|racer| RaceParticipant {
+        id: RacePlayerId(racer.id.0),
+        name: racer.name.clone(),
+        color: browser_player_color_id(racer.color),
+        connected: racer.connected,
+    });
+    RaceState::from_participants(Track::new(track_words), participants, now)
 }
 
 fn browser_ensure_core_race(state: &mut BrowserHostLobby) {
@@ -1477,7 +1444,7 @@ fn apply_browser_host_race_key_input(
     }
 
     let action = browser_protocol_key_to_action(key);
-    if state.bonus_attempts.contains_key(&player_id) {
+    if state.runtime.bonus_attempts.contains_key(&player_id) {
         let previous_event_count = state.events.len();
         apply_browser_bonus_typing_action(state, player_id, action);
         browser_sync_active_race_from_core(state);
@@ -1492,7 +1459,7 @@ fn apply_browser_host_race_key_input(
         && let Some(attempt) = browser_bonus_start(state, player_id, ch, Instant::now())
     {
         let previous_event_count = state.events.len();
-        state.bonus_attempts.insert(player_id, attempt);
+        state.runtime.bonus_attempts.insert(player_id, attempt);
         apply_browser_bonus_char(state, player_id, ch);
         browser_sync_active_race_from_core(state);
         set_browser_race_input_event(state, &player_name, previous_event_count);
@@ -1507,13 +1474,15 @@ fn apply_browser_host_race_key_input(
             return;
         };
         core_race.apply_key_input(RacePlayerId(player_id.0), action, Instant::now());
-        browser_record_finished_placements(core_race, &mut state.race_placements);
+        state.runtime
+        .lifecycle
+            .update(core_race, Instant::now(), BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT);
     }
     browser_sync_active_race_from_core(state);
     if let Some(race) = &mut state.active_race {
         race.events = vec![format!("{player_name} typed")];
     }
-    browser_update_race_status(state, browser_now_ms());
+    browser_update_race_status(state, Instant::now());
     set_connection.set(ConnectionState::Connected {
         message: format!("{player_name} typed"),
     });
@@ -1524,7 +1493,7 @@ fn browser_player_input_is_paused(
     player_id: PlayerId,
     now: Instant,
 ) -> bool {
-    if player_is_stunned(&state.player_effects, RacePlayerId(player_id.0), now) {
+    if player_is_stunned(&state.runtime.player_effects, RacePlayerId(player_id.0), now) {
         return true;
     }
 
@@ -1555,7 +1524,7 @@ fn browser_sync_active_race_from_core(state: &mut BrowserHostLobby) {
     let (Some(snapshot), Some(core_race)) = (&mut state.active_race, &state.core_race) else {
         return;
     };
-    browser_sync_snapshot_from_core(snapshot, core_race, &state.players, &state.player_effects);
+    browser_sync_snapshot_from_core(snapshot, core_race, &state.players, &state.runtime.player_effects);
     snapshot.bonuses = browser_bonus_snapshots(&state.bonuses, Instant::now());
     state.race_sequence += 1;
     snapshot.sequence = state.race_sequence;
@@ -1578,7 +1547,7 @@ fn apply_browser_bonus_typing_action(
                         .find(|player| player.id == RacePlayerId(player_id.0))
                 })
             else {
-                state.bonus_attempts.remove(&player_id);
+                state.runtime.bonus_attempts.remove(&player_id);
                 return;
             };
 
@@ -1589,7 +1558,7 @@ fn apply_browser_bonus_typing_action(
             let input_is_empty = input.is_empty();
             recalculate_browser_bonus_typo(state, player_id, &input);
             if input_is_empty {
-                state.bonus_attempts.remove(&player_id);
+                state.runtime.bonus_attempts.remove(&player_id);
             }
         }
         KeyAction::Space => {
@@ -1620,7 +1589,7 @@ fn browser_bonus_start(
     }
 
     let (point_index, point) = state.bonuses.point_for_gap(player.state.word_index)?;
-    if state
+    if state.runtime
         .spent_bonus_gaps
         .get(&player_id)
         .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
@@ -1637,11 +1606,11 @@ fn browser_bonus_start(
 }
 
 fn apply_browser_bonus_char(state: &mut BrowserHostLobby, player_id: PlayerId, ch: char) {
-    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
         return;
     };
     let Some(target) = browser_bonus_target(state, attempt).map(str::to_owned) else {
-        state.bonus_attempts.remove(&player_id);
+        state.runtime.bonus_attempts.remove(&player_id);
         return;
     };
     let Some(player) = state.core_race.as_mut().and_then(|race| {
@@ -1650,7 +1619,7 @@ fn apply_browser_bonus_char(state: &mut BrowserHostLobby, player_id: PlayerId, c
             .find(|player| player.id == RacePlayerId(player_id.0))
     })
     else {
-        state.bonus_attempts.remove(&player_id);
+        state.runtime.bonus_attempts.remove(&player_id);
         return;
     };
 
@@ -1670,7 +1639,7 @@ fn apply_browser_bonus_char(state: &mut BrowserHostLobby, player_id: PlayerId, c
 }
 
 fn recalculate_browser_bonus_typo(state: &mut BrowserHostLobby, player_id: PlayerId, input: &str) {
-    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
         return;
     };
     let target = browser_bonus_target(state, attempt).map(str::to_owned);
@@ -1680,7 +1649,7 @@ fn recalculate_browser_bonus_typo(state: &mut BrowserHostLobby, player_id: Playe
             .find(|player| player.id == RacePlayerId(player_id.0))
     })
     else {
-        state.bonus_attempts.remove(&player_id);
+        state.runtime.bonus_attempts.remove(&player_id);
         return;
     };
 
@@ -1690,7 +1659,7 @@ fn recalculate_browser_bonus_typo(state: &mut BrowserHostLobby, player_id: Playe
 }
 
 fn browser_bonus_completed_without_typo(state: &BrowserHostLobby, player_id: PlayerId) -> bool {
-    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
         return false;
     };
     let Some(target) = browser_bonus_target(state, attempt) else {
@@ -1708,7 +1677,7 @@ fn browser_bonus_completed_without_typo(state: &BrowserHostLobby, player_id: Pla
 }
 
 fn claim_browser_bonus(state: &mut BrowserHostLobby, player_id: PlayerId, now: Instant) {
-    let Some(attempt) = state.bonus_attempts.remove(&player_id) else {
+    let Some(attempt) = state.runtime.bonus_attempts.remove(&player_id) else {
         return;
     };
 
@@ -1741,7 +1710,7 @@ fn claim_browser_bonus(state: &mut BrowserHostLobby, player_id: PlayerId, now: I
     }
 
     if let Some(after_word_index) = after_word_index {
-        state.spent_bonus_gaps.insert(player_id, after_word_index);
+        state.runtime.spent_bonus_gaps.insert(player_id, after_word_index);
     }
 
     let name = state
@@ -1777,7 +1746,7 @@ fn activate_browser_item_pickup(
         .collect::<HashSet<_>>();
     let report = activate_item_pickup(
         core_race,
-        &mut state.player_effects,
+        &mut state.runtime.player_effects,
         &ai_players,
         &state.item_registry,
         RacePlayerId(player_id.0),
@@ -1786,7 +1755,7 @@ fn activate_browser_item_pickup(
     );
 
     for interrupted in report.interrupted_players {
-        state.bonus_attempts.remove(&PlayerId(interrupted.0));
+        state.runtime.bonus_attempts.remove(&PlayerId(interrupted.0));
     }
     for ai_id in report.reset_ai_players {
         state.ai_char_budget.insert(PlayerId(ai_id.0), 0.0);
@@ -1890,7 +1859,7 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
     let mut changed = false;
     if let Some(core_race) = &mut state.core_race {
         for interrupted in advance_mushrooms(core_race, Instant::now()) {
-            state.bonus_attempts.remove(&PlayerId(interrupted.0));
+            state.runtime.bonus_attempts.remove(&PlayerId(interrupted.0));
             changed = true;
         }
     }
@@ -1935,7 +1904,7 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
             })
         {
             if player.state.is_finished()
-                || player_is_stunned(&state.player_effects, player.id, Instant::now())
+                || player_is_stunned(&state.runtime.player_effects, player.id, Instant::now())
                 || player_has_active_mushroom_effect(player, Instant::now())
             {
                 continue;
@@ -1955,12 +1924,16 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
         }
 
         if changed {
-            browser_record_finished_placements(core_race, &mut state.race_placements);
+            state.runtime.lifecycle.update(
+                core_race,
+                Instant::now(),
+                BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
+            );
             browser_sync_snapshot_from_core(
                 snapshot,
                 core_race,
                 &state.players,
-                &state.player_effects,
+                &state.runtime.player_effects,
             );
             state.race_sequence += 1;
             snapshot.sequence = state.race_sequence;
@@ -1968,20 +1941,11 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
         }
     }
 
-    let race_status_changed = browser_update_race_status(state, browser_now_ms());
+    let race_status_changed = browser_update_race_status(state, Instant::now());
     changed || race_status_changed
 }
 
-fn browser_record_finished_placements(core_race: &RaceState, placements: &mut Vec<PlayerId>) {
-    for player in &core_race.players {
-        let player_id = PlayerId(player.id.0);
-        if player.state.is_finished() && !placements.contains(&player_id) {
-            placements.push(player_id);
-        }
-    }
-}
-
-fn browser_update_race_status(state: &mut BrowserHostLobby, now_ms: f64) -> bool {
+fn browser_update_race_status(state: &mut BrowserHostLobby, now: Instant) -> bool {
     if state.active_results.is_some() {
         return false;
     }
@@ -1989,74 +1953,23 @@ fn browser_update_race_status(state: &mut BrowserHostLobby, now_ms: f64) -> bool
         return false;
     };
 
-    browser_record_finished_placements(core_race, &mut state.race_placements);
-    if state.first_finished_at_ms.is_none() && !state.race_placements.is_empty() {
-        state.first_finished_at_ms = Some(now_ms);
-    }
+    let update = state.runtime
+        .lifecycle
+        .update(core_race, now, BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT);
 
-    let connected_racers = core_race
-        .players
-        .iter()
-        .filter(|player| player.connected)
-        .count();
-    let connected_finished = core_race
-        .players
-        .iter()
-        .filter(|player| player.connected && player.state.is_finished())
-        .count();
-    let all_connected_finished = connected_racers > 0 && connected_finished == connected_racers;
-    let all_connected_disconnected = connected_racers == 0;
-    let timeout_expired = state.first_finished_at_ms.is_some_and(|first_finished_at_ms| {
-        now_ms - first_finished_at_ms >= BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT_MS
-    });
-
-    if !all_connected_finished && !all_connected_disconnected && !timeout_expired {
+    if !matches!(update.status, RaceLifecycleStatus::Finished { .. }) {
         return false;
     }
 
-    browser_append_unfinished_connected_placements(core_race, &mut state.race_placements);
     browser_finish_race(state);
     true
-}
-
-fn browser_append_unfinished_connected_placements(
-    core_race: &RaceState,
-    placements: &mut Vec<PlayerId>,
-) {
-    let mut remaining = core_race
-        .players
-        .iter()
-        .filter(|player| player.connected)
-        .map(|player| {
-            (
-                PlayerId(player.id.0),
-                player.state.word_index,
-                player.state.input.chars().count(),
-            )
-        })
-        .filter(|(id, _, _)| !placements.contains(id))
-        .collect::<Vec<_>>();
-
-    remaining.sort_by_key(|(_, word_index, input_len)| {
-        (
-            std::cmp::Reverse(*word_index),
-            std::cmp::Reverse(*input_len),
-        )
-    });
-
-    placements.extend(remaining.into_iter().map(|(id, _, _)| id));
 }
 
 fn browser_finish_race(state: &mut BrowserHostLobby) {
     let Some(core_race) = &state.core_race else {
         return;
     };
-    let placements = state
-        .race_placements
-        .iter()
-        .map(|player_id| RacePlayerId(player_id.0))
-        .collect::<Vec<_>>();
-    let rows = build_shared_race_result_rows(core_race, &placements, Instant::now())
+    let rows = build_shared_race_result_rows(core_race, &state.runtime.lifecycle.placements, Instant::now())
         .into_iter()
         .map(|row| typekart_protocol::RaceResultRow {
             placement: row.placement,
@@ -2083,13 +1996,20 @@ fn browser_finish_race(state: &mut BrowserHostLobby) {
         snapshot.events = vec!["Race finished".to_string()];
     }
     state.active_results = Some(ResultsFrame {
-        placements: state.race_placements.clone(),
+        placements: browser_protocol_placements(&state.runtime.lifecycle.placements),
         rows,
         events: vec!["Race finished".to_string()],
     });
     state.active_race = None;
     state.ai_char_budget.clear();
     state.ai_last_tick_ms = None;
+}
+
+fn browser_protocol_placements(placements: &[RacePlayerId]) -> Vec<PlayerId> {
+    placements
+        .iter()
+        .map(|player_id| PlayerId(player_id.0))
+        .collect()
 }
 
 fn browser_host_ai_elapsed_ms(state: &mut BrowserHostLobby, tick_ms: u32) -> f64 {
@@ -2698,7 +2618,7 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BROWSER_HOST_AI_TICK_MS, BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT_MS,
+        BROWSER_HOST_AI_TICK_MS, BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
         BROWSER_HOST_TRACK_WORD_COUNT, BrowserHostLobby, add_browser_lobby_human,
         apply_browser_host_ai_tick, apply_browser_host_race_key_input, browser_ai_wpm,
         browser_bonus_snapshots, browser_controls, browser_generate_bonus_state,
@@ -2712,6 +2632,7 @@ mod tests {
     use leptos::prelude::signal;
     use typekart::game::bonus::{BonusChoice, BonusPoint, BonusState};
     use typekart::game::items::{HeldItem, ItemPickup};
+    use typekart::game::race::RacePlayerId;
     use typekart_protocol::{
         AiDifficultySnapshot, AssignedColor, BonusChoiceSnapshotStatus, LobbyPlayer,
         NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey, RaceResultStatus, RoomCode,
@@ -2942,7 +2863,7 @@ mod tests {
 
     #[test]
     fn browser_lobby_names_are_deduped() {
-        let existing = vec![
+        let existing = [
             LobbyPlayer {
                 id: PlayerId(1),
                 name: "tom".to_string(),
@@ -3201,10 +3122,10 @@ mod tests {
             );
         }
 
-        let first_finished_at_ms = lobby.first_finished_at_ms.unwrap();
+        let first_finished_at = lobby.runtime.lifecycle.first_finished_at.unwrap();
         assert!(browser_update_race_status(
             &mut lobby,
-            first_finished_at_ms + BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT_MS
+            first_finished_at + BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT
         ));
 
         let results = lobby.active_results.as_ref().unwrap();
@@ -3234,7 +3155,7 @@ mod tests {
             &lobby.players.clone(),
             super::browser_demo_track_words(),
         ));
-        lobby.race_placements = vec![PlayerId(1)];
+        lobby.runtime.lifecycle.placements = vec![RacePlayerId(1)];
 
         process_browser_host_client_message(
             &mut lobby,
@@ -3246,7 +3167,7 @@ mod tests {
         assert!(lobby.active_results.is_none());
         assert!(lobby.active_race.is_none());
         assert!(lobby.core_race.is_none());
-        assert!(lobby.race_placements.is_empty());
+        assert!(lobby.runtime.lifecycle.placements.is_empty());
         assert!(lobby.events.iter().any(|event| event == "returned to lobby"));
     }
 
@@ -3326,7 +3247,7 @@ mod tests {
         let player = &lobby.active_race.as_ref().unwrap().players[0];
         assert_eq!(player.word_index, 1);
         assert_eq!(player.input, "dash");
-        assert!(lobby.bonus_attempts.contains_key(&PlayerId(1)));
+        assert!(lobby.runtime.bonus_attempts.contains_key(&PlayerId(1)));
         assert!(matches!(
             lobby.active_race.as_ref().unwrap().bonuses[0].choices[0].status,
             BonusChoiceSnapshotStatus::Available
@@ -3343,8 +3264,8 @@ mod tests {
         assert_eq!(player.word_index, 1);
         assert_eq!(player.input, "");
         assert_eq!(player.typo_index, None);
-        assert!(!lobby.bonus_attempts.contains_key(&PlayerId(1)));
-        assert_eq!(lobby.spent_bonus_gaps.get(&PlayerId(1)), Some(&0));
+        assert!(!lobby.runtime.bonus_attempts.contains_key(&PlayerId(1)));
+        assert_eq!(lobby.runtime.spent_bonus_gaps.get(&PlayerId(1)), Some(&0));
         assert!(matches!(
             lobby.active_race.as_ref().unwrap().bonuses[0].choices[0].status,
             BonusChoiceSnapshotStatus::Cooldown { .. }

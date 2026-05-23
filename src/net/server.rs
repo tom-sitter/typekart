@@ -21,14 +21,14 @@ use crate::game::{
     bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
     item_effects::{
         AttackDirection, RaceImpactCue, RaceImpactCueKind, RaceItemCue, RaceItemCueKind,
-        RaceItemCuePlacement, RaceItemEffectState, activate_item_pickup, advance_mushrooms,
+        RaceItemCuePlacement, activate_item_pickup, advance_mushrooms,
         player_has_active_mushroom_effect, player_is_stunned as shared_player_is_stunned,
     },
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
     mods::ActiveModConfig,
     race::{
-        PlayerColorId, RacePlayerId, RaceState,
-        build_race_result_rows as build_shared_race_result_rows,
+        PlayerColorId, RaceLifecycleStatus, RaceParticipant, RacePlayerId, RaceRuntimeState,
+        RaceState, build_race_result_rows as build_shared_race_result_rows,
     },
     track::{Track, WordList},
     typing::{KeyAction, TypingEvent, first_typo_index},
@@ -110,14 +110,10 @@ struct HostState {
     active_mod_config: ActiveModConfig,
     max_players: usize,
     ai_difficulty: AiDifficulty,
-    bonus_attempts: HashMap<PlayerId, NetworkBonusAttempt>,
-    spent_bonus_gaps: HashMap<PlayerId, usize>,
-    player_effects: HashMap<RacePlayerId, RaceItemEffectState>,
+    runtime: RaceRuntimeState<PlayerId, NetworkBonusAttempt>,
     phase: NetworkRacePhase,
     snapshot_sequence: u64,
     events: Vec<String>,
-    placements: Vec<PlayerId>,
-    first_finished_at: Option<Instant>,
     debug_log: Option<SharedNetworkLog>,
     race_results_sent: bool,
 }
@@ -203,14 +199,10 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         active_mod_config: config.active_mod_config,
         max_players: config.max_players,
         ai_difficulty: config.ai_difficulty,
-        bonus_attempts: HashMap::new(),
-        spent_bonus_gaps: HashMap::new(),
-        player_effects: HashMap::new(),
+        runtime: RaceRuntimeState::new(),
         phase: NetworkRacePhase::WaitingForHost,
         snapshot_sequence: 0,
         events: Vec::new(),
-        placements: Vec::new(),
-        first_finished_at: None,
         debug_log: config.debug_log,
         race_results_sent: false,
     }));
@@ -542,9 +534,12 @@ fn remove_lobby_player(state: &mut HostState, player_id: PlayerId) -> Result<()>
         .players
         .retain(|player| player.id != RacePlayerId(player_id.0));
     state.ai_racers.remove(&player_id);
-    state.bonus_attempts.remove(&player_id);
-    state.spent_bonus_gaps.remove(&player_id);
-    state.player_effects.remove(&RacePlayerId(player_id.0));
+    state.runtime.bonus_attempts.remove(&player_id);
+    state.runtime.spent_bonus_gaps.remove(&player_id);
+    state
+        .runtime
+        .player_effects
+        .remove(&RacePlayerId(player_id.0));
     push_event(
         state,
         match kind {
@@ -1028,9 +1023,12 @@ fn handle_player_disconnect(state: &mut HostState, player_id: PlayerId, now: Ins
     {
         player.connected = false;
     }
-    state.bonus_attempts.remove(&player_id);
-    state.spent_bonus_gaps.remove(&player_id);
-    state.player_effects.remove(&RacePlayerId(player_id.0));
+    state.runtime.bonus_attempts.remove(&player_id);
+    state.runtime.spent_bonus_gaps.remove(&player_id);
+    state
+        .runtime
+        .player_effects
+        .remove(&RacePlayerId(player_id.0));
     state.clients.retain(|client| client.player_id != player_id);
 
     if player_id == PlayerId(1) {
@@ -1170,28 +1168,23 @@ fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
     let word_count = state.race.track.len();
     let track = Track::generate(&state.word_list, word_count)
         .context("failed to generate rematch track")?;
-    state.race = RaceState::new(track);
     let now = Instant::now();
-    for player in state
+    let participants = state
         .players
         .iter()
         .filter(|player| player.connected && player.ready)
-    {
-        state.race.add_player(
-            RacePlayerId(player.id.0),
-            player.name.clone(),
-            player.color.into(),
-            now,
-        );
-    }
+        .map(|player| RaceParticipant {
+            id: RacePlayerId(player.id.0),
+            name: player.name.clone(),
+            color: player.color.into(),
+            connected: player.connected,
+        })
+        .collect::<Vec<_>>();
+    state.race = RaceState::from_participants(track, participants, now);
     reset_network_ai_timing(state, now);
 
     state.bonuses = BonusState::generate(&state.race.track, &state.word_list);
-    state.bonus_attempts.clear();
-    state.spent_bonus_gaps.clear();
-    state.player_effects.clear();
-    state.placements.clear();
-    state.first_finished_at = None;
+    state.runtime.reset();
     state.race_results_sent = false;
     state.events.clear();
     state.phase = NetworkRacePhase::WaitingForHost;
@@ -1268,7 +1261,7 @@ fn apply_network_key_input(
         return true;
     }
 
-    if state.bonus_attempts.contains_key(&player_id) {
+    if state.runtime.bonus_attempts.contains_key(&player_id) {
         apply_network_bonus_typing_action(state, player_id, action, now);
         return true;
     }
@@ -1276,7 +1269,7 @@ fn apply_network_key_input(
     if let KeyAction::Char(ch) = action
         && let Some(attempt) = network_bonus_start(state, player_id, ch, now)
     {
-        state.bonus_attempts.insert(player_id, attempt);
+        state.runtime.bonus_attempts.insert(player_id, attempt);
         apply_network_bonus_char(state, player_id, ch);
         return true;
     }
@@ -1317,7 +1310,7 @@ fn apply_network_bonus_typing_action(
                 .iter_mut()
                 .find(|player| player.id == RacePlayerId(player_id.0))
             else {
-                state.bonus_attempts.remove(&player_id);
+                state.runtime.bonus_attempts.remove(&player_id);
                 return;
             };
 
@@ -1344,7 +1337,7 @@ fn apply_network_bonus_typing_action(
                 );
             }
             if input_is_empty {
-                state.bonus_attempts.remove(&player_id);
+                state.runtime.bonus_attempts.remove(&player_id);
                 push_network_log(
                     &state.debug_log,
                     format!("{} bonus attempt cancelled", player_label(state, player_id)),
@@ -1380,6 +1373,7 @@ fn network_bonus_start(
 
     let (point_index, point) = state.bonuses.point_for_gap(player.state.word_index)?;
     if state
+        .runtime
         .spent_bonus_gaps
         .get(&player_id)
         .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
@@ -1396,11 +1390,11 @@ fn network_bonus_start(
 }
 
 fn apply_network_bonus_char(state: &mut HostState, player_id: PlayerId, ch: char) {
-    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
         return;
     };
     let Some(target) = network_bonus_target(state, attempt).map(str::to_owned) else {
-        state.bonus_attempts.remove(&player_id);
+        state.runtime.bonus_attempts.remove(&player_id);
         return;
     };
     let Some(player) = state
@@ -1409,7 +1403,7 @@ fn apply_network_bonus_char(state: &mut HostState, player_id: PlayerId, ch: char
         .iter_mut()
         .find(|player| player.id == RacePlayerId(player_id.0))
     else {
-        state.bonus_attempts.remove(&player_id);
+        state.runtime.bonus_attempts.remove(&player_id);
         return;
     };
 
@@ -1435,7 +1429,7 @@ fn apply_network_bonus_char(state: &mut HostState, player_id: PlayerId, ch: char
 }
 
 fn recalculate_network_bonus_typo(state: &mut HostState, player_id: PlayerId, input: &str) {
-    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
         return;
     };
     let target = network_bonus_target(state, attempt).map(str::to_owned);
@@ -1445,7 +1439,7 @@ fn recalculate_network_bonus_typo(state: &mut HostState, player_id: PlayerId, in
         .iter_mut()
         .find(|player| player.id == RacePlayerId(player_id.0))
     else {
-        state.bonus_attempts.remove(&player_id);
+        state.runtime.bonus_attempts.remove(&player_id);
         return;
     };
 
@@ -1455,7 +1449,7 @@ fn recalculate_network_bonus_typo(state: &mut HostState, player_id: PlayerId, in
 }
 
 fn network_bonus_completed_without_typo(state: &HostState, player_id: PlayerId) -> bool {
-    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
         return false;
     };
     let Some(target) = network_bonus_target(state, attempt) else {
@@ -1469,7 +1463,7 @@ fn network_bonus_completed_without_typo(state: &HostState, player_id: PlayerId) 
 }
 
 fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let Some(attempt) = state.bonus_attempts.remove(&player_id) else {
+    let Some(attempt) = state.runtime.bonus_attempts.remove(&player_id) else {
         return;
     };
 
@@ -1502,7 +1496,10 @@ fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant)
     }
 
     if let Some(after_word_index) = after_word_index {
-        state.spent_bonus_gaps.insert(player_id, after_word_index);
+        state
+            .runtime
+            .spent_bonus_gaps
+            .insert(player_id, after_word_index);
     }
 
     let name = player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0));
@@ -1602,6 +1599,7 @@ fn network_position_band(state: &HostState, player_id: PlayerId) -> RacePosition
 
 fn player_input_is_paused(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
     if state
+        .runtime
         .player_effects
         .get(&RacePlayerId(player_id.0))
         .and_then(|effects| effects.stunned_until)
@@ -1629,7 +1627,7 @@ fn activate_network_pickup(
         .collect::<HashSet<_>>();
     let report = activate_item_pickup(
         &mut state.race,
-        &mut state.player_effects,
+        &mut state.runtime.player_effects,
         &ai_players,
         &state.item_registry,
         RacePlayerId(player_id.0),
@@ -1638,7 +1636,10 @@ fn activate_network_pickup(
     );
 
     for interrupted in report.interrupted_players {
-        state.bonus_attempts.remove(&PlayerId(interrupted.0));
+        state
+            .runtime
+            .bonus_attempts
+            .remove(&PlayerId(interrupted.0));
     }
     for ai_id in report.reset_ai_players {
         if let Some(ai) = state.ai_racers.get_mut(&PlayerId(ai_id.0)) {
@@ -1653,7 +1654,10 @@ fn activate_network_pickup(
 
 fn advance_network_mushrooms(state: &mut HostState, now: Instant) {
     for interrupted in advance_mushrooms(&mut state.race, now) {
-        state.bonus_attempts.remove(&PlayerId(interrupted.0));
+        state
+            .runtime
+            .bonus_attempts
+            .remove(&PlayerId(interrupted.0));
     }
 }
 
@@ -1687,6 +1691,7 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
         || player_has_active_mushroom_effect(player, now)
         || player_is_stunned(state, player_id, now)
         || state
+            .runtime
             .player_effects
             .get(&RacePlayerId(player_id.0))
             .and_then(|effects| effects.item_cue.as_ref())
@@ -1694,7 +1699,7 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
         || player.state.typo_index.is_some()
         || !player.state.input.is_empty()
         || player.state.is_finished()
-        || state.bonus_attempts.contains_key(&player_id)
+        || state.runtime.bonus_attempts.contains_key(&player_id)
     {
         return;
     }
@@ -1703,6 +1708,7 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
         return;
     };
     if state
+        .runtime
         .spent_bonus_gaps
         .get(&player_id)
         .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
@@ -1723,7 +1729,7 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
 
     let mut rng = thread_rng();
     let choice_index = available_choices[rng.gen_range(0..available_choices.len())];
-    state.bonus_attempts.insert(
+    state.runtime.bonus_attempts.insert(
         player_id,
         NetworkBonusAttempt {
             point_index,
@@ -1820,7 +1826,11 @@ fn ai_chars_per_second(words_per_minute: f64) -> f64 {
 }
 
 fn player_is_stunned(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
-    shared_player_is_stunned(&state.player_effects, RacePlayerId(player_id.0), now)
+    shared_player_is_stunned(
+        &state.runtime.player_effects,
+        RacePlayerId(player_id.0),
+        now,
+    )
 }
 
 fn ai_effective_wpm(
@@ -2108,15 +2118,16 @@ fn log_race_delta(state: &HostState) {
 fn broadcast_race_results(state: &mut HostState) -> Result<()> {
     let rows = build_race_result_rows(state, Instant::now());
     let row_count = rows.len();
+    let placements = protocol_placements(&state.runtime.lifecycle.placements);
     let results = ServerMessage::RaceResults {
-        placements: state.placements.clone(),
+        placements: placements.clone(),
         rows,
     };
     push_network_log(
         &state.debug_log,
         format!(
             "broadcast race results placements={:?} rows={}",
-            state.placements, row_count
+            placements, row_count
         ),
     );
 
@@ -2145,12 +2156,7 @@ fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
 }
 
 fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow> {
-    let placements = state
-        .placements
-        .iter()
-        .map(|player_id| RacePlayerId(player_id.0))
-        .collect::<Vec<_>>();
-    build_shared_race_result_rows(&state.race, &placements, now)
+    build_shared_race_result_rows(&state.race, &state.runtime.lifecycle.placements, now)
         .into_iter()
         .map(|row| RaceResultRow {
             placement: row.placement,
@@ -2172,6 +2178,13 @@ fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow>
         .collect()
 }
 
+fn protocol_placements(placements: &[RacePlayerId]) -> Vec<PlayerId> {
+    placements
+        .iter()
+        .map(|player_id| PlayerId(player_id.0))
+        .collect()
+}
+
 fn broadcast_race_results_once(state: &mut HostState) -> Result<()> {
     if state.race_results_sent {
         push_network_log(&state.debug_log, "skipped duplicate race results broadcast");
@@ -2188,53 +2201,31 @@ fn update_race_status(state: &mut HostState, now: Instant) {
         return;
     }
 
-    let finished_ids = state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.connected && player.state.is_finished())
-        .map(|player| PlayerId(player.id.0))
-        .collect::<Vec<_>>();
+    let update = state
+        .runtime
+        .lifecycle
+        .update(&state.race, now, POST_FIRST_FINISH_TIMEOUT);
 
-    for id in finished_ids {
-        if !state.placements.contains(&id) {
-            state.placements.push(id);
-            let name = player_name(state, id).unwrap_or_else(|| format!("player {}", id.0));
-            push_event(
-                state,
-                format!("{}. {name} finished", state.placements.len()),
-            );
-            push_network_log(
-                &state.debug_log,
-                format!("{}. {name} finished", state.placements.len()),
-            );
-        }
+    for id in update.newly_finished {
+        let placement = state
+            .runtime
+            .lifecycle
+            .placements
+            .iter()
+            .position(|placed| *placed == id)
+            .map(|index| index + 1)
+            .unwrap_or(state.runtime.lifecycle.placements.len());
+        let name = player_name(state, PlayerId(id.0)).unwrap_or_else(|| format!("player {}", id.0));
+        push_event(state, format!("{placement}. {name} finished"));
+        push_network_log(&state.debug_log, format!("{placement}. {name} finished"));
     }
 
-    if state.first_finished_at.is_none() && !state.placements.is_empty() {
-        state.first_finished_at = Some(now);
-    }
-
-    let connected_racers = state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.connected)
-        .count();
-    let connected_finished = state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.connected && player.state.is_finished())
-        .count();
-    let all_connected_finished = connected_racers > 0 && connected_finished == connected_racers;
-    let all_connected_disconnected = connected_racers == 0;
-    let timeout_expired = state.first_finished_at.is_some_and(|first_finished_at| {
-        now.duration_since(first_finished_at) >= POST_FIRST_FINISH_TIMEOUT
-    });
-
-    if all_connected_finished || all_connected_disconnected || timeout_expired {
-        append_unfinished_connected_placements(state);
+    if let RaceLifecycleStatus::Finished {
+        all_connected_finished,
+        all_connected_disconnected,
+        timeout_expired,
+    } = update.status
+    {
         state.phase = NetworkRacePhase::Finished;
         push_event(state, "Race finished".to_string());
         push_network_log(
@@ -2244,34 +2235,6 @@ fn update_race_status(state: &mut HostState, now: Instant) {
             ),
         );
     }
-}
-
-fn append_unfinished_connected_placements(state: &mut HostState) {
-    let mut remaining = state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.connected)
-        .map(|player| {
-            (
-                PlayerId(player.id.0),
-                player.state.word_index,
-                player.state.input.chars().count(),
-            )
-        })
-        .filter(|(id, _, _)| !state.placements.contains(id))
-        .collect::<Vec<_>>();
-
-    remaining.sort_by_key(|(_, word_index, input_len)| {
-        (
-            std::cmp::Reverse(*word_index),
-            std::cmp::Reverse(*input_len),
-        )
-    });
-
-    state
-        .placements
-        .extend(remaining.into_iter().map(|(id, _, _)| id));
 }
 
 fn player_name(state: &HostState, id: PlayerId) -> Option<String> {
@@ -2321,6 +2284,7 @@ fn build_player_snapshots(state: &HostState, now: Instant) -> Vec<PlayerSnapshot
         .map(|player| {
             let player_id = PlayerId(player.id.0);
             let effects = state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(player_id.0))
                 .cloned()
@@ -2503,24 +2467,25 @@ mod tests {
 
     use super::{
         AssignedColor, ConnectedClient, HostState, NetworkAiRacer, NetworkRacePhase,
-        POST_FIRST_FINISH_TIMEOUT, PlayerId, RaceImpactCueKind, RaceItemEffectState,
-        activate_network_pickup, add_lobby_ai_racer, add_network_ai_racers,
-        advance_network_ai_racers, apply_network_key_input, broadcast_lobby_snapshot,
-        broadcast_race_results_once, broadcast_race_snapshot, build_race_result_rows,
-        build_race_snapshot, cleanup_disconnected_waiting_players, client_is_in_current_race,
-        connected_player_count, first_available_color, handle_client_messages,
-        handle_player_disconnect, new_human_lobby_player, push_event, read_join_hello,
-        reconcile_phase_after_disconnect, remove_lobby_player, rename_lobby_player,
-        reset_race_from_lobby, return_to_lobby, set_lobby_ai_difficulty, unique_player_name,
-        update_host_ready, update_race_status, validate_host_capacity, welcome_joiner,
+        POST_FIRST_FINISH_TIMEOUT, PlayerId, RaceImpactCueKind, activate_network_pickup,
+        add_lobby_ai_racer, add_network_ai_racers, advance_network_ai_racers,
+        apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
+        broadcast_race_snapshot, build_race_result_rows, build_race_snapshot,
+        cleanup_disconnected_waiting_players, client_is_in_current_race, connected_player_count,
+        first_available_color, handle_client_messages, handle_player_disconnect,
+        new_human_lobby_player, push_event, read_join_hello, reconcile_phase_after_disconnect,
+        remove_lobby_player, rename_lobby_player, reset_race_from_lobby, return_to_lobby,
+        set_lobby_ai_difficulty, unique_player_name, update_host_ready, update_race_status,
+        validate_host_capacity, welcome_joiner,
     };
     use crate::game::{
         ai::AiDifficulty,
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         effects::ActiveEffect,
+        item_effects::RaceItemEffectState,
         items::{HeldItem, ItemActivation, ItemDefinition, ItemPickup, ItemRegistry},
         mods::{ActiveModConfig, ContentMetadata},
-        race::{PlayerColorId, RacePlayerId, RaceState},
+        race::{PlayerColorId, RacePlayerId, RaceRuntimeState, RaceState},
         stats::TypingStats,
         track::{Track, WordList},
         typing::KeyAction,
@@ -2660,14 +2625,10 @@ mod tests {
                 active_mod_config: test_active_mod_config(),
                 max_players: 6,
                 ai_difficulty: AiDifficulty::Easy,
-                bonus_attempts: HashMap::new(),
-                spent_bonus_gaps: HashMap::new(),
-                player_effects: HashMap::new(),
+                runtime: RaceRuntimeState::new(),
                 phase: NetworkRacePhase::WaitingForHost,
                 snapshot_sequence: 0,
                 events: Vec::new(),
-                placements: Vec::new(),
-                first_finished_at: None,
                 debug_log: None,
                 race_results_sent: false,
             };
@@ -2719,14 +2680,10 @@ mod tests {
                 active_mod_config: test_active_mod_config(),
                 max_players: 6,
                 ai_difficulty: AiDifficulty::Easy,
-                bonus_attempts: HashMap::new(),
-                spent_bonus_gaps: HashMap::new(),
-                player_effects: HashMap::new(),
+                runtime: RaceRuntimeState::new(),
                 phase: NetworkRacePhase::WaitingForHost,
                 snapshot_sequence: 0,
                 events: Vec::new(),
-                placements: Vec::new(),
-                first_finished_at: None,
                 debug_log: None,
                 race_results_sent: false,
             }));
@@ -2883,7 +2840,7 @@ mod tests {
                 last_update: now,
             },
         );
-        state.player_effects.insert(
+        state.runtime.player_effects.insert(
             RacePlayerId(2),
             RaceItemEffectState {
                 stunned_until: Some(now + Duration::from_secs(1)),
@@ -2961,7 +2918,7 @@ mod tests {
                 .iter()
                 .any(|choice| matches!(choice.status, BonusChoiceStatus::Cooldown { .. }))
         );
-        assert_eq!(state.spent_bonus_gaps.get(&PlayerId(2)), Some(&0));
+        assert_eq!(state.runtime.spent_bonus_gaps.get(&PlayerId(2)), Some(&0));
         assert!(state.events.iter().any(|event| event == "alex got Shield"));
     }
 
@@ -2987,6 +2944,7 @@ mod tests {
 
         assert!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(1))
                 .and_then(|effects| effects.stunned_until)
@@ -2994,6 +2952,7 @@ mod tests {
         );
         assert!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(1))
                 .and_then(|effects| effects.impact_cue)
@@ -3001,6 +2960,7 @@ mod tests {
         );
         assert!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(2))
                 .and_then(|effects| effects.item_cue.as_ref())
@@ -3034,6 +2994,7 @@ mod tests {
         assert_eq!(state.ai_racers.get(&PlayerId(2)).unwrap().char_budget, 0.0);
         assert!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(2))
                 .and_then(|effects| effects.stunned_until)
@@ -3123,7 +3084,7 @@ mod tests {
     #[test]
     fn rematch_rebuilds_race_from_connected_lobby_players() {
         let mut state = test_host_state(NetworkRacePhase::Finished);
-        state.placements = vec![PlayerId(2), PlayerId(1)];
+        state.runtime.lifecycle.placements = vec![RacePlayerId(2), RacePlayerId(1)];
         state.race_results_sent = true;
         state.players.push(LobbyPlayer {
             id: PlayerId(3),
@@ -3147,7 +3108,7 @@ mod tests {
                 .iter()
                 .any(|player| player.id == RacePlayerId(3))
         );
-        assert!(state.placements.is_empty());
+        assert!(state.runtime.lifecycle.placements.is_empty());
         assert!(!state.race_results_sent);
         assert!(state.events.is_empty());
     }
@@ -3190,13 +3151,13 @@ mod tests {
     #[test]
     fn return_to_lobby_resets_finished_race() {
         let mut state = test_host_state(NetworkRacePhase::Finished);
-        state.placements = vec![PlayerId(2), PlayerId(1)];
+        state.runtime.lifecycle.placements = vec![RacePlayerId(2), RacePlayerId(1)];
         state.race_results_sent = true;
 
         return_to_lobby(&mut state).unwrap();
 
         assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
-        assert!(state.placements.is_empty());
+        assert!(state.runtime.lifecycle.placements.is_empty());
         assert!(!state.race_results_sent);
         assert_eq!(state.race.players.len(), 2);
     }
@@ -3205,8 +3166,9 @@ mod tests {
     fn return_to_lobby_cancels_active_race() {
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.snapshot_sequence = 7;
-        state.placements = vec![PlayerId(1)];
+        state.runtime.lifecycle.placements = vec![RacePlayerId(1)];
         state
+            .runtime
             .player_effects
             .insert(RacePlayerId(1), Default::default());
 
@@ -3214,8 +3176,8 @@ mod tests {
 
         assert_eq!(state.snapshot_sequence, 8);
         assert_eq!(state.phase, NetworkRacePhase::WaitingForHost);
-        assert!(state.placements.is_empty());
-        assert!(state.player_effects.is_empty());
+        assert!(state.runtime.lifecycle.placements.is_empty());
+        assert!(state.runtime.player_effects.is_empty());
         assert!(state.events.iter().any(|event| event == "Race cancelled"));
         assert_eq!(state.race.players.len(), 2);
     }
@@ -3314,14 +3276,10 @@ mod tests {
             active_mod_config: test_active_mod_config(),
             max_players: 6,
             ai_difficulty: AiDifficulty::Easy,
-            bonus_attempts: HashMap::new(),
-            spent_bonus_gaps: HashMap::new(),
-            player_effects: HashMap::new(),
+            runtime: RaceRuntimeState::new(),
             phase: NetworkRacePhase::WaitingForHost,
             snapshot_sequence: 0,
             events: Vec::new(),
-            placements: Vec::new(),
-            first_finished_at: None,
             debug_log: None,
             race_results_sent: false,
         }));
@@ -3345,16 +3303,12 @@ mod tests {
             active_mod_config: test_active_mod_config(),
             max_players: 6,
             ai_difficulty: AiDifficulty::Easy,
-            bonus_attempts: HashMap::new(),
-            spent_bonus_gaps: HashMap::new(),
-            player_effects: HashMap::new(),
+            runtime: RaceRuntimeState::new(),
             phase: NetworkRacePhase::Countdown {
                 remaining_seconds: 3,
             },
             snapshot_sequence: 0,
             events: Vec::new(),
-            placements: Vec::new(),
-            first_finished_at: None,
             debug_log: None,
             race_results_sent: false,
         };
@@ -3390,14 +3344,10 @@ mod tests {
             active_mod_config: test_active_mod_config(),
             max_players: 6,
             ai_difficulty: AiDifficulty::Easy,
-            bonus_attempts: HashMap::new(),
-            spent_bonus_gaps: HashMap::new(),
-            player_effects: HashMap::new(),
+            runtime: RaceRuntimeState::new(),
             phase: NetworkRacePhase::Racing,
             snapshot_sequence: 0,
             events: Vec::new(),
-            placements: Vec::new(),
-            first_finished_at: None,
             debug_log: None,
             race_results_sent: false,
         };
@@ -3463,7 +3413,7 @@ mod tests {
         assert_eq!(alex.state.word_index, 1);
         assert_eq!(alex.state.input, "d");
         assert_eq!(alex.state.typo_index, None);
-        assert!(state.bonus_attempts.contains_key(&PlayerId(2)));
+        assert!(state.runtime.bonus_attempts.contains_key(&PlayerId(2)));
     }
 
     #[test]
@@ -3484,8 +3434,8 @@ mod tests {
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.input, "");
-        assert!(!state.bonus_attempts.contains_key(&PlayerId(2)));
-        assert_eq!(state.spent_bonus_gaps.get(&PlayerId(2)), Some(&0));
+        assert!(!state.runtime.bonus_attempts.contains_key(&PlayerId(2)));
+        assert_eq!(state.runtime.spent_bonus_gaps.get(&PlayerId(2)), Some(&0));
         assert!(matches!(
             state.bonuses.points[0].choices[0].status,
             BonusChoiceStatus::Cooldown { .. }
@@ -3522,14 +3472,14 @@ mod tests {
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.word_index, 1);
         assert_eq!(alex.state.input, "");
-        assert_eq!(state.spent_bonus_gaps.get(&PlayerId(2)), Some(&0));
+        assert_eq!(state.runtime.spent_bonus_gaps.get(&PlayerId(2)), Some(&0));
 
         apply_network_key_input(&mut state, PlayerId(2), KeyAction::Char('s'), now);
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
         assert_eq!(alex.state.input, "s");
         assert_eq!(alex.state.typo_index, Some(0));
-        assert!(!state.bonus_attempts.contains_key(&PlayerId(2)));
+        assert!(!state.runtime.bonus_attempts.contains_key(&PlayerId(2)));
     }
 
     #[test]
@@ -3577,6 +3527,7 @@ mod tests {
         assert_eq!(alex.state.typo_index, None);
         assert!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(2))
                 .and_then(|effects| effects.stunned_until)
@@ -3584,6 +3535,7 @@ mod tests {
         );
         assert!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(2))
                 .and_then(|effects| effects.impact_cue)
@@ -3591,6 +3543,7 @@ mod tests {
         );
         assert!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(1))
                 .and_then(|effects| effects.item_cue.clone())
@@ -3617,6 +3570,7 @@ mod tests {
         assert!(!alex.state.has_active_shield(now));
         assert_eq!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(2))
                 .and_then(|effects| effects.impact_cue)
@@ -3664,6 +3618,7 @@ mod tests {
         assert_eq!(alex.state.word_override(1), Some("owt"));
         assert!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(2))
                 .and_then(|effects| effects.stunned_until)
@@ -3725,6 +3680,7 @@ mod tests {
         assert!(alex.state.is_inked_at(now));
         assert_eq!(
             state
+                .runtime
                 .player_effects
                 .get(&RacePlayerId(2))
                 .and_then(|effects| effects.impact_cue)
@@ -3779,14 +3735,10 @@ mod tests {
             active_mod_config: test_active_mod_config(),
             max_players: 6,
             ai_difficulty: AiDifficulty::Easy,
-            bonus_attempts: HashMap::new(),
-            spent_bonus_gaps: HashMap::new(),
-            player_effects: HashMap::new(),
+            runtime: RaceRuntimeState::new(),
             phase: NetworkRacePhase::Racing,
             snapshot_sequence: 0,
             events: Vec::new(),
-            placements: Vec::new(),
-            first_finished_at: None,
             debug_log: None,
             race_results_sent: false,
         };
@@ -3795,13 +3747,16 @@ mod tests {
         update_race_status(&mut state, now);
 
         assert_eq!(state.phase, NetworkRacePhase::Racing);
-        assert_eq!(state.placements, vec![PlayerId(2)]);
+        assert_eq!(state.runtime.lifecycle.placements, vec![RacePlayerId(2)]);
 
         finish_player(&mut state, RacePlayerId(1), now);
         update_race_status(&mut state, now);
 
         assert_eq!(state.phase, NetworkRacePhase::Finished);
-        assert_eq!(state.placements, vec![PlayerId(2), PlayerId(1)]);
+        assert_eq!(
+            state.runtime.lifecycle.placements,
+            vec![RacePlayerId(2), RacePlayerId(1)]
+        );
         assert!(state.events.iter().any(|event| event == "Race finished"));
     }
 
@@ -3819,14 +3774,10 @@ mod tests {
             active_mod_config: test_active_mod_config(),
             max_players: 6,
             ai_difficulty: AiDifficulty::Easy,
-            bonus_attempts: HashMap::new(),
-            spent_bonus_gaps: HashMap::new(),
-            player_effects: HashMap::new(),
+            runtime: RaceRuntimeState::new(),
             phase: NetworkRacePhase::Racing,
             snapshot_sequence: 0,
             events: Vec::new(),
-            placements: Vec::new(),
-            first_finished_at: None,
             debug_log: None,
             race_results_sent: false,
         };
@@ -3840,7 +3791,10 @@ mod tests {
         update_race_status(&mut state, now + POST_FIRST_FINISH_TIMEOUT);
 
         assert_eq!(state.phase, NetworkRacePhase::Finished);
-        assert_eq!(state.placements, vec![PlayerId(2), PlayerId(1)]);
+        assert_eq!(
+            state.runtime.lifecycle.placements,
+            vec![RacePlayerId(2), RacePlayerId(1)]
+        );
     }
 
     #[test]
@@ -3857,7 +3811,7 @@ mod tests {
         update_race_status(&mut state, now);
 
         assert_eq!(state.phase, NetworkRacePhase::Finished);
-        assert!(state.placements.is_empty());
+        assert!(state.runtime.lifecycle.placements.is_empty());
         assert!(state.events.iter().any(|event| event == "Race finished"));
     }
 
@@ -3934,14 +3888,10 @@ mod tests {
             active_mod_config: test_active_mod_config(),
             max_players: 6,
             ai_difficulty: AiDifficulty::Easy,
-            bonus_attempts: HashMap::new(),
-            spent_bonus_gaps: HashMap::new(),
-            player_effects: HashMap::new(),
+            runtime: RaceRuntimeState::new(),
             phase: NetworkRacePhase::Finished,
             snapshot_sequence: 0,
             events: Vec::new(),
-            placements: vec![PlayerId(2), PlayerId(1)],
-            first_finished_at: None,
             debug_log: None,
             race_results_sent: false,
         };
@@ -3958,7 +3908,7 @@ mod tests {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Finished);
         finish_player(&mut state, RacePlayerId(2), now);
-        state.placements = vec![PlayerId(2)];
+        state.runtime.lifecycle.placements = vec![RacePlayerId(2)];
 
         let host = state
             .race
@@ -4111,14 +4061,10 @@ mod tests {
             active_mod_config: test_active_mod_config(),
             max_players: 6,
             ai_difficulty: AiDifficulty::Easy,
-            bonus_attempts: HashMap::new(),
-            spent_bonus_gaps: HashMap::new(),
-            player_effects: HashMap::new(),
+            runtime: RaceRuntimeState::new(),
             phase,
             snapshot_sequence: 0,
             events: Vec::new(),
-            placements: Vec::new(),
-            first_finished_at: None,
             debug_log: None,
             race_results_sent: false,
         }

@@ -179,11 +179,16 @@ aligned with terminal races. Claimed item effects are applied through
 `typekart::game::item_effects`, a browser-compatible extraction from the
 authoritative item-effect rules used by multiplayer hosts. Human input and AI
 ticks now mutate a shared `typekart::game::race::RaceState`, then derive the
-protocol `RaceSnapshot` from that state. Result rows are also derived from the
-shared race result helper before being mapped into protocol messages. This keeps
-basic typing behavior, typo handling, space handling, final-word finish
-behavior, per-player typing state, bonus placement, bonus cooldowns, item state,
-and result ranking aligned with terminal races.
+protocol `RaceSnapshot` from that state. Browser-hosted races and terminal
+hosted rematches both build race state from shared `RaceParticipant` records.
+Result rows are also derived from the shared race result helper before being
+mapped into protocol messages. Finish placement, first-finish timeout,
+unfinished-racer ordering, bonus attempts, spent bonus gaps, and item-effect
+state are stored in shared `RaceRuntimeState` and updated through shared race
+helpers. This keeps basic typing behavior, typo handling, space handling,
+final-word finish behavior, per-player typing state, racer setup, bonus
+placement, bonus cooldowns, item state, lifecycle completion, and result ranking
+aligned with terminal races.
 
 The web crate depends on the root `typekart` library with default CLI features
 disabled. The root library always exposes `game`, while terminal, relay, and
@@ -204,9 +209,8 @@ The CLI host remains authoritative. The relay is still an opaque routing layer.
 
 ## Next Work
 
-See [Web UI Implementation Plan](web-ui-implementation-plan.md) for the full
-milestone plan. The near-term target is turning the browser-hosted race shell
-into a playable browser-hosted race:
+See [Web UI Implementation Plan](web-ui-implementation-plan.md) for the broader
+browser roadmap. The near-term target is hardening browser-hosted play:
 
 - Add a manual browser validation checklist.
 - Improve focus and phase-aware controls.
@@ -214,5 +218,5 @@ into a playable browser-hosted race:
   players.
 - Add automatic reconnect if manual retry feels insufficient.
 - Move more shared session logic into a browser-compatible boundary, especially
-  bonus claiming and items.
+  bonus attempt input and countdown/rematch lifecycle.
 - Continue renderer parity work.
