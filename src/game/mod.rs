@@ -7,6 +7,7 @@ pub mod ai;
 pub mod bonus;
 pub mod effects;
 pub mod engine;
+pub mod item_effects;
 pub mod items;
 pub mod mods;
 pub mod player;

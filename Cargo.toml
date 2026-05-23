@@ -18,16 +18,25 @@ include = [
     "words_alpha.txt",
 ]
 
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:crossterm", "dep:ratatui", "dep:redis", "dep:tungstenite"]
+
+[[bin]]
+name = "typekart"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-crossterm = "0.27"
+clap = { version = "4", features = ["derive"], optional = true }
+crossterm = { version = "0.27", optional = true }
 rand = "0.8"
-ratatui = "0.26"
-redis = { version = "1", features = ["tls-rustls"] }
+ratatui = { version = "0.26", optional = true }
+redis = { version = "1", features = ["tls-rustls"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tungstenite = { version = "0.24", features = ["native-tls"] }
+tungstenite = { version = "0.24", features = ["native-tls"], optional = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

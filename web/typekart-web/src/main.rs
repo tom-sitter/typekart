@@ -1,6 +1,10 @@
 mod fixtures;
 
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    time::Instant,
+};
 
 use fixtures::{
     GalleryFrame, GalleryScenario, LobbyFrame, ResultsFrame, SCENARIOS, color_class,
@@ -11,19 +15,39 @@ use futures_util::{SinkExt, StreamExt, select};
 use gloo_net::websocket::{Message, futures::WebSocket};
 use gloo_timers::future::{IntervalStream, TimeoutFuture};
 use leptos::prelude::*;
+use rand::thread_rng;
+use typekart::game::{
+    bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
+    item_effects::{
+        AttackDirection, RaceImpactCueKind, RaceItemCueKind, RaceItemCuePlacement,
+        RaceItemEffectState, activate_item_pickup, advance_mushrooms,
+        player_has_active_mushroom_effect, player_is_stunned,
+    },
+    items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
+    player::PlayerState,
+    race::{
+        PlayerColorId, RacePlayer, RacePlayerId, RaceState,
+        build_race_result_rows as build_shared_race_result_rows,
+    },
+    track::{Track, WordList},
+    typing::{KeyAction, first_typo_index},
+};
 use typekart_protocol::{
-    AiDifficultySnapshot, AssignedColor, BonusChoiceSnapshotStatus, BonusPointSnapshot,
-    ClientMessage, ClientSequence, ImpactCueSnapshot, ImpactCueSnapshotKind,
-    ItemCuePlacementSnapshot, ItemCueSnapshot, LobbyPlayer, ModConfigSnapshot, NetworkRacePhase,
-    PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot, RaceResultStatus,
-    RaceSnapshot, RelayClientMessage, RelayServerMessage, RoomCode, ServerMessage,
+    AiDifficultySnapshot, AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshotStatus,
+    BonusPointSnapshot, ClientMessage, ClientSequence, ImpactCueSnapshot, ImpactCueSnapshotKind,
+    ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, ModConfigSnapshot,
+    NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot,
+    RaceResultStatus, RaceSnapshot, RelayClientMessage, RelayServerMessage, RoomCode,
+    ServerMessage,
 };
 use wasm_bindgen_futures::spawn_local;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const WEB_TRACK_WORDS_BEHIND: usize = 3;
 const WEB_TRACK_VISIBLE_WORDS: usize = 10;
+const BROWSER_HOST_TRACK_WORD_COUNT: usize = 16;
 const BROWSER_HOST_AI_TICK_MS: u32 = 250;
+const BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT_MS: f64 = 30_000.0;
 
 #[derive(Debug, Clone)]
 enum BrowserOutboundMessage {
@@ -32,6 +56,12 @@ enum BrowserOutboundMessage {
         message: ClientMessage,
     },
     Disconnect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BrowserBonusAttempt {
+    point_index: usize,
+    choice_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -522,6 +552,7 @@ fn browser_controls(
             }
         }
         Some(GalleryFrame::Results(_)) => BrowserControls {
+            show_start: local_player_id == Some(PlayerId(1)),
             show_rematch_ready: local_player_id.is_some(),
             ..BrowserControls::default()
         },
@@ -826,7 +857,17 @@ struct BrowserHostLobby {
     relay_players: HashMap<PlayerId, PlayerId>,
     next_player_id: u64,
     race_sequence: u64,
+    next_track_words: Vec<String>,
+    bonuses: BonusState,
+    item_registry: ItemRegistry,
     active_race: Option<RaceSnapshot>,
+    active_results: Option<ResultsFrame>,
+    core_race: Option<RaceState>,
+    race_placements: Vec<PlayerId>,
+    first_finished_at_ms: Option<f64>,
+    bonus_attempts: HashMap<PlayerId, BrowserBonusAttempt>,
+    spent_bonus_gaps: HashMap<PlayerId, usize>,
+    player_effects: HashMap<RacePlayerId, RaceItemEffectState>,
     ai_char_budget: HashMap<PlayerId, f64>,
     ai_last_tick_ms: Option<f64>,
     events: Vec<String>,
@@ -835,6 +876,8 @@ struct BrowserHostLobby {
 
 impl BrowserHostLobby {
     fn new(room: RoomCode, host_name: String) -> Self {
+        let next_track_words = browser_generate_track_words();
+        let bonuses = browser_generate_bonus_state(&next_track_words);
         Self {
             room,
             players: vec![LobbyPlayer {
@@ -850,7 +893,17 @@ impl BrowserHostLobby {
             relay_players: HashMap::new(),
             next_player_id: 2,
             race_sequence: 0,
+            next_track_words,
+            bonuses,
+            item_registry: ItemRegistry::builtin(),
             active_race: None,
+            active_results: None,
+            core_race: None,
+            race_placements: Vec::new(),
+            first_finished_at_ms: None,
+            bonus_attempts: HashMap::new(),
+            spent_bonus_gaps: HashMap::new(),
+            player_effects: HashMap::new(),
             ai_char_budget: HashMap::new(),
             ai_last_tick_ms: None,
             events: vec!["host created room".to_string()],
@@ -1114,9 +1167,25 @@ fn process_browser_host_client_message(
         ClientMessage::KeyInput { key, .. } => {
             apply_browser_host_race_key_input(state, player_id, key, set_connection);
         }
-        ClientMessage::RestartRace => {}
+        ClientMessage::RestartRace if player_id == PlayerId(1) => {
+            browser_return_host_to_lobby(state);
+        }
         _ => {}
     }
+}
+
+fn browser_return_host_to_lobby(state: &mut BrowserHostLobby) {
+    state.active_race = None;
+    state.active_results = None;
+    state.core_race = None;
+    state.race_placements.clear();
+    state.first_finished_at_ms = None;
+    state.bonus_attempts.clear();
+    state.spent_bonus_gaps.clear();
+    state.player_effects.clear();
+    state.ai_char_budget.clear();
+    state.ai_last_tick_ms = None;
+    state.push_event("returned to lobby");
 }
 
 async fn publish_browser_host_state(
@@ -1124,6 +1193,19 @@ async fn publish_browser_host_state(
     writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     set_live_frame: WriteSignal<Option<GalleryFrame>>,
 ) -> Result<(), String> {
+    if let Some(results) = &state.active_results {
+        set_live_frame.set(Some(GalleryFrame::Results(results.clone())));
+        return send_browser_host_broadcast(
+            state,
+            writer,
+            ServerMessage::RaceResults {
+                placements: results.placements.clone(),
+                rows: results.rows.clone(),
+            },
+        )
+        .await;
+    }
+
     if let Some(snapshot) = &state.active_race {
         set_live_frame.set(Some(GalleryFrame::Race(snapshot.clone())));
         return send_browser_host_broadcast(
@@ -1180,40 +1262,69 @@ async fn run_browser_host_countdown(
     set_connection.set(ConnectionState::Connected {
         message: "Starting browser-hosted race shell".to_string(),
     });
+    let race_track_words = state.next_track_words.clone();
+    state.bonuses = browser_generate_bonus_state(&race_track_words);
 
-    state.active_race = Some(browser_host_race_snapshot(
+    state.active_race = Some(browser_host_race_snapshot_with_track(
         state.next_race_sequence(),
         NetworkRacePhase::WaitingForHost,
         &state.mod_config,
         &racers,
+        &race_track_words,
+        &state.bonuses,
         vec!["browser host preparing race".to_string()],
     ));
+    state.active_results = None;
+    state.core_race = None;
+    state.race_placements.clear();
+    state.first_finished_at_ms = None;
+    state.bonus_attempts.clear();
+    state.spent_bonus_gaps.clear();
+    state.player_effects.clear();
+    state.ai_char_budget.clear();
+    state.ai_last_tick_ms = None;
     publish_browser_host_state(state, writer, set_live_frame).await?;
 
     for remaining_seconds in [3, 2, 1] {
-        state.active_race = Some(browser_host_race_snapshot(
+        state.active_race = Some(browser_host_race_snapshot_with_track(
             state.next_race_sequence(),
             NetworkRacePhase::Countdown { remaining_seconds },
             &state.mod_config,
             &racers,
+            &race_track_words,
+            &state.bonuses,
             vec![format!("countdown {remaining_seconds}")],
         ));
         publish_browser_host_state(state, writer, set_live_frame).await?;
         TimeoutFuture::new(1000).await;
     }
 
-    state.active_race = Some(browser_host_race_snapshot(
+    state.active_race = Some(browser_host_race_snapshot_with_track(
         state.next_race_sequence(),
         NetworkRacePhase::Racing,
         &state.mod_config,
         &racers,
+        &race_track_words,
+        &state.bonuses,
         vec!["browser-hosted gameplay input is not implemented yet".to_string()],
     ));
+    state.active_results = None;
+    state.core_race = Some(browser_host_core_race(&racers, race_track_words));
+    state.next_track_words = browser_generate_track_words();
+    state.race_placements.clear();
+    state.first_finished_at_ms = None;
+    state.bonus_attempts.clear();
+    state.spent_bonus_gaps.clear();
+    state.player_effects.clear();
+    if let (Some(snapshot), Some(core_race)) = (&mut state.active_race, &state.core_race) {
+        browser_sync_snapshot_from_core(snapshot, core_race, &state.players, &state.player_effects);
+    }
     state.ai_char_budget.clear();
     state.ai_last_tick_ms = Some(browser_now_ms());
     publish_browser_host_state(state, writer, set_live_frame).await
 }
 
+#[cfg(test)]
 fn browser_host_race_snapshot(
     sequence: u64,
     phase: NetworkRacePhase,
@@ -1221,12 +1332,32 @@ fn browser_host_race_snapshot(
     racers: &[LobbyPlayer],
     events: Vec<String>,
 ) -> RaceSnapshot {
+    browser_host_race_snapshot_with_track(
+        sequence,
+        phase,
+        mod_config,
+        racers,
+        &browser_demo_track_words(),
+        &browser_generate_bonus_state(&browser_demo_track_words()),
+        events,
+    )
+}
+
+fn browser_host_race_snapshot_with_track(
+    sequence: u64,
+    phase: NetworkRacePhase,
+    mod_config: &ModConfigSnapshot,
+    racers: &[LobbyPlayer],
+    track_words: &[String],
+    bonuses: &BonusState,
+    events: Vec<String>,
+) -> RaceSnapshot {
     RaceSnapshot {
         sequence,
         phase,
         mod_config: mod_config.clone(),
-        track_words: browser_host_track_words(),
-        bonuses: Vec::new(),
+        track_words: track_words.to_vec(),
+        bonuses: browser_bonus_snapshots(bonuses, Instant::now()),
         players: racers.iter().map(browser_host_player_snapshot).collect(),
         events,
     }
@@ -1255,72 +1386,513 @@ fn browser_host_player_snapshot(player: &LobbyPlayer) -> PlayerSnapshot {
     }
 }
 
+fn browser_host_core_race(racers: &[LobbyPlayer], track_words: Vec<String>) -> RaceState {
+    let now = Instant::now();
+    let mut race = RaceState::new(Track::new(track_words));
+    for racer in racers {
+        race.add_player(
+            RacePlayerId(racer.id.0),
+            racer.name.clone(),
+            browser_player_color_id(racer.color),
+            now,
+        );
+    }
+    race
+}
+
+fn browser_ensure_core_race(state: &mut BrowserHostLobby) {
+    if state.core_race.is_some() {
+        return;
+    }
+    let Some(snapshot) = &state.active_race else {
+        return;
+    };
+    state.core_race = Some(browser_core_race_from_snapshot(snapshot));
+}
+
+fn browser_core_race_from_snapshot(snapshot: &RaceSnapshot) -> RaceState {
+    let now = Instant::now();
+    RaceState {
+        track: Track::new(snapshot.track_words.clone()),
+        players: snapshot
+            .players
+            .iter()
+            .map(|player| {
+                let mut state = PlayerState::new(now);
+                state.word_index = player.word_index;
+                state.input = player.input.clone();
+                state.typo_index = player.typo_index;
+                state.word_overrides = player
+                    .word_overrides
+                    .iter()
+                    .map(|override_word| (override_word.word_index, override_word.word.clone()))
+                    .collect();
+                if player.finished {
+                    state.finished_at = Some(now);
+                }
+
+                RacePlayer {
+                    id: RacePlayerId(player.id.0),
+                    name: player.name.clone(),
+                    color: browser_player_color_id(player.color),
+                    state,
+                    connected: player.connected,
+                }
+            })
+            .collect(),
+    }
+}
+
 fn apply_browser_host_race_key_input(
     state: &mut BrowserHostLobby,
     player_id: PlayerId,
     key: ProtocolKey,
     set_connection: WriteSignal<ConnectionState>,
 ) {
-    let Some(race) = &mut state.active_race else {
+    browser_ensure_core_race(state);
+    let Some(race) = &state.active_race else {
         return;
     };
     if race.phase != NetworkRacePhase::Racing {
         return;
     }
-    let Some(player) = race
+    let Some(player_name) = race
         .players
-        .iter_mut()
+        .iter()
         .find(|player| player.id == player_id)
+        .map(|player| player.name.clone())
     else {
         return;
     };
-    if player.finished {
+    if race
+        .players
+        .iter()
+        .find(|player| player.id == player_id)
+        .is_some_and(|player| player.finished)
+    {
         return;
     }
-    let Some(target) = race.track_words.get(player.word_index) else {
-        player.finished = true;
+    if browser_player_input_is_paused(state, player_id, Instant::now()) {
+        return;
+    }
+
+    let action = browser_protocol_key_to_action(key);
+    if state.bonus_attempts.contains_key(&player_id) {
+        let previous_event_count = state.events.len();
+        apply_browser_bonus_typing_action(state, player_id, action);
+        browser_sync_active_race_from_core(state);
+        set_browser_race_input_event(state, &player_name, previous_event_count);
+        set_connection.set(ConnectionState::Connected {
+            message: format!("{player_name} typed"),
+        });
+        return;
+    }
+
+    if let KeyAction::Char(ch) = action
+        && let Some(attempt) = browser_bonus_start(state, player_id, ch, Instant::now())
+    {
+        let previous_event_count = state.events.len();
+        state.bonus_attempts.insert(player_id, attempt);
+        apply_browser_bonus_char(state, player_id, ch);
+        browser_sync_active_race_from_core(state);
+        set_browser_race_input_event(state, &player_name, previous_event_count);
+        set_connection.set(ConnectionState::Connected {
+            message: format!("{player_name} typed"),
+        });
+        return;
+    }
+
+    {
+        let Some(core_race) = &mut state.core_race else {
+            return;
+        };
+        core_race.apply_key_input(RacePlayerId(player_id.0), action, Instant::now());
+        browser_record_finished_placements(core_race, &mut state.race_placements);
+    }
+    browser_sync_active_race_from_core(state);
+    if let Some(race) = &mut state.active_race {
+        race.events = vec![format!("{player_name} typed")];
+    }
+    browser_update_race_status(state, browser_now_ms());
+    set_connection.set(ConnectionState::Connected {
+        message: format!("{player_name} typed"),
+    });
+}
+
+fn browser_player_input_is_paused(
+    state: &BrowserHostLobby,
+    player_id: PlayerId,
+    now: Instant,
+) -> bool {
+    if player_is_stunned(&state.player_effects, RacePlayerId(player_id.0), now) {
+        return true;
+    }
+
+    state
+        .core_race
+        .as_ref()
+        .and_then(|race| race.player(RacePlayerId(player_id.0)))
+        .is_some_and(|player| player_has_active_mushroom_effect(player, now))
+}
+
+fn set_browser_race_input_event(
+    state: &mut BrowserHostLobby,
+    player_name: &str,
+    previous_event_count: usize,
+) {
+    let event = state
+        .events
+        .get(previous_event_count..)
+        .and_then(|events| events.last())
+        .cloned()
+        .unwrap_or_else(|| format!("{player_name} typed"));
+    if let Some(race) = &mut state.active_race {
+        race.events = vec![event];
+    }
+}
+
+fn browser_sync_active_race_from_core(state: &mut BrowserHostLobby) {
+    let (Some(snapshot), Some(core_race)) = (&mut state.active_race, &state.core_race) else {
+        return;
+    };
+    browser_sync_snapshot_from_core(snapshot, core_race, &state.players, &state.player_effects);
+    snapshot.bonuses = browser_bonus_snapshots(&state.bonuses, Instant::now());
+    state.race_sequence += 1;
+    snapshot.sequence = state.race_sequence;
+}
+
+fn apply_browser_bonus_typing_action(
+    state: &mut BrowserHostLobby,
+    player_id: PlayerId,
+    action: KeyAction,
+) {
+    match action {
+        KeyAction::Char(ch) => apply_browser_bonus_char(state, player_id, ch),
+        KeyAction::Backspace => {
+            let Some(player) = state
+                .core_race
+                .as_mut()
+                .and_then(|race| {
+                    race.players
+                        .iter_mut()
+                        .find(|player| player.id == RacePlayerId(player_id.0))
+                })
+            else {
+                state.bonus_attempts.remove(&player_id);
+                return;
+            };
+
+            if player.state.input.pop().is_some() {
+                player.state.stats.backspaces += 1;
+            }
+            let input = player.state.input.clone();
+            let input_is_empty = input.is_empty();
+            recalculate_browser_bonus_typo(state, player_id, &input);
+            if input_is_empty {
+                state.bonus_attempts.remove(&player_id);
+            }
+        }
+        KeyAction::Space => {
+            if browser_bonus_completed_without_typo(state, player_id) {
+                claim_browser_bonus(state, player_id, Instant::now());
+            } else {
+                apply_browser_bonus_char(state, player_id, ' ');
+            }
+        }
+    }
+}
+
+fn browser_bonus_start(
+    state: &BrowserHostLobby,
+    player_id: PlayerId,
+    ch: char,
+    now: Instant,
+) -> Option<BrowserBonusAttempt> {
+    let player = state.core_race.as_ref()?.player(RacePlayerId(player_id.0))?;
+    if player.state.held_item.is_some()
+        || player.state.has_active_shield(now)
+        || player.state.has_active_focus(now)
+        || player.state.typo_index.is_some()
+        || !player.state.input.is_empty()
+        || player.state.is_finished()
+    {
+        return None;
+    }
+
+    let (point_index, point) = state.bonuses.point_for_gap(player.state.word_index)?;
+    if state
+        .spent_bonus_gaps
+        .get(&player_id)
+        .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
+    {
+        return None;
+    }
+
+    point
+        .available_choice_starting_with(ch, now)
+        .map(|(choice_index, _)| BrowserBonusAttempt {
+            point_index,
+            choice_index,
+        })
+}
+
+fn apply_browser_bonus_char(state: &mut BrowserHostLobby, player_id: PlayerId, ch: char) {
+    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+        return;
+    };
+    let Some(target) = browser_bonus_target(state, attempt).map(str::to_owned) else {
+        state.bonus_attempts.remove(&player_id);
+        return;
+    };
+    let Some(player) = state.core_race.as_mut().and_then(|race| {
+        race.players
+            .iter_mut()
+            .find(|player| player.id == RacePlayerId(player_id.0))
+    })
+    else {
+        state.bonus_attempts.remove(&player_id);
         return;
     };
 
-    match key {
-        ProtocolKey::Char(ch) => {
-            player.input.push(ch);
-            player.typo_index = browser_first_typo_index(&player.input, target);
-        }
-        ProtocolKey::Space => {
-            if player.input == *target {
-                advance_browser_host_player(player, race.track_words.len());
-            } else {
-                player.input.push(' ');
-                player.typo_index = browser_first_typo_index(&player.input, target);
-            }
-        }
-        ProtocolKey::Backspace => {
-            player.input.pop();
-            player.typo_index = browser_first_typo_index(&player.input, target);
-        }
+    let previous_typo = player.state.typo_index;
+    let input_index = player.state.input.chars().count();
+    let is_correct = previous_typo.is_none() && target.chars().nth(input_index) == Some(ch);
+
+    player.state.stats.typed_chars += 1;
+    if is_correct {
+        player.state.stats.correct_chars += 1;
+    } else {
+        player.state.stats.typo_chars += 1;
     }
 
-    if let Some(target) = race.track_words.get(player.word_index)
-        && player.typo_index.is_none()
-        && player.input == *target
-        && player.word_index + 1 >= race.track_words.len()
+    player.state.input.push(ch);
+    player.state.typo_index = first_typo_index(&player.state.input, &target);
+}
+
+fn recalculate_browser_bonus_typo(state: &mut BrowserHostLobby, player_id: PlayerId, input: &str) {
+    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+        return;
+    };
+    let target = browser_bonus_target(state, attempt).map(str::to_owned);
+    let Some(player) = state.core_race.as_mut().and_then(|race| {
+        race.players
+            .iter_mut()
+            .find(|player| player.id == RacePlayerId(player_id.0))
+    })
+    else {
+        state.bonus_attempts.remove(&player_id);
+        return;
+    };
+
+    player.state.typo_index = target
+        .as_deref()
+        .and_then(|target| first_typo_index(input, target));
+}
+
+fn browser_bonus_completed_without_typo(state: &BrowserHostLobby, player_id: PlayerId) -> bool {
+    let Some(attempt) = state.bonus_attempts.get(&player_id).copied() else {
+        return false;
+    };
+    let Some(target) = browser_bonus_target(state, attempt) else {
+        return false;
+    };
+    let Some(player) = state
+        .core_race
+        .as_ref()
+        .and_then(|race| race.player(RacePlayerId(player_id.0)))
+    else {
+        return false;
+    };
+
+    player.state.typo_index.is_none() && player.state.input == target
+}
+
+fn claim_browser_bonus(state: &mut BrowserHostLobby, player_id: PlayerId, now: Instant) {
+    let Some(attempt) = state.bonus_attempts.remove(&player_id) else {
+        return;
+    };
+
+    let after_word_index = state
+        .bonuses
+        .points
+        .get(attempt.point_index)
+        .map(|point| point.after_word_index);
+    let item_context = browser_item_roll_context(state, player_id, 5);
+    let item_registry = state.item_registry.clone();
+    let mut rng = thread_rng();
+    let pickup = claim_bonus_choice(
+        &mut state.bonuses,
+        attempt.point_index,
+        attempt.choice_index,
+        now,
+        item_context,
+        &item_registry,
+        &mut rng,
+    );
+
+    if let Some(player) = state.core_race.as_mut().and_then(|race| {
+        race.players
+            .iter_mut()
+            .find(|player| player.id == RacePlayerId(player_id.0))
+    })
     {
-        advance_browser_host_player(player, race.track_words.len());
+        player.state.input.clear();
+        player.state.typo_index = None;
     }
 
-    state.race_sequence += 1;
-    race.sequence = state.race_sequence;
-    race.events = vec![format!("{} typed", player.name)];
-    set_connection.set(ConnectionState::Connected {
-        message: format!("{} typed", player.name),
-    });
+    if let Some(after_word_index) = after_word_index {
+        state.spent_bonus_gaps.insert(player_id, after_word_index);
+    }
+
+    let name = state
+        .players
+        .iter()
+        .find(|player| player.id == player_id)
+        .map(|player| player.name.clone())
+        .unwrap_or_else(|| format!("player {}", player_id.0));
+    match pickup {
+        Some(item) => {
+            let item_name = browser_item_pickup_name(item);
+            state.push_event(format!("{name} got {item_name}"));
+            activate_browser_item_pickup(state, player_id, item, now);
+        }
+        None => state.push_event(format!("{name} missed the bonus")),
+    }
+}
+
+fn activate_browser_item_pickup(
+    state: &mut BrowserHostLobby,
+    player_id: PlayerId,
+    item: ItemPickup,
+    now: Instant,
+) {
+    let Some(core_race) = &mut state.core_race else {
+        return;
+    };
+    let ai_players = state
+        .players
+        .iter()
+        .filter(|player| player.kind == PlayerKind::Bot)
+        .map(|player| RacePlayerId(player.id.0))
+        .collect::<HashSet<_>>();
+    let report = activate_item_pickup(
+        core_race,
+        &mut state.player_effects,
+        &ai_players,
+        &state.item_registry,
+        RacePlayerId(player_id.0),
+        item,
+        now,
+    );
+
+    for interrupted in report.interrupted_players {
+        state.bonus_attempts.remove(&PlayerId(interrupted.0));
+    }
+    for ai_id in report.reset_ai_players {
+        state.ai_char_budget.insert(PlayerId(ai_id.0), 0.0);
+    }
+    for event in report.events {
+        state.push_event(event);
+    }
+}
+
+fn browser_item_roll_context(
+    state: &BrowserHostLobby,
+    player_id: PlayerId,
+    max_distance_words: usize,
+) -> ItemRollContext {
+    ItemRollContext {
+        has_nearby_racer: browser_player_has_nearby_racer(state, player_id, max_distance_words),
+        position: browser_position_band(state, player_id),
+    }
+}
+
+fn browser_player_has_nearby_racer(
+    state: &BrowserHostLobby,
+    player_id: PlayerId,
+    max_distance_words: usize,
+) -> bool {
+    let Some(core_race) = &state.core_race else {
+        return false;
+    };
+    let Some(player) = core_race.player(RacePlayerId(player_id.0)) else {
+        return false;
+    };
+
+    core_race.players.iter().any(|other| {
+        other.id != player.id
+            && other.connected
+            && !other.state.is_finished()
+            && player.state.word_index.abs_diff(other.state.word_index) <= max_distance_words
+    })
+}
+
+fn browser_position_band(state: &BrowserHostLobby, player_id: PlayerId) -> RacePositionBand {
+    let Some(core_race) = &state.core_race else {
+        return RacePositionBand::Middle;
+    };
+    let active_racers = core_race
+        .players
+        .iter()
+        .filter(|player| player.connected && !player.state.is_finished())
+        .collect::<Vec<_>>();
+    if active_racers.len() <= 1 {
+        return RacePositionBand::Middle;
+    }
+
+    let Some(player) = active_racers
+        .iter()
+        .find(|player| player.id == RacePlayerId(player_id.0))
+    else {
+        return RacePositionBand::Middle;
+    };
+    let ahead = active_racers
+        .iter()
+        .filter(|other| other.state.word_index > player.state.word_index)
+        .count();
+    let behind = active_racers
+        .iter()
+        .filter(|other| other.state.word_index < player.state.word_index)
+        .count();
+
+    if ahead == 0 && behind > 0 {
+        RacePositionBand::First
+    } else if behind == 0 && ahead > 0 {
+        RacePositionBand::Trailing
+    } else {
+        RacePositionBand::Middle
+    }
+}
+
+fn browser_bonus_target(state: &BrowserHostLobby, attempt: BrowserBonusAttempt) -> Option<&str> {
+    state
+        .bonuses
+        .points
+        .get(attempt.point_index)?
+        .choices
+        .get(attempt.choice_index)
+        .map(|choice| choice.word.as_str())
+}
+
+fn browser_item_pickup_name(item: ItemPickup) -> &'static str {
+    match item {
+        ItemPickup::Held(held_item) => held_item.name(),
+        ItemPickup::Shield => "Shield",
+    }
 }
 
 fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> bool {
     let elapsed_ms = browser_host_ai_elapsed_ms(state, tick_ms);
     if elapsed_ms <= 0.0 {
         return false;
+    }
+    browser_ensure_core_race(state);
+    let mut changed = false;
+    if let Some(core_race) = &mut state.core_race {
+        for interrupted in advance_mushrooms(core_race, Instant::now()) {
+            state.bonus_attempts.remove(&PlayerId(interrupted.0));
+            changed = true;
+        }
     }
 
     let ai_wpm_by_id: HashMap<PlayerId, u32> = state
@@ -1337,42 +1909,187 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
         })
         .collect();
 
-    let Some(race) = &mut state.active_race else {
+    {
+        let Some(snapshot) = &mut state.active_race else {
+            return false;
+        };
+        if snapshot.phase != NetworkRacePhase::Racing {
+            return false;
+        }
+        let Some(core_race) = &mut state.core_race else {
+            return false;
+        };
+        for player in &mut core_race.players {
+            player.state.expire_effects(Instant::now());
+        }
+
+        for player in core_race
+            .players
+            .iter_mut()
+            .filter(|player| {
+                state
+                    .players
+                    .iter()
+                    .find(|lobby_player| lobby_player.id == PlayerId(player.id.0))
+                    .is_some_and(|lobby_player| lobby_player.kind == PlayerKind::Bot)
+            })
+        {
+            if player.state.is_finished()
+                || player_is_stunned(&state.player_effects, player.id, Instant::now())
+                || player_has_active_mushroom_effect(player, Instant::now())
+            {
+                continue;
+            }
+            let base_wpm = ai_wpm_by_id
+                .get(&PlayerId(player.id.0))
+                .copied()
+                .unwrap_or_else(|| browser_ai_wpm(AiDifficultySnapshot::Easy));
+            let wpm = browser_effective_ai_wpm(base_wpm, player, &state.item_registry);
+            let budget = state.ai_char_budget.entry(PlayerId(player.id.0)).or_default();
+            *budget += browser_ai_chars_for_elapsed_ms(wpm, elapsed_ms);
+
+            while *budget >= 1.0 && !player.state.is_finished() {
+                *budget -= 1.0;
+                changed |= advance_browser_host_ai_char(player, &core_race.track);
+            }
+        }
+
+        if changed {
+            browser_record_finished_placements(core_race, &mut state.race_placements);
+            browser_sync_snapshot_from_core(
+                snapshot,
+                core_race,
+                &state.players,
+                &state.player_effects,
+            );
+            state.race_sequence += 1;
+            snapshot.sequence = state.race_sequence;
+            snapshot.events = vec!["AI racers advanced".to_string()];
+        }
+    }
+
+    let race_status_changed = browser_update_race_status(state, browser_now_ms());
+    changed || race_status_changed
+}
+
+fn browser_record_finished_placements(core_race: &RaceState, placements: &mut Vec<PlayerId>) {
+    for player in &core_race.players {
+        let player_id = PlayerId(player.id.0);
+        if player.state.is_finished() && !placements.contains(&player_id) {
+            placements.push(player_id);
+        }
+    }
+}
+
+fn browser_update_race_status(state: &mut BrowserHostLobby, now_ms: f64) -> bool {
+    if state.active_results.is_some() {
+        return false;
+    }
+    let Some(core_race) = &state.core_race else {
         return false;
     };
-    if race.phase != NetworkRacePhase::Racing {
+
+    browser_record_finished_placements(core_race, &mut state.race_placements);
+    if state.first_finished_at_ms.is_none() && !state.race_placements.is_empty() {
+        state.first_finished_at_ms = Some(now_ms);
+    }
+
+    let connected_racers = core_race
+        .players
+        .iter()
+        .filter(|player| player.connected)
+        .count();
+    let connected_finished = core_race
+        .players
+        .iter()
+        .filter(|player| player.connected && player.state.is_finished())
+        .count();
+    let all_connected_finished = connected_racers > 0 && connected_finished == connected_racers;
+    let all_connected_disconnected = connected_racers == 0;
+    let timeout_expired = state.first_finished_at_ms.is_some_and(|first_finished_at_ms| {
+        now_ms - first_finished_at_ms >= BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT_MS
+    });
+
+    if !all_connected_finished && !all_connected_disconnected && !timeout_expired {
         return false;
     }
 
-    let mut changed = false;
-    for player in race
+    browser_append_unfinished_connected_placements(core_race, &mut state.race_placements);
+    browser_finish_race(state);
+    true
+}
+
+fn browser_append_unfinished_connected_placements(
+    core_race: &RaceState,
+    placements: &mut Vec<PlayerId>,
+) {
+    let mut remaining = core_race
         .players
-        .iter_mut()
-        .filter(|player| player.kind == PlayerKind::Bot)
-    {
-        if player.finished {
-            continue;
-        }
-        let wpm = ai_wpm_by_id
-            .get(&player.id)
-            .copied()
-            .unwrap_or_else(|| browser_ai_wpm(AiDifficultySnapshot::Easy));
-        let budget = state.ai_char_budget.entry(player.id).or_default();
-        *budget += browser_ai_chars_for_elapsed_ms(wpm, elapsed_ms);
+        .iter()
+        .filter(|player| player.connected)
+        .map(|player| {
+            (
+                PlayerId(player.id.0),
+                player.state.word_index,
+                player.state.input.chars().count(),
+            )
+        })
+        .filter(|(id, _, _)| !placements.contains(id))
+        .collect::<Vec<_>>();
 
-        while *budget >= 1.0 && !player.finished {
-            *budget -= 1.0;
-            changed |= advance_browser_host_ai_char(player, &race.track_words);
-        }
+    remaining.sort_by_key(|(_, word_index, input_len)| {
+        (
+            std::cmp::Reverse(*word_index),
+            std::cmp::Reverse(*input_len),
+        )
+    });
+
+    placements.extend(remaining.into_iter().map(|(id, _, _)| id));
+}
+
+fn browser_finish_race(state: &mut BrowserHostLobby) {
+    let Some(core_race) = &state.core_race else {
+        return;
+    };
+    let placements = state
+        .race_placements
+        .iter()
+        .map(|player_id| RacePlayerId(player_id.0))
+        .collect::<Vec<_>>();
+    let rows = build_shared_race_result_rows(core_race, &placements, Instant::now())
+        .into_iter()
+        .map(|row| typekart_protocol::RaceResultRow {
+            placement: row.placement,
+            player_id: PlayerId(row.player_id.0),
+            name: row.name,
+            color: browser_assigned_color(row.color),
+            status: match row.status {
+                typekart::game::race::RaceResultStatus::Finished => RaceResultStatus::Finished,
+                typekart::game::race::RaceResultStatus::TimedOut => RaceResultStatus::TimedOut,
+                typekart::game::race::RaceResultStatus::Disconnected => {
+                    RaceResultStatus::Disconnected
+                }
+            },
+            progress_words: row.progress_words,
+            track_words: row.track_words,
+            wpm: row.wpm,
+            accuracy_percent: row.accuracy_percent,
+            typo_chars: row.typo_chars,
+            backspaces: row.backspaces,
+        })
+        .collect();
+    if let Some(snapshot) = &mut state.active_race {
+        snapshot.phase = NetworkRacePhase::Finished;
+        snapshot.events = vec!["Race finished".to_string()];
     }
-
-    if changed {
-        state.race_sequence += 1;
-        race.sequence = state.race_sequence;
-        race.events = vec!["AI racers advanced".to_string()];
-    }
-
-    changed
+    state.active_results = Some(ResultsFrame {
+        placements: state.race_placements.clone(),
+        rows,
+        events: vec!["Race finished".to_string()],
+    });
+    state.active_race = None;
+    state.ai_char_budget.clear();
+    state.ai_last_tick_ms = None;
 }
 
 fn browser_host_ai_elapsed_ms(state: &mut BrowserHostLobby, tick_ms: u32) -> f64 {
@@ -1395,45 +2112,193 @@ fn browser_ai_chars_for_elapsed_ms(wpm: u32, elapsed_ms: f64) -> f64 {
     f64::from(wpm) * 5.0 * elapsed_ms / 60_000.0
 }
 
-fn advance_browser_host_ai_char(player: &mut PlayerSnapshot, track_words: &[String]) -> bool {
-    let Some(target) = track_words.get(player.word_index) else {
-        player.finished = true;
-        return true;
+fn browser_effective_ai_wpm(
+    base_wpm: u32,
+    player: &RacePlayer,
+    item_registry: &ItemRegistry,
+) -> u32 {
+    let now = Instant::now();
+    let focused_wpm = if player.state.has_active_focus(now) {
+        base_wpm.saturating_add(item_registry.focus_effect().ai_wpm_boost)
+    } else {
+        base_wpm
     };
+    if player.state.is_inked_at(now) {
+        (u64::from(focused_wpm)
+            * u64::from(item_registry.squid_ink_effect().ai_wpm_multiplier_percent)
+            / 100) as u32
+    } else {
+        focused_wpm
+    }
+}
 
+fn advance_browser_host_ai_char(
+    player: &mut typekart::game::race::RacePlayer,
+    track: &Track,
+) -> bool {
+    let Some(key) = browser_host_next_ai_key(&player.state, track) else {
+        return false;
+    };
+    typekart::game::typing::apply_key(&mut player.state, track, key, Instant::now());
+    true
+}
+
+fn browser_host_next_ai_key(player: &PlayerState, track: &Track) -> Option<KeyAction> {
+    if player.is_finished() {
+        return None;
+    }
+    let target = track.current_word(player.word_index)?;
     let input_len = player.input.chars().count();
-    if let Some(ch) = target.chars().nth(input_len) {
-        player.input.push(ch);
-        player.typo_index = None;
-        if player.input == *target && player.word_index + 1 >= track_words.len() {
-            advance_browser_host_player(player, track_words.len());
-        }
-        return true;
-    }
-
-    if player.input == *target {
-        advance_browser_host_player(player, track_words.len());
-        return true;
-    }
-
-    false
-}
-
-fn advance_browser_host_player(player: &mut PlayerSnapshot, track_len: usize) {
-    player.word_index += 1;
-    player.input.clear();
-    player.typo_index = None;
-    if player.word_index >= track_len {
-        player.finished = true;
-        player.word_index = track_len.saturating_sub(1);
-    }
-}
-
-fn browser_first_typo_index(input: &str, target: &str) -> Option<usize> {
-    input
+    target
         .chars()
-        .enumerate()
-        .find_map(|(index, ch)| (target.chars().nth(index) != Some(ch)).then_some(index))
+        .nth(input_len)
+        .map(KeyAction::Char)
+        .or(Some(KeyAction::Space))
+}
+
+fn browser_sync_snapshot_from_core(
+    snapshot: &mut RaceSnapshot,
+    core_race: &RaceState,
+    lobby_players: &[LobbyPlayer],
+    player_effects: &HashMap<RacePlayerId, RaceItemEffectState>,
+) {
+    let now = Instant::now();
+    snapshot.track_words = core_race.track.words.clone();
+    for snapshot_player in &mut snapshot.players {
+        let Some(core_player) = core_race
+            .players
+            .iter()
+            .find(|player| player.id == RacePlayerId(snapshot_player.id.0))
+        else {
+            continue;
+        };
+        snapshot_player.name = core_player.name.clone();
+        snapshot_player.color = browser_assigned_color(core_player.color);
+        snapshot_player.word_index = core_player
+            .state
+            .word_index
+            .min(core_race.track.len().saturating_sub(1));
+        snapshot_player.input = core_player.state.input.clone();
+        snapshot_player.typo_index = core_player.state.typo_index;
+        snapshot_player.word_overrides = core_player
+            .state
+            .word_overrides
+            .iter()
+            .map(|(word_index, word)| typekart_protocol::WordOverrideSnapshot {
+                word_index: *word_index,
+                word: word.clone(),
+            })
+            .collect();
+        snapshot_player.finished = core_player.state.is_finished();
+        snapshot_player.connected = core_player.connected;
+        snapshot_player.shielded = core_player.state.has_active_shield(now);
+        snapshot_player.focused = core_player.state.has_active_focus(now);
+        snapshot_player.inked = core_player.state.is_inked_at(now);
+        snapshot_player.boosted = player_has_active_mushroom_effect(core_player, now);
+        let effects = player_effects
+            .get(&core_player.id)
+            .cloned()
+            .unwrap_or_default();
+        snapshot_player.stunned = effects
+            .stunned_until
+            .is_some_and(|until| until > now);
+        snapshot_player.impact_remaining_ms =
+            browser_remaining_ms(effects.impact_cue.map(|cue| cue.until), now);
+        snapshot_player.impact_cue = browser_impact_cue_snapshot(effects.impact_cue, now);
+        snapshot_player.item_cue = browser_item_cue_snapshot(effects.item_cue, now);
+        if let Some(lobby_player) = lobby_players
+            .iter()
+            .find(|lobby_player| lobby_player.id == snapshot_player.id)
+        {
+            snapshot_player.kind = lobby_player.kind;
+        }
+    }
+}
+
+fn browser_remaining_ms(until: Option<Instant>, now: Instant) -> u64 {
+    until
+        .filter(|until| *until > now)
+        .map(|until| until.saturating_duration_since(now).as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn browser_impact_cue_snapshot(
+    cue: Option<typekart::game::item_effects::RaceImpactCue>,
+    now: Instant,
+) -> Option<ImpactCueSnapshot> {
+    let cue = cue.filter(|cue| cue.until > now)?;
+    Some(ImpactCueSnapshot {
+        kind: match cue.kind {
+            RaceImpactCueKind::Banana => ImpactCueSnapshotKind::Banana,
+            RaceImpactCueKind::Cyclone => ImpactCueSnapshotKind::Cyclone,
+            RaceImpactCueKind::SquidInk => ImpactCueSnapshotKind::SquidInk,
+            RaceImpactCueKind::ShieldBlock => ImpactCueSnapshotKind::ShieldBlock,
+        },
+        remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
+    })
+}
+
+fn browser_item_cue_snapshot(
+    cue: Option<typekart::game::item_effects::RaceItemCue>,
+    now: Instant,
+) -> Option<ItemCueSnapshot> {
+    let cue = cue.filter(|cue| cue.until > now)?;
+    Some(ItemCueSnapshot {
+        kind: match cue.kind {
+            RaceItemCueKind::Banana { direction } => ItemCueSnapshotKind::Banana {
+                direction: browser_attack_direction(direction),
+            },
+            RaceItemCueKind::Cyclone { direction } => ItemCueSnapshotKind::Cyclone {
+                direction: browser_attack_direction(direction),
+            },
+            RaceItemCueKind::SquidInk => ItemCueSnapshotKind::SquidInk,
+        },
+        ascii_label: cue.ascii_label,
+        unicode_label: cue.unicode_label,
+        placement: match cue.placement {
+            RaceItemCuePlacement::Before => ItemCuePlacementSnapshot::Before,
+            RaceItemCuePlacement::After => ItemCuePlacementSnapshot::After,
+        },
+        remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
+    })
+}
+
+fn browser_attack_direction(direction: AttackDirection) -> AttackDirectionSnapshot {
+    match direction {
+        AttackDirection::Ahead => AttackDirectionSnapshot::Ahead,
+        AttackDirection::Behind => AttackDirectionSnapshot::Behind,
+        AttackDirection::Overlap => AttackDirectionSnapshot::Overlap,
+    }
+}
+
+fn browser_protocol_key_to_action(key: ProtocolKey) -> KeyAction {
+    match key {
+        ProtocolKey::Char(ch) => KeyAction::Char(ch),
+        ProtocolKey::Space => KeyAction::Space,
+        ProtocolKey::Backspace => KeyAction::Backspace,
+    }
+}
+
+fn browser_player_color_id(color: AssignedColor) -> PlayerColorId {
+    match color {
+        AssignedColor::Cyan => PlayerColorId::Cyan,
+        AssignedColor::Red => PlayerColorId::Red,
+        AssignedColor::Green => PlayerColorId::Green,
+        AssignedColor::Blue => PlayerColorId::Blue,
+        AssignedColor::Yellow => PlayerColorId::Yellow,
+        AssignedColor::Magenta => PlayerColorId::Magenta,
+    }
+}
+
+fn browser_assigned_color(color: PlayerColorId) -> AssignedColor {
+    match color {
+        PlayerColorId::Cyan => AssignedColor::Cyan,
+        PlayerColorId::Red => AssignedColor::Red,
+        PlayerColorId::Green => AssignedColor::Green,
+        PlayerColorId::Blue => AssignedColor::Blue,
+        PlayerColorId::Yellow => AssignedColor::Yellow,
+        PlayerColorId::Magenta => AssignedColor::Magenta,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1450,7 +2315,52 @@ fn browser_now_ms() -> f64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as f64
 }
 
-fn browser_host_track_words() -> Vec<String> {
+fn browser_generate_track_words() -> Vec<String> {
+    Track::generate(
+        &WordList::from_static(BROWSER_HOST_WORDS),
+        BROWSER_HOST_TRACK_WORD_COUNT,
+    )
+    .map(|track| track.words)
+    .unwrap_or_else(|_| browser_demo_track_words())
+}
+
+fn browser_generate_bonus_state(track_words: &[String]) -> BonusState {
+    BonusState::generate(
+        &Track::new(track_words.to_vec()),
+        &WordList::from_static(BROWSER_HOST_WORDS),
+    )
+}
+
+fn browser_bonus_snapshots(bonuses: &BonusState, now: Instant) -> Vec<BonusPointSnapshot> {
+    bonuses
+        .points
+        .iter()
+        .map(|point| BonusPointSnapshot {
+            after_word_index: point.after_word_index,
+            choices: point
+                .choices
+                .iter()
+                .map(|choice| typekart_protocol::BonusChoiceSnapshot {
+                    word: choice.word.clone(),
+                    status: match choice.status {
+                        BonusChoiceStatus::Available => BonusChoiceSnapshotStatus::Available,
+                        BonusChoiceStatus::Cooldown { until } if until <= now => {
+                            BonusChoiceSnapshotStatus::Available
+                        }
+                        BonusChoiceStatus::Cooldown { until } => {
+                            BonusChoiceSnapshotStatus::Cooldown {
+                                remaining_ms: until.saturating_duration_since(now).as_millis()
+                                    as u64,
+                            }
+                        }
+                    },
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn browser_demo_track_words() -> Vec<String> {
     [
         "spark", "river", "focus", "cyclone", "maple", "harbor", "pixel", "finish",
     ]
@@ -1458,6 +2368,39 @@ fn browser_host_track_words() -> Vec<String> {
     .map(str::to_string)
     .collect()
 }
+
+const BROWSER_HOST_WORDS: &str = "\
+spark
+river
+focus
+cyclone
+maple
+harbor
+pixel
+finish
+rocket
+salad
+tiger
+ember
+frost
+shadow
+quiet
+water
+lemon
+grape
+panda
+racer
+ultra
+crisp
+vivid
+storm
+marker
+typing
+boost
+shield
+banana
+mushroom
+";
 
 async fn send_browser_host_direct(
     state: &BrowserHostLobby,
@@ -1755,18 +2698,23 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BROWSER_HOST_AI_TICK_MS, BrowserHostLobby, add_browser_lobby_human,
+        BROWSER_HOST_AI_TICK_MS, BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT_MS,
+        BROWSER_HOST_TRACK_WORD_COUNT, BrowserHostLobby, add_browser_lobby_human,
         apply_browser_host_ai_tick, apply_browser_host_race_key_input, browser_ai_wpm,
-        browser_controls, browser_host_race_snapshot, browser_unique_lobby_name,
+        browser_bonus_snapshots, browser_controls, browser_generate_bonus_state,
+        browser_ensure_core_race, browser_generate_track_words, browser_host_race_snapshot,
+        browser_sync_active_race_from_core, browser_unique_lobby_name, browser_update_race_status,
         build_track_window, key_name_to_protocol_key, marker_position,
-        ordered_players_for_local_perspective, process_browser_host_client_message, relay_join_url,
-        should_capture_global_gameplay_key,
+        activate_browser_item_pickup, ordered_players_for_local_perspective,
+        process_browser_host_client_message, relay_join_url, should_capture_global_gameplay_key,
     };
     use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
     use leptos::prelude::signal;
+    use typekart::game::bonus::{BonusChoice, BonusPoint, BonusState};
+    use typekart::game::items::{HeldItem, ItemPickup};
     use typekart_protocol::{
-        AiDifficultySnapshot, AssignedColor, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind,
-        ProtocolKey, RoomCode,
+        AiDifficultySnapshot, AssignedColor, BonusChoiceSnapshotStatus, LobbyPlayer,
+        NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey, RaceResultStatus, RoomCode,
     };
 
     #[test]
@@ -1889,10 +2837,23 @@ mod tests {
         };
         let frame = GalleryFrame::Results(results);
 
-        let controls = browser_controls(Some(&frame), Some(typekart_protocol::PlayerId(2)));
+        let controls = browser_controls(Some(&frame), Some(PlayerId(1)));
 
         assert!(controls.show_rematch_ready);
         assert!(!controls.show_ready);
+        assert!(controls.show_start);
+    }
+
+    #[test]
+    fn browser_controls_hide_result_start_for_joiners() {
+        let GalleryFrame::Results(results) = scenario_frame(SCENARIOS[8]) else {
+            unreachable!();
+        };
+        let frame = GalleryFrame::Results(results);
+
+        let controls = browser_controls(Some(&frame), Some(PlayerId(2)));
+
+        assert!(controls.show_rematch_ready);
         assert!(!controls.show_start);
     }
 
@@ -2015,6 +2976,29 @@ mod tests {
     }
 
     #[test]
+    fn browser_generated_track_uses_shared_track_length() {
+        let words = browser_generate_track_words();
+
+        assert_eq!(words.len(), BROWSER_HOST_TRACK_WORD_COUNT);
+        assert!(words.iter().all(|word| !word.is_empty()));
+    }
+
+    #[test]
+    fn browser_generated_track_includes_bonus_snapshots() {
+        let words = browser_generate_track_words();
+        let bonuses = browser_generate_bonus_state(&words);
+        let snapshots = browser_bonus_snapshots(&bonuses, std::time::Instant::now());
+
+        assert!(!snapshots.is_empty());
+        assert!(snapshots.iter().all(|point| point.choices.len() == 3));
+        assert!(
+            snapshots
+                .iter()
+                .all(|point| point.after_word_index < words.len() - 1)
+        );
+    }
+
+    #[test]
     fn browser_host_race_snapshot_uses_lobby_racers() {
         let room = RoomCode::parse("rocket-salad-tiger").unwrap();
         let mut lobby = BrowserHostLobby::new(room, "host".to_string());
@@ -2084,6 +3068,189 @@ mod tests {
     }
 
     #[test]
+    fn browser_host_race_key_input_finishes_final_word_without_space() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        let racers = vec![lobby.players[0].clone()];
+        let mut snapshot = browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        );
+        snapshot.track_words = vec!["go".to_string()];
+        lobby.active_race = Some(snapshot);
+        let (_connection, set_connection) = signal(super::ConnectionState::Disconnected);
+
+        apply_browser_host_race_key_input(
+            &mut lobby,
+            PlayerId(1),
+            ProtocolKey::Char('g'),
+            set_connection,
+        );
+        apply_browser_host_race_key_input(
+            &mut lobby,
+            PlayerId(1),
+            ProtocolKey::Char('o'),
+            set_connection,
+        );
+
+        let results = lobby.active_results.as_ref().unwrap();
+        assert_eq!(results.placements, vec![PlayerId(1)]);
+        assert_eq!(results.rows[0].player_id, PlayerId(1));
+        assert_eq!(results.rows[0].progress_words, 1);
+    }
+
+    #[test]
+    fn browser_host_race_results_rank_racers_by_finish_order() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        let joiner = add_browser_lobby_human(&mut lobby, PlayerId(4), "laura");
+        let racers = vec![lobby.players[0].clone(), joiner];
+        let mut snapshot = browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        );
+        snapshot.track_words = vec!["go".to_string()];
+        lobby.active_race = Some(snapshot);
+        let (_connection, set_connection) = signal(super::ConnectionState::Disconnected);
+
+        for player_id in [PlayerId(2), PlayerId(1)] {
+            apply_browser_host_race_key_input(
+                &mut lobby,
+                player_id,
+                ProtocolKey::Char('g'),
+                set_connection,
+            );
+            apply_browser_host_race_key_input(
+                &mut lobby,
+                player_id,
+                ProtocolKey::Char('o'),
+                set_connection,
+            );
+        }
+
+        let results = lobby.active_results.as_ref().unwrap();
+        assert_eq!(results.placements, vec![PlayerId(2), PlayerId(1)]);
+        assert_eq!(results.rows.len(), 2);
+        assert_eq!(results.rows[0].player_id, PlayerId(2));
+        assert_eq!(results.rows[0].placement, 1);
+        assert_eq!(results.rows[0].progress_words, 1);
+        assert_eq!(results.rows[1].player_id, PlayerId(1));
+        assert_eq!(results.rows[1].placement, 2);
+        assert!(lobby.active_race.is_none());
+    }
+
+    #[test]
+    fn browser_host_race_results_timeout_places_unfinished_racers_by_progress() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        let joiner = add_browser_lobby_human(&mut lobby, PlayerId(4), "laura");
+        let racers = vec![lobby.players[0].clone(), joiner];
+        let mut snapshot = browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        );
+        snapshot.track_words = vec!["go".to_string(), "fast".to_string()];
+        lobby.active_race = Some(snapshot);
+        let (_connection, set_connection) = signal(super::ConnectionState::Disconnected);
+
+        for ch in "gof".chars() {
+            apply_browser_host_race_key_input(
+                &mut lobby,
+                PlayerId(2),
+                ProtocolKey::Char(ch),
+                set_connection,
+            );
+            if ch == 'o' {
+                apply_browser_host_race_key_input(
+                    &mut lobby,
+                    PlayerId(2),
+                    ProtocolKey::Space,
+                    set_connection,
+                );
+            }
+        }
+        for ch in "go".chars() {
+            apply_browser_host_race_key_input(
+                &mut lobby,
+                PlayerId(1),
+                ProtocolKey::Char(ch),
+                set_connection,
+            );
+        }
+        apply_browser_host_race_key_input(
+            &mut lobby,
+            PlayerId(1),
+            ProtocolKey::Space,
+            set_connection,
+        );
+        for ch in "fast".chars() {
+            apply_browser_host_race_key_input(
+                &mut lobby,
+                PlayerId(1),
+                ProtocolKey::Char(ch),
+                set_connection,
+            );
+        }
+
+        let first_finished_at_ms = lobby.first_finished_at_ms.unwrap();
+        assert!(browser_update_race_status(
+            &mut lobby,
+            first_finished_at_ms + BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT_MS
+        ));
+
+        let results = lobby.active_results.as_ref().unwrap();
+        assert_eq!(results.placements, vec![PlayerId(1), PlayerId(2)]);
+        assert_eq!(results.rows[0].status, RaceResultStatus::Finished);
+        assert_eq!(results.rows[1].status, RaceResultStatus::TimedOut);
+        assert_eq!(results.rows[1].progress_words, 1);
+    }
+
+    #[test]
+    fn browser_host_restart_command_returns_results_to_lobby() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        lobby.active_results = Some(crate::fixtures::ResultsFrame {
+            placements: vec![PlayerId(1)],
+            rows: Vec::new(),
+            events: vec!["Race finished".to_string()],
+        });
+        lobby.active_race = Some(browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Finished,
+            &lobby.mod_config,
+            &lobby.players.clone(),
+            Vec::new(),
+        ));
+        lobby.core_race = Some(super::browser_host_core_race(
+            &lobby.players.clone(),
+            super::browser_demo_track_words(),
+        ));
+        lobby.race_placements = vec![PlayerId(1)];
+
+        process_browser_host_client_message(
+            &mut lobby,
+            PlayerId(1),
+            typekart_protocol::ClientMessage::RestartRace,
+            signal(super::ConnectionState::Disconnected).1,
+        );
+
+        assert!(lobby.active_results.is_none());
+        assert!(lobby.active_race.is_none());
+        assert!(lobby.core_race.is_none());
+        assert!(lobby.race_placements.is_empty());
+        assert!(lobby.events.iter().any(|event| event == "returned to lobby"));
+    }
+
+    #[test]
     fn browser_host_race_key_input_marks_and_clears_typos() {
         let room = RoomCode::parse("rocket-salad-tiger").unwrap();
         let mut lobby = BrowserHostLobby::new(room, "host".to_string());
@@ -2117,6 +3284,119 @@ mod tests {
         let player = &lobby.active_race.as_ref().unwrap().players[0];
         assert_eq!(player.input, "");
         assert_eq!(player.typo_index, None);
+    }
+
+    #[test]
+    fn browser_host_bonus_word_claims_choice_after_space() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        let racers = vec![lobby.players[0].clone()];
+        let mut snapshot = browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        );
+        snapshot.track_words = vec!["one".to_string(), "two".to_string()];
+        snapshot.players[0].word_index = 1;
+        lobby.active_race = Some(snapshot);
+        lobby.bonuses = BonusState::with_points(
+            vec![BonusPoint::new(
+                0,
+                [
+                    BonusChoice::available("dash"),
+                    BonusChoice::available("drift"),
+                    BonusChoice::available("turbo"),
+                ],
+            )],
+            vec!["dash".to_string(), "drift".to_string(), "turbo".to_string()],
+        );
+        let (_connection, set_connection) = signal(super::ConnectionState::Disconnected);
+
+        for ch in "dash".chars() {
+            apply_browser_host_race_key_input(
+                &mut lobby,
+                PlayerId(1),
+                ProtocolKey::Char(ch),
+                set_connection,
+            );
+        }
+
+        let player = &lobby.active_race.as_ref().unwrap().players[0];
+        assert_eq!(player.word_index, 1);
+        assert_eq!(player.input, "dash");
+        assert!(lobby.bonus_attempts.contains_key(&PlayerId(1)));
+        assert!(matches!(
+            lobby.active_race.as_ref().unwrap().bonuses[0].choices[0].status,
+            BonusChoiceSnapshotStatus::Available
+        ));
+
+        apply_browser_host_race_key_input(
+            &mut lobby,
+            PlayerId(1),
+            ProtocolKey::Space,
+            set_connection,
+        );
+
+        let player = &lobby.active_race.as_ref().unwrap().players[0];
+        assert_eq!(player.word_index, 1);
+        assert_eq!(player.input, "");
+        assert_eq!(player.typo_index, None);
+        assert!(!lobby.bonus_attempts.contains_key(&PlayerId(1)));
+        assert_eq!(lobby.spent_bonus_gaps.get(&PlayerId(1)), Some(&0));
+        assert!(matches!(
+            lobby.active_race.as_ref().unwrap().bonuses[0].choices[0].status,
+            BonusChoiceSnapshotStatus::Cooldown { .. }
+        ));
+        assert!(lobby.events.iter().any(|event| event.contains("got")));
+        assert!(
+            !lobby.active_race.as_ref().unwrap().events[0].contains("typed"),
+            "bonus pickup or item event should be visible in the race feed"
+        );
+    }
+
+    #[test]
+    fn browser_host_banana_activation_resets_target_and_renders_impact() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        let joiner = add_browser_lobby_human(&mut lobby, PlayerId(4), "laura");
+        let racers = vec![lobby.players[0].clone(), joiner];
+        let mut snapshot = browser_host_race_snapshot(
+            1,
+            NetworkRacePhase::Racing,
+            &lobby.mod_config,
+            &racers,
+            Vec::new(),
+        );
+        snapshot.track_words = vec!["one".to_string(), "two".to_string()];
+        snapshot.players[0].word_index = 0;
+        snapshot.players[1].word_index = 1;
+        snapshot.players[1].input = "twx".to_string();
+        snapshot.players[1].typo_index = Some(2);
+        lobby.active_race = Some(snapshot);
+        browser_ensure_core_race(&mut lobby);
+
+        activate_browser_item_pickup(
+            &mut lobby,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::Banana),
+            std::time::Instant::now(),
+        );
+        browser_sync_active_race_from_core(&mut lobby);
+
+        let target = lobby
+            .active_race
+            .as_ref()
+            .unwrap()
+            .players
+            .iter()
+            .find(|player| player.id == PlayerId(2))
+            .unwrap();
+        assert_eq!(target.input, "");
+        assert_eq!(target.typo_index, None);
+        assert!(target.impact_cue.is_some());
+        assert!(!target.stunned);
     }
 
     #[test]

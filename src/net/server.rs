@@ -1,7 +1,7 @@
 //! Authoritative TCP host for multiplayer races.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, BufRead, BufReader},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::{
@@ -19,13 +19,17 @@ use rand::{Rng, thread_rng};
 use crate::game::{
     ai::AiDifficulty,
     bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
-    effects::ActiveEffect,
-    items::{
-        BananaDisplayConfig, HeldItem, ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand,
-        RacerPosition, select_nearest_banana_target,
+    item_effects::{
+        AttackDirection, RaceImpactCue, RaceImpactCueKind, RaceItemCue, RaceItemCueKind,
+        RaceItemCuePlacement, RaceItemEffectState, activate_item_pickup, advance_mushrooms,
+        player_has_active_mushroom_effect, player_is_stunned as shared_player_is_stunned,
     },
+    items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
     mods::ActiveModConfig,
-    race::{PlayerColorId, RacePlayerId, RaceState},
+    race::{
+        PlayerColorId, RacePlayerId, RaceState,
+        build_race_result_rows as build_shared_race_result_rows,
+    },
     track::{Track, WordList},
     typing::{KeyAction, TypingEvent, first_typo_index},
 };
@@ -108,7 +112,7 @@ struct HostState {
     ai_difficulty: AiDifficulty,
     bonus_attempts: HashMap<PlayerId, NetworkBonusAttempt>,
     spent_bonus_gaps: HashMap<PlayerId, usize>,
-    player_effects: HashMap<PlayerId, NetworkPlayerEffects>,
+    player_effects: HashMap<RacePlayerId, RaceItemEffectState>,
     phase: NetworkRacePhase,
     snapshot_sequence: u64,
     events: Vec<String>,
@@ -130,35 +134,6 @@ struct NetworkAiRacer {
 struct NetworkBonusAttempt {
     point_index: usize,
     choice_index: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-struct NetworkPlayerEffects {
-    stunned_until: Option<Instant>,
-    impact_cue: Option<NetworkImpactCue>,
-    item_cue: Option<NetworkItemCue>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct NetworkImpactCue {
-    kind: ImpactCueSnapshotKind,
-    until: Instant,
-}
-
-#[derive(Debug, Clone)]
-struct NetworkItemCue {
-    kind: NetworkItemCueKind,
-    ascii_label: String,
-    unicode_label: String,
-    placement: ItemCuePlacementSnapshot,
-    until: Instant,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum NetworkItemCueKind {
-    Banana { direction: AttackDirectionSnapshot },
-    Cyclone { direction: AttackDirectionSnapshot },
-    SquidInk,
 }
 
 pub fn run_host(config: HostConfig) -> Result<()> {
@@ -569,7 +544,7 @@ fn remove_lobby_player(state: &mut HostState, player_id: PlayerId) -> Result<()>
     state.ai_racers.remove(&player_id);
     state.bonus_attempts.remove(&player_id);
     state.spent_bonus_gaps.remove(&player_id);
-    state.player_effects.remove(&player_id);
+    state.player_effects.remove(&RacePlayerId(player_id.0));
     push_event(
         state,
         match kind {
@@ -1055,7 +1030,7 @@ fn handle_player_disconnect(state: &mut HostState, player_id: PlayerId, now: Ins
     }
     state.bonus_attempts.remove(&player_id);
     state.spent_bonus_gaps.remove(&player_id);
-    state.player_effects.remove(&player_id);
+    state.player_effects.remove(&RacePlayerId(player_id.0));
     state.clients.retain(|client| client.player_id != player_id);
 
     if player_id == PlayerId(1) {
@@ -1628,7 +1603,7 @@ fn network_position_band(state: &HostState, player_id: PlayerId) -> RacePosition
 fn player_input_is_paused(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
     if state
         .player_effects
-        .get(&player_id)
+        .get(&RacePlayerId(player_id.0))
         .and_then(|effects| effects.stunned_until)
         .is_some_and(|until| until > now)
     {
@@ -1647,550 +1622,39 @@ fn activate_network_pickup(
     item: ItemPickup,
     now: Instant,
 ) {
-    match item {
-        ItemPickup::Held(HeldItem::Mushroom) => activate_network_mushroom(state, player_id, now),
-        ItemPickup::Held(HeldItem::Banana) => activate_network_banana(state, player_id, now),
-        ItemPickup::Held(HeldItem::Focus) => activate_network_focus(state, player_id, now),
-        ItemPickup::Held(HeldItem::Cyclone) => activate_network_cyclone(state, player_id, now),
-        ItemPickup::Held(HeldItem::SquidInk) => activate_network_squid_ink(state, player_id, now),
-        ItemPickup::Shield => activate_network_shield(state, player_id, now),
-    }
-}
-
-fn activate_network_shield(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let Some(player) = state
-        .race
-        .players
-        .iter_mut()
-        .find(|player| player.id == RacePlayerId(player_id.0))
-    else {
-        return;
-    };
-
-    player.state.active_effects.push(ActiveEffect::Shield {
-        until: now + Duration::from_millis(state.item_registry.shield_effect().duration_ms),
-    });
-}
-
-fn activate_network_mushroom(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    state.bonus_attempts.remove(&player_id);
-    let Some(player) = state
-        .race
-        .players
-        .iter_mut()
-        .find(|player| player.id == RacePlayerId(player_id.0))
-    else {
-        return;
-    };
-
-    player.state.input.clear();
-    player.state.typo_index = None;
-    let mushroom = state.item_registry.mushroom_effect();
-    player.state.active_effects.push(ActiveEffect::Mushroom {
-        remaining_words: mushroom.boost_words,
-        next_step_at: now,
-        step_interval: mushroom_step_interval(mushroom.wpm),
-    });
-    advance_network_mushrooms(state, now);
-}
-
-fn activate_network_focus(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let Some(player) = state
-        .race
-        .players
-        .iter_mut()
-        .find(|player| player.id == RacePlayerId(player_id.0))
-    else {
-        return;
-    };
-
-    player.state.active_effects.push(ActiveEffect::Focus {
-        until: now + Duration::from_millis(state.item_registry.focus_effect().duration_ms),
-    });
-}
-
-fn activate_network_cyclone(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let attacker_name = player_label(state, player_id);
-    let Some(target_id) = first_place_network_target(state, Some(player_id)) else {
-        push_event(state, format!("{attacker_name} missed Cyclone"));
-        return;
-    };
-
-    let attacker_word_index = state
-        .race
-        .player(RacePlayerId(player_id.0))
-        .map(|player| player.state.word_index)
-        .unwrap_or_default();
-    let target_word_index = state
-        .race
-        .player(RacePlayerId(target_id.0))
-        .map(|player| player.state.word_index)
-        .unwrap_or_default();
-    let direction = attack_direction(attacker_word_index, target_word_index);
-    state.player_effects.entry(player_id).or_default().item_cue = Some(NetworkItemCue {
-        kind: NetworkItemCueKind::Cyclone { direction },
-        ascii_label: network_cyclone_cue_label(direction, false),
-        unicode_label: network_cyclone_cue_label(direction, true),
-        placement: network_item_cue_placement(direction),
-        until: now + Duration::from_millis(1_500),
-    });
-
-    let target_name = player_label(state, target_id);
-    if apply_network_cyclone_to_player(state, target_id, now) {
-        push_event(
-            state,
-            format!("{attacker_name} hit {target_name} with Cyclone"),
-        );
-    }
-}
-
-fn activate_network_banana(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let Some(attacker) = state.race.player(RacePlayerId(player_id.0)) else {
-        return;
-    };
-    let attacker_word_index = attacker.state.word_index;
-    let attacker_name = attacker.name.clone();
-    let candidates = state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.id != attacker.id)
-        .filter(|player| player.connected)
-        .filter(|player| !player.state.is_finished())
-        .filter(|player| !player_is_stunned(state, PlayerId(player.id.0), now))
-        .map(|player| RacerPosition {
-            id: player.id.0 as usize,
-            word_index: player.state.word_index,
-        })
-        .collect::<Vec<_>>();
-
-    push_network_log(
-        &state.debug_log,
-        format!(
-            "{attacker_name} banana fired from word={attacker_word_index}; candidates={}",
-            network_racer_positions_summary(state, &candidates, now)
-        ),
+    let ai_players = state
+        .ai_racers
+        .keys()
+        .map(|player_id| RacePlayerId(player_id.0))
+        .collect::<HashSet<_>>();
+    let report = activate_item_pickup(
+        &mut state.race,
+        &mut state.player_effects,
+        &ai_players,
+        &state.item_registry,
+        RacePlayerId(player_id.0),
+        item,
+        now,
     );
 
-    let banana = state.item_registry.banana_effect();
-    let Some(target) =
-        select_nearest_banana_target(attacker_word_index, &candidates, banana.range_words)
-    else {
-        push_event(state, format!("{attacker_name} missed Banana"));
-        push_network_log(&state.debug_log, format!("{attacker_name} banana missed"));
-        return;
-    };
-
-    let target_id = PlayerId(target.id as u64);
-    let direction = attack_direction(attacker_word_index, target.word_index);
-    let banana_display = state.item_registry.banana_display();
-    let (ascii_label, unicode_label) = network_banana_cue_labels(direction, banana_display);
-    let distance = attacker_word_index.abs_diff(target.word_index);
-    push_network_log(
-        &state.debug_log,
-        format!(
-            "{attacker_name} banana target={} target_word={} direction={direction:?} distance_words={distance}",
-            player_name(state, target_id).unwrap_or_else(|| format!("player {}", target_id.0)),
-            target.word_index
-        ),
-    );
-    state.player_effects.entry(player_id).or_default().item_cue = Some(NetworkItemCue {
-        kind: NetworkItemCueKind::Banana { direction },
-        ascii_label,
-        unicode_label,
-        placement: network_item_cue_placement(direction),
-        until: now + Duration::from_millis(banana.cue_ms),
-    });
-
-    match apply_network_banana_to_player(state, target_id, now) {
-        Some(BananaResolution::SpunOut) => {
-            let target_name =
-                player_name(state, target_id).unwrap_or_else(|| format!("player {}", target_id.0));
-            push_event(state, format!("{attacker_name} hit {target_name}"));
-        }
-        Some(BananaResolution::Blocked) | None => {}
+    for interrupted in report.interrupted_players {
+        state.bonus_attempts.remove(&PlayerId(interrupted.0));
     }
-}
-
-fn activate_network_squid_ink(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let Some(attacker) = state.race.player(RacePlayerId(player_id.0)) else {
-        return;
-    };
-    let attacker_word_index = attacker.state.word_index;
-    let attacker_name = attacker.name.clone();
-    let squid_ink = state.item_registry.squid_ink_effect();
-    let targets = state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.id != attacker.id)
-        .filter(|player| player.connected)
-        .filter(|player| !player.state.is_finished())
-        .filter(|player| {
-            attacker_word_index.abs_diff(player.state.word_index) <= squid_ink.range_words
-        })
-        .map(|player| RacerPosition {
-            id: player.id.0 as usize,
-            word_index: player.state.word_index,
-        })
-        .collect::<Vec<_>>();
-
-    push_network_log(
-        &state.debug_log,
-        format!(
-            "{attacker_name} squid ink fired from word={attacker_word_index}; candidates={}",
-            network_racer_positions_summary(state, &targets, now)
-        ),
-    );
-
-    state.player_effects.entry(player_id).or_default().item_cue = Some(NetworkItemCue {
-        kind: NetworkItemCueKind::SquidInk,
-        ascii_label: " ink ".to_string(),
-        unicode_label: " 🦑 ".to_string(),
-        placement: ItemCuePlacementSnapshot::After,
-        until: now + Duration::from_millis(squid_ink.cue_ms),
-    });
-
-    let mut hit_count = 0;
-    for target in targets {
-        if apply_network_squid_ink_to_player(state, PlayerId(target.id as u64), now) {
-            hit_count += 1;
-        }
-    }
-
-    if hit_count == 0 {
-        push_event(state, format!("{attacker_name} missed Squid Ink"));
-        push_network_log(
-            &state.debug_log,
-            format!("{attacker_name} squid ink missed"),
-        );
-    } else {
-        push_event(state, format!("{attacker_name} inked {hit_count} racer(s)"));
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BananaResolution {
-    SpunOut,
-    Blocked,
-}
-
-fn apply_network_banana_to_player(
-    state: &mut HostState,
-    target_id: PlayerId,
-    now: Instant,
-) -> Option<BananaResolution> {
-    let target_index = state
-        .race
-        .players
-        .iter()
-        .position(|player| player.id == RacePlayerId(target_id.0))?;
-    let target_name = state.race.players[target_index].name.clone();
-    let word_index = state.race.players[target_index].state.word_index;
-
-    if state.race.players[target_index]
-        .state
-        .has_active_shield(now)
-    {
-        state.race.players[target_index]
-            .state
-            .active_effects
-            .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
-        state
-            .player_effects
-            .entry(target_id)
-            .or_default()
-            .impact_cue = Some(NetworkImpactCue {
-            kind: ImpactCueSnapshotKind::ShieldBlock,
-            until: now + Duration::from_millis(700),
-        });
-        push_event(state, format!("{target_name} blocked Banana"));
-        push_network_log(
-            &state.debug_log,
-            format!("{target_name} blocked Banana at word={word_index}; shield consumed"),
-        );
-        return Some(BananaResolution::Blocked);
-    }
-
-    state.bonus_attempts.remove(&target_id);
-    let target = &mut state.race.players[target_index];
-    target.state.input.clear();
-    target.state.typo_index = None;
-    if let Some(ai) = state.ai_racers.get_mut(&target_id) {
-        ai.char_budget = 0.0;
-    }
-    let target_is_ai = state.ai_racers.contains_key(&target_id);
-    let effects = state.player_effects.entry(target_id).or_default();
-    let banana = state.item_registry.banana_effect();
-    if target_is_ai {
-        effects.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
-    } else {
-        effects.stunned_until = None;
-    }
-    effects.impact_cue = Some(NetworkImpactCue {
-        kind: ImpactCueSnapshotKind::Banana,
-        until: now + Duration::from_millis(banana.impact_blink_ms),
-    });
-    push_network_log(
-        &state.debug_log,
-        if target_is_ai {
-            format!(
-                "{target_name} spun out at word={word_index}; stun_ms={} impact_blink_ms={}",
-                banana.stun_ms, banana.impact_blink_ms
-            )
-        } else {
-            format!(
-                "{target_name} reset to word start at word={word_index}; impact_blink_ms={}",
-                banana.impact_blink_ms
-            )
-        },
-    );
-    Some(BananaResolution::SpunOut)
-}
-
-fn first_place_network_target(state: &HostState, exclude: Option<PlayerId>) -> Option<PlayerId> {
-    state
-        .race
-        .players
-        .iter()
-        .filter(|player| Some(PlayerId(player.id.0)) != exclude)
-        .filter(|player| player.connected)
-        .filter(|player| !player.state.is_finished())
-        .max_by_key(|player| (player.state.word_index, player.state.input.chars().count()))
-        .map(|player| PlayerId(player.id.0))
-}
-
-fn apply_network_cyclone_to_player(
-    state: &mut HostState,
-    target_id: PlayerId,
-    now: Instant,
-) -> bool {
-    let Some(target_index) = state
-        .race
-        .players
-        .iter()
-        .position(|player| player.id == RacePlayerId(target_id.0))
-    else {
-        return false;
-    };
-    let target_name = state.race.players[target_index].name.clone();
-
-    if state.race.players[target_index]
-        .state
-        .has_active_shield(now)
-    {
-        state.race.players[target_index]
-            .state
-            .active_effects
-            .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
-        state
-            .player_effects
-            .entry(target_id)
-            .or_default()
-            .impact_cue = Some(NetworkImpactCue {
-            kind: ImpactCueSnapshotKind::ShieldBlock,
-            until: now + Duration::from_millis(700),
-        });
-        push_event(state, format!("{target_name} blocked Cyclone"));
-        push_network_log(
-            &state.debug_log,
-            format!("{target_name} blocked Cyclone; shield consumed"),
-        );
-        return false;
-    }
-
-    let affected_words = state.item_registry.cyclone_effect().affected_words;
-    let target = &mut state.race.players[target_index].state;
-    let mut applied = false;
-    for word_index in target.word_index..target.word_index.saturating_add(affected_words) {
-        let Some(word) = state.race.track.current_word(word_index) else {
-            break;
-        };
-        target
-            .word_overrides
-            .insert(word_index, word.chars().rev().collect());
-        applied = true;
-    }
-    if applied {
-        target.input.clear();
-        target.typo_index = None;
-        state.bonus_attempts.remove(&target_id);
-        let cyclone = state.item_registry.cyclone_effect();
-        if let Some(ai) = state.ai_racers.get_mut(&target_id) {
+    for ai_id in report.reset_ai_players {
+        if let Some(ai) = state.ai_racers.get_mut(&PlayerId(ai_id.0)) {
             ai.char_budget = 0.0;
         }
-        state
-            .player_effects
-            .entry(target_id)
-            .and_modify(|effects| {
-                effects.stunned_until = Some(now + Duration::from_millis(cyclone.stun_ms));
-                effects.impact_cue = Some(NetworkImpactCue {
-                    kind: ImpactCueSnapshotKind::Cyclone,
-                    until: now + Duration::from_millis(1_200),
-                });
-            })
-            .or_insert_with(|| NetworkPlayerEffects {
-                stunned_until: Some(now + Duration::from_millis(cyclone.stun_ms)),
-                impact_cue: Some(NetworkImpactCue {
-                    kind: ImpactCueSnapshotKind::Cyclone,
-                    until: now + Duration::from_millis(1_200),
-                }),
-                item_cue: None,
-            });
     }
-    applied
-}
-
-fn apply_network_squid_ink_to_player(
-    state: &mut HostState,
-    target_id: PlayerId,
-    now: Instant,
-) -> bool {
-    let Some(target_index) = state
-        .race
-        .players
-        .iter()
-        .position(|player| player.id == RacePlayerId(target_id.0))
-    else {
-        return false;
-    };
-    let target_name = state.race.players[target_index].name.clone();
-
-    if state.race.players[target_index]
-        .state
-        .has_active_shield(now)
-    {
-        state.race.players[target_index]
-            .state
-            .active_effects
-            .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
-        state
-            .player_effects
-            .entry(target_id)
-            .or_default()
-            .impact_cue = Some(NetworkImpactCue {
-            kind: ImpactCueSnapshotKind::ShieldBlock,
-            until: now + Duration::from_millis(700),
-        });
-        push_event(state, format!("{target_name} blocked Squid Ink"));
-        push_network_log(
-            &state.debug_log,
-            format!("{target_name} blocked Squid Ink; shield consumed"),
-        );
-        return false;
+    for event in report.events {
+        push_network_log(&state.debug_log, event.clone());
+        push_event(state, event);
     }
-
-    let target = &mut state.race.players[target_index].state;
-    let squid_ink = state.item_registry.squid_ink_effect();
-    target.inked_word_index = Some(target.word_index);
-    target.inked_until = Some(now + Duration::from_millis(squid_ink.duration_ms));
-    state
-        .player_effects
-        .entry(target_id)
-        .or_default()
-        .impact_cue = Some(NetworkImpactCue {
-        kind: ImpactCueSnapshotKind::SquidInk,
-        until: now + Duration::from_millis(squid_ink.impact_blink_ms),
-    });
-    true
 }
 
 fn advance_network_mushrooms(state: &mut HostState, now: Instant) {
-    let player_ids = state
-        .race
-        .players
-        .iter()
-        .map(|player| PlayerId(player.id.0))
-        .collect::<Vec<_>>();
-
-    for player_id in player_ids {
-        loop {
-            if !advance_network_mushroom_one_word(state, player_id, now) {
-                break;
-            }
-            if state
-                .race
-                .player(RacePlayerId(player_id.0))
-                .is_some_and(|player| player.state.is_finished())
-            {
-                break;
-            }
-        }
+    for interrupted in advance_mushrooms(&mut state.race, now) {
+        state.bonus_attempts.remove(&PlayerId(interrupted.0));
     }
-}
-
-fn advance_network_mushroom_one_word(
-    state: &mut HostState,
-    player_id: PlayerId,
-    now: Instant,
-) -> bool {
-    let Some(player_index) = state
-        .race
-        .players
-        .iter()
-        .position(|player| player.id == RacePlayerId(player_id.0))
-    else {
-        return false;
-    };
-    let Some(effect_index) = state.race.players[player_index]
-        .state
-        .active_effects
-        .iter()
-        .position(|effect| {
-            matches!(
-                effect,
-                ActiveEffect::Mushroom {
-                    remaining_words,
-                    next_step_at,
-                    ..
-                } if *remaining_words > 0 && *next_step_at <= now
-            )
-        })
-    else {
-        return false;
-    };
-
-    let remaining = state
-        .race
-        .track
-        .len()
-        .saturating_sub(state.race.players[player_index].state.word_index);
-    if remaining == 0 {
-        state.race.players[player_index]
-            .state
-            .active_effects
-            .remove(effect_index);
-        return false;
-    }
-
-    let player = &mut state.race.players[player_index];
-    player.state.word_index += 1;
-    player.state.stats.completed_words += 1;
-    player.state.input.clear();
-    player.state.typo_index = None;
-    state.bonus_attempts.remove(&player_id);
-
-    if player.state.word_index >= state.race.track.len() {
-        player.state.finished_at = Some(now);
-        player.state.active_effects.remove(effect_index);
-        return false;
-    }
-
-    if let Some(ActiveEffect::Mushroom {
-        remaining_words,
-        next_step_at,
-        step_interval,
-    }) = player.state.active_effects.get_mut(effect_index)
-    {
-        *remaining_words -= 1;
-        if *remaining_words == 0 {
-            player.state.active_effects.remove(effect_index);
-        } else {
-            *next_step_at += *step_interval;
-        }
-    }
-
-    true
 }
 
 fn advance_network_ai_racers(state: &mut HostState, now: Instant) {
@@ -2224,7 +1688,7 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
         || player_is_stunned(state, player_id, now)
         || state
             .player_effects
-            .get(&player_id)
+            .get(&RacePlayerId(player_id.0))
             .and_then(|effects| effects.item_cue.as_ref())
             .is_some_and(|cue| cue.until > now)
         || player.state.typo_index.is_some()
@@ -2355,42 +1819,8 @@ fn ai_chars_per_second(words_per_minute: f64) -> f64 {
     words_per_minute * 5.0 / 60.0
 }
 
-fn player_has_active_mushroom_effect(
-    player: &crate::game::race::RacePlayer,
-    _now: Instant,
-) -> bool {
-    player.state.active_effects.iter().any(|effect| {
-        matches!(
-            effect,
-            ActiveEffect::Mushroom {
-                remaining_words,
-                ..
-            } if *remaining_words > 0
-        )
-    })
-}
-
 fn player_is_stunned(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
-    state
-        .player_effects
-        .get(&player_id)
-        .and_then(|effects| effects.stunned_until)
-        .is_some_and(|until| until > now)
-}
-
-fn attack_direction(
-    attacker_word_index: usize,
-    target_word_index: usize,
-) -> AttackDirectionSnapshot {
-    match target_word_index.cmp(&attacker_word_index) {
-        std::cmp::Ordering::Greater => AttackDirectionSnapshot::Ahead,
-        std::cmp::Ordering::Less => AttackDirectionSnapshot::Behind,
-        std::cmp::Ordering::Equal => AttackDirectionSnapshot::Overlap,
-    }
-}
-
-fn mushroom_step_interval(wpm: u32) -> Duration {
-    Duration::from_secs_f64(60.0 / f64::from(wpm))
+    shared_player_is_stunned(&state.player_effects, RacePlayerId(player_id.0), now)
 }
 
 fn ai_effective_wpm(
@@ -2410,69 +1840,6 @@ fn ai_effective_wpm(
     } else {
         focused_wpm
     }
-}
-
-fn network_banana_cue_labels(
-    direction: AttackDirectionSnapshot,
-    display: BananaDisplayConfig,
-) -> (String, String) {
-    match direction {
-        AttackDirectionSnapshot::Ahead => (display.ascii_ahead, display.unicode_ahead),
-        AttackDirectionSnapshot::Behind => (display.ascii_behind, display.unicode_behind),
-        AttackDirectionSnapshot::Overlap => (display.ascii_overlap, display.unicode_overlap),
-    }
-}
-
-fn network_cyclone_cue_label(direction: AttackDirectionSnapshot, unicode: bool) -> String {
-    match (direction, unicode) {
-        (AttackDirectionSnapshot::Ahead, false) => " cy>>".to_string(),
-        (AttackDirectionSnapshot::Behind, false) => "<<cy ".to_string(),
-        (AttackDirectionSnapshot::Overlap, false) => " cy<>".to_string(),
-        (AttackDirectionSnapshot::Ahead, true) => " 🌀 >>".to_string(),
-        (AttackDirectionSnapshot::Behind, true) => "<< 🌀 ".to_string(),
-        (AttackDirectionSnapshot::Overlap, true) => " 🌀 <>".to_string(),
-    }
-}
-
-fn network_item_cue_placement(direction: AttackDirectionSnapshot) -> ItemCuePlacementSnapshot {
-    match direction {
-        AttackDirectionSnapshot::Ahead | AttackDirectionSnapshot::Overlap => {
-            ItemCuePlacementSnapshot::After
-        }
-        AttackDirectionSnapshot::Behind => ItemCuePlacementSnapshot::Before,
-    }
-}
-
-fn network_racer_positions_summary(
-    state: &HostState,
-    racers: &[RacerPosition],
-    now: Instant,
-) -> String {
-    if racers.is_empty() {
-        return "none".to_string();
-    }
-
-    racers
-        .iter()
-        .map(|racer| {
-            let player_id = PlayerId(racer.id as u64);
-            let shield = state
-                .race
-                .player(RacePlayerId(player_id.0))
-                .is_some_and(|player| player.state.has_active_shield(now));
-            let stunned = player_is_stunned(state, player_id, now);
-            let finished = state
-                .race
-                .player(RacePlayerId(player_id.0))
-                .is_some_and(|player| player.state.is_finished());
-            format!(
-                "{}@{} shield={shield} stunned={stunned} finished={finished}",
-                player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0)),
-                racer.word_index
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn item_pickup_name(item: ItemPickup) -> &'static str {
@@ -2778,78 +2145,29 @@ fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
 }
 
 fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow> {
-    let mut ordered_ids = state.placements.clone();
-    let mut remaining = state
-        .race
-        .players
+    let placements = state
+        .placements
         .iter()
-        .map(|player| {
-            (
-                PlayerId(player.id.0),
-                player.connected,
-                player.state.word_index,
-                player.state.input.chars().count(),
-            )
-        })
-        .filter(|(id, _, _, _)| !ordered_ids.contains(id))
+        .map(|player_id| RacePlayerId(player_id.0))
         .collect::<Vec<_>>();
-
-    remaining.sort_by_key(|(_, connected, word_index, input_len)| {
-        (
-            // Active racers should appear before disconnected racers if the
-            // server ever needs to synthesize rows before placement completion.
-            !*connected,
-            std::cmp::Reverse(*word_index),
-            std::cmp::Reverse(*input_len),
-        )
-    });
-    ordered_ids.extend(remaining.into_iter().map(|(id, _, _, _)| id));
-
-    let track_words = state.race.track.len();
-    ordered_ids
+    build_shared_race_result_rows(&state.race, &placements, now)
         .into_iter()
-        .enumerate()
-        .filter_map(|(index, id)| {
-            let player = state
-                .race
-                .players
-                .iter()
-                .find(|player| player.id == RacePlayerId(id.0))?;
-            let finished = player.state.is_finished();
-            let status = if finished {
-                RaceResultStatus::Finished
-            } else if player.connected {
-                RaceResultStatus::TimedOut
-            } else {
-                RaceResultStatus::Disconnected
-            };
-            let stats_until = player.state.finished_at.unwrap_or(now);
-            let wpm = player
-                .state
-                .stats
-                .words_per_minute(player.state.started_at, stats_until)
-                .round()
-                .clamp(0.0, u32::MAX as f64) as u32;
-            let accuracy_percent = player.state.stats.accuracy().round().clamp(0.0, 100.0) as u32;
-            let progress_words = if finished {
-                track_words
-            } else {
-                player.state.word_index.min(track_words)
-            };
-
-            Some(RaceResultRow {
-                placement: index + 1,
-                player_id: id,
-                name: player.name.clone(),
-                color: player.color.into(),
-                status,
-                progress_words,
-                track_words,
-                wpm,
-                accuracy_percent,
-                typo_chars: player.state.stats.typo_chars,
-                backspaces: player.state.stats.backspaces,
-            })
+        .map(|row| RaceResultRow {
+            placement: row.placement,
+            player_id: PlayerId(row.player_id.0),
+            name: row.name,
+            color: row.color.into(),
+            status: match row.status {
+                crate::game::race::RaceResultStatus::Finished => RaceResultStatus::Finished,
+                crate::game::race::RaceResultStatus::TimedOut => RaceResultStatus::TimedOut,
+                crate::game::race::RaceResultStatus::Disconnected => RaceResultStatus::Disconnected,
+            },
+            progress_words: row.progress_words,
+            track_words: row.track_words,
+            wpm: row.wpm,
+            accuracy_percent: row.accuracy_percent,
+            typo_chars: row.typo_chars,
+            backspaces: row.backspaces,
         })
         .collect()
 }
@@ -3004,7 +2322,7 @@ fn build_player_snapshots(state: &HostState, now: Instant) -> Vec<PlayerSnapshot
             let player_id = PlayerId(player.id.0);
             let effects = state
                 .player_effects
-                .get(&player_id)
+                .get(&RacePlayerId(player_id.0))
                 .cloned()
                 .unwrap_or_default();
             PlayerSnapshot {
@@ -3046,30 +2364,50 @@ fn remaining_ms(until: Option<Instant>, now: Instant) -> u64 {
         .unwrap_or(0)
 }
 
-fn build_item_cue_snapshot(cue: Option<NetworkItemCue>, now: Instant) -> Option<ItemCueSnapshot> {
+fn build_item_cue_snapshot(cue: Option<RaceItemCue>, now: Instant) -> Option<ItemCueSnapshot> {
     let cue = cue.filter(|cue| cue.until > now)?;
     Some(ItemCueSnapshot {
         kind: match cue.kind {
-            NetworkItemCueKind::Banana { direction } => ItemCueSnapshotKind::Banana { direction },
-            NetworkItemCueKind::Cyclone { direction } => ItemCueSnapshotKind::Cyclone { direction },
-            NetworkItemCueKind::SquidInk => ItemCueSnapshotKind::SquidInk,
+            RaceItemCueKind::Banana { direction } => ItemCueSnapshotKind::Banana {
+                direction: network_attack_direction(direction),
+            },
+            RaceItemCueKind::Cyclone { direction } => ItemCueSnapshotKind::Cyclone {
+                direction: network_attack_direction(direction),
+            },
+            RaceItemCueKind::SquidInk => ItemCueSnapshotKind::SquidInk,
         },
         ascii_label: cue.ascii_label,
         unicode_label: cue.unicode_label,
-        placement: cue.placement,
+        placement: match cue.placement {
+            RaceItemCuePlacement::Before => ItemCuePlacementSnapshot::Before,
+            RaceItemCuePlacement::After => ItemCuePlacementSnapshot::After,
+        },
         remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
     })
 }
 
 fn build_impact_cue_snapshot(
-    cue: Option<NetworkImpactCue>,
+    cue: Option<RaceImpactCue>,
     now: Instant,
 ) -> Option<ImpactCueSnapshot> {
     let cue = cue.filter(|cue| cue.until > now)?;
     Some(ImpactCueSnapshot {
-        kind: cue.kind,
+        kind: match cue.kind {
+            RaceImpactCueKind::Banana => ImpactCueSnapshotKind::Banana,
+            RaceImpactCueKind::Cyclone => ImpactCueSnapshotKind::Cyclone,
+            RaceImpactCueKind::SquidInk => ImpactCueSnapshotKind::SquidInk,
+            RaceImpactCueKind::ShieldBlock => ImpactCueSnapshotKind::ShieldBlock,
+        },
         remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
     })
+}
+
+fn network_attack_direction(direction: AttackDirection) -> AttackDirectionSnapshot {
+    match direction {
+        AttackDirection::Ahead => AttackDirectionSnapshot::Ahead,
+        AttackDirection::Behind => AttackDirectionSnapshot::Behind,
+        AttackDirection::Overlap => AttackDirectionSnapshot::Overlap,
+    }
 }
 
 fn player_kind(state: &HostState, player_id: PlayerId) -> PlayerKind {
@@ -3165,16 +2503,16 @@ mod tests {
 
     use super::{
         AssignedColor, ConnectedClient, HostState, NetworkAiRacer, NetworkRacePhase,
-        POST_FIRST_FINISH_TIMEOUT, PlayerId, activate_network_pickup, add_lobby_ai_racer,
-        add_network_ai_racers, advance_network_ai_racers, apply_network_banana_to_player,
-        apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
-        broadcast_race_snapshot, build_race_result_rows, build_race_snapshot,
-        cleanup_disconnected_waiting_players, client_is_in_current_race, connected_player_count,
-        first_available_color, handle_client_messages, handle_player_disconnect,
-        new_human_lobby_player, push_event, read_join_hello, reconcile_phase_after_disconnect,
-        remove_lobby_player, rename_lobby_player, reset_race_from_lobby, return_to_lobby,
-        set_lobby_ai_difficulty, unique_player_name, update_host_ready, update_race_status,
-        validate_host_capacity, welcome_joiner,
+        POST_FIRST_FINISH_TIMEOUT, PlayerId, RaceImpactCueKind, RaceItemEffectState,
+        activate_network_pickup, add_lobby_ai_racer, add_network_ai_racers,
+        advance_network_ai_racers, apply_network_key_input, broadcast_lobby_snapshot,
+        broadcast_race_results_once, broadcast_race_snapshot, build_race_result_rows,
+        build_race_snapshot, cleanup_disconnected_waiting_players, client_is_in_current_race,
+        connected_player_count, first_available_color, handle_client_messages,
+        handle_player_disconnect, new_human_lobby_player, push_event, read_join_hello,
+        reconcile_phase_after_disconnect, remove_lobby_player, rename_lobby_player,
+        reset_race_from_lobby, return_to_lobby, set_lobby_ai_difficulty, unique_player_name,
+        update_host_ready, update_race_status, validate_host_capacity, welcome_joiner,
     };
     use crate::game::{
         ai::AiDifficulty,
@@ -3189,8 +2527,8 @@ mod tests {
         words::WordSetDefinition,
     };
     use crate::net::protocol::{
-        ClientMessage, ImpactCueSnapshotKind, LobbyPlayer, PlayerKind, RaceResultStatus,
-        ServerMessage, decode_server_message, encode_client_message,
+        ClientMessage, LobbyPlayer, PlayerKind, RaceResultStatus, ServerMessage,
+        decode_server_message, encode_client_message,
     };
 
     #[test]
@@ -3546,8 +2884,8 @@ mod tests {
             },
         );
         state.player_effects.insert(
-            PlayerId(2),
-            super::NetworkPlayerEffects {
+            RacePlayerId(2),
+            RaceItemEffectState {
                 stunned_until: Some(now + Duration::from_secs(1)),
                 ..Default::default()
             },
@@ -3650,21 +2988,21 @@ mod tests {
         assert!(
             state
                 .player_effects
-                .get(&PlayerId(1))
+                .get(&RacePlayerId(1))
                 .and_then(|effects| effects.stunned_until)
                 .is_none()
         );
         assert!(
             state
                 .player_effects
-                .get(&PlayerId(1))
+                .get(&RacePlayerId(1))
                 .and_then(|effects| effects.impact_cue)
-                .is_some_and(|cue| cue.kind == ImpactCueSnapshotKind::Banana && cue.until > now)
+                .is_some_and(|cue| cue.kind == RaceImpactCueKind::Banana && cue.until > now)
         );
         assert!(
             state
                 .player_effects
-                .get(&PlayerId(2))
+                .get(&RacePlayerId(2))
                 .and_then(|effects| effects.item_cue.as_ref())
                 .is_some_and(|cue| cue.until > now)
         );
@@ -3686,14 +3024,18 @@ mod tests {
             },
         );
 
-        let result = apply_network_banana_to_player(&mut state, PlayerId(2), now);
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::Banana),
+            now,
+        );
 
-        assert_eq!(result, Some(super::BananaResolution::SpunOut));
         assert_eq!(state.ai_racers.get(&PlayerId(2)).unwrap().char_budget, 0.0);
         assert!(
             state
                 .player_effects
-                .get(&PlayerId(2))
+                .get(&RacePlayerId(2))
                 .and_then(|effects| effects.stunned_until)
                 .is_some_and(|until| until > now)
         );
@@ -3864,7 +3206,9 @@ mod tests {
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.snapshot_sequence = 7;
         state.placements = vec![PlayerId(1)];
-        state.player_effects.insert(PlayerId(1), Default::default());
+        state
+            .player_effects
+            .insert(RacePlayerId(1), Default::default());
 
         return_to_lobby(&mut state).unwrap();
 
@@ -4234,21 +3578,21 @@ mod tests {
         assert!(
             state
                 .player_effects
-                .get(&PlayerId(2))
+                .get(&RacePlayerId(2))
                 .and_then(|effects| effects.stunned_until)
                 .is_none()
         );
         assert!(
             state
                 .player_effects
-                .get(&PlayerId(2))
+                .get(&RacePlayerId(2))
                 .and_then(|effects| effects.impact_cue)
-                .is_some_and(|cue| cue.until > now && cue.kind == ImpactCueSnapshotKind::Banana)
+                .is_some_and(|cue| cue.until > now && cue.kind == RaceImpactCueKind::Banana)
         );
         assert!(
             state
                 .player_effects
-                .get(&PlayerId(1))
+                .get(&RacePlayerId(1))
                 .and_then(|effects| effects.item_cue.clone())
                 .is_some()
         );
@@ -4262,18 +3606,22 @@ mod tests {
         state.race.players[1].state.word_index = 0;
 
         activate_network_pickup(&mut state, PlayerId(2), ItemPickup::Shield, now);
-        let result = apply_network_banana_to_player(&mut state, PlayerId(2), now);
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::Banana),
+            now,
+        );
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
-        assert_eq!(result, Some(super::BananaResolution::Blocked));
         assert!(!alex.state.has_active_shield(now));
         assert_eq!(
             state
                 .player_effects
-                .get(&PlayerId(2))
+                .get(&RacePlayerId(2))
                 .and_then(|effects| effects.impact_cue)
                 .map(|cue| cue.kind),
-            Some(ImpactCueSnapshotKind::ShieldBlock)
+            Some(RaceImpactCueKind::ShieldBlock)
         );
     }
 
@@ -4317,7 +3665,7 @@ mod tests {
         assert!(
             state
                 .player_effects
-                .get(&PlayerId(2))
+                .get(&RacePlayerId(2))
                 .and_then(|effects| effects.stunned_until)
                 .is_some_and(|until| until > now)
         );
@@ -4378,10 +3726,10 @@ mod tests {
         assert_eq!(
             state
                 .player_effects
-                .get(&PlayerId(2))
+                .get(&RacePlayerId(2))
                 .and_then(|effects| effects.impact_cue)
                 .map(|cue| cue.kind),
-            Some(ImpactCueSnapshotKind::SquidInk)
+            Some(RaceImpactCueKind::SquidInk)
         );
 
         let snapshot = build_race_snapshot(&mut state);

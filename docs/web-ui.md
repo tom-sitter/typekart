@@ -5,7 +5,7 @@ CSR application served by Trunk.
 
 The current browser build can join and play in a CLI-hosted online room. It can
 also create a browser-hosted relay room, manage the lobby, broadcast a
-race-shell countdown, and advance racers through a fixed demo track.
+race-shell countdown, and advance racers through generated tracks.
 
 ## Current Capabilities
 
@@ -22,6 +22,20 @@ race-shell countdown, and advance racers through a fixed demo track.
   difficulty, and removing lobby players.
 - Start a browser-hosted race shell that broadcasts `WaitingForHost`,
   `Countdown`, and `Racing` snapshots to connected clients.
+- Generate browser-hosted race tracks through the shared `Track::generate`
+  helper.
+- Generate browser-hosted bonus points through the shared `BonusState`
+  placement and word-choice helper.
+- Claim browser-hosted bonus words through the shared bonus claim helper and
+  put claimed choices on cooldown.
+- Automatically activate claimed browser-hosted items and render shared
+  item/effect cues in the race snapshot.
+- Use the shared Rust typing engine for browser-hosted human and AI race
+  progress.
+- End browser-hosted races when all racers finish, or after the first-place
+  timeout expires, and broadcast shared result-row rankings.
+- Let browser hosts start another countdown from results after racers mark
+  ready for rematch.
 - Move browser-hosted AI racers during `Racing` based on their lobby WPM.
 - Type during a race with letter keys, Space, and Backspace without manually
   focusing the race panel.
@@ -32,9 +46,9 @@ race-shell countdown, and advance racers through a fixed demo track.
 
 ## Known Limitations
 
-- Browser-hosted race gameplay is minimal: typing advances words on a fixed
-  demo track and AI racers move, but bonuses, items, results, and rematches are
-  not implemented.
+- Browser-hosted race gameplay is still minimal: typing, AI word progress, race
+  completion, track generation, bonus claiming, item activation, and result rows
+  use shared game rules, but browser word-pack selection is not implemented.
 - Automatic reconnect is not implemented.
 - Renderer parity with the terminal UI is incomplete.
 - Browser item/effect behavior needs structured manual validation.
@@ -79,8 +93,10 @@ or terminal clients can join that room and appear in the lobby. The browser host
 can rename itself, add AI racers, change AI difficulty, remove AI racers, and
 kick non-host human players. Pressing `Start` broadcasts a race shell with
 `WaitingForHost`, a `3 -> 2 -> 1` countdown, and a `Racing` snapshot. Typing
-after that advances racers through the fixed demo track, and AI racers advance
-automatically from their lobby WPM.
+after that advances racers through the generated track, and AI racers advance
+automatically from their lobby WPM. When all racers finish, the browser host
+broadcasts results. The host can press `Start` from results to begin another
+countdown with connected ready racers.
 
 The browser disables the connection fields while connected. Use `Disconnect` to
 leave the current relay session, edit the connection fields, and join again.
@@ -119,8 +135,12 @@ Browser-hosted lobby validation:
 11. Click `Start` and confirm the host and joiners render the race track.
 12. Confirm the countdown advances `3 -> 2 -> 1` and then reaches `Racing`.
 13. Type from a browser or terminal joiner and confirm that player's marker
-    advances through the fixed demo track.
+    advances through the generated track.
 14. Confirm AI racers advance without keyboard input.
+15. Move to a bonus gap, type a visible bonus word, press Space, and confirm the
+    claimed bonus word changes to cooldown.
+16. Confirm the claimed item activates automatically and visible racer effects
+    update on the track.
 
 ## Checks
 
@@ -152,9 +172,23 @@ maintains a small authoritative lobby model in the browser, handles
 `JoinForwarded` and `ClientToHost` relay envelopes, sends direct `Welcome`
 messages, and broadcasts `LobbySnapshot` updates. It can also synthesize a
 temporary `RaceSnapshot` sequence for the browser-hosted race shell. The race
-shell uses fixed demo track words and no bonus words. Human input and AI ticks
-mutate the synthetic `RaceSnapshot`; this validates host-driven race phases and
-basic movement before the shared game engine runs in the browser.
+shell generates track words with `typekart::game::track::Track::generate` and
+bonus points with `typekart::game::bonus::BonusState::generate`. Bonus claims
+use `typekart::game::bonus::claim_bonus_choice`, which keeps choice cooldowns
+aligned with terminal races. Claimed item effects are applied through
+`typekart::game::item_effects`, a browser-compatible extraction from the
+authoritative item-effect rules used by multiplayer hosts. Human input and AI
+ticks now mutate a shared `typekart::game::race::RaceState`, then derive the
+protocol `RaceSnapshot` from that state. Result rows are also derived from the
+shared race result helper before being mapped into protocol messages. This keeps
+basic typing behavior, typo handling, space handling, final-word finish
+behavior, per-player typing state, bonus placement, bonus cooldowns, item state,
+and result ranking aligned with terminal races.
+
+The web crate depends on the root `typekart` library with default CLI features
+disabled. The root library always exposes `game`, while terminal, relay, and
+native UI modules remain behind the default `cli` feature so they are not pulled
+into the browser build.
 
 The browser stores two ids after joining:
 
@@ -176,8 +210,9 @@ into a playable browser-hosted race:
 
 - Add a manual browser validation checklist.
 - Improve focus and phase-aware controls.
-- Validate bonus words and all item effects against browser players.
+- Validate all browser-hosted item effects manually against browser and terminal
+  players.
 - Add automatic reconnect if manual retry feels insufficient.
-- Move enough shared game/session logic into a browser-compatible crate for
-  browser-hosted races.
+- Move more shared session logic into a browser-compatible boundary, especially
+  bonus claiming and items.
 - Continue renderer parity work.

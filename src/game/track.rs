@@ -14,7 +14,6 @@ pub struct Track {
 }
 
 impl Track {
-    #[cfg(test)]
     pub fn new(words: Vec<String>) -> Self {
         Self { words }
     }

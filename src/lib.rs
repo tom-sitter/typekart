@@ -5,7 +5,11 @@
 //! Keeping these modules behind a library boundary is the first step toward a
 //! shared Rust/WASM core.
 
-pub mod app;
 pub mod game;
+
+#[cfg(feature = "cli")]
+pub mod app;
+#[cfg(feature = "cli")]
 pub mod net;
+#[cfg(feature = "cli")]
 pub mod ui;
