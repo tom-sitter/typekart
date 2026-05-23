@@ -9,6 +9,7 @@ use fixtures::{
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures_util::{SinkExt, StreamExt, select};
 use gloo_net::websocket::{Message, futures::WebSocket};
+use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
 use typekart_protocol::{
     AiDifficultySnapshot, AssignedColor, BonusChoiceSnapshotStatus, BonusPointSnapshot,
@@ -792,8 +793,15 @@ async fn host_browser_lobby(
                     continue;
                 };
                 if let BrowserOutboundMessage::Client { player_id, message } = outbound_message {
-                    process_browser_host_client_message(state, player_id, message, set_connection);
-                    publish_browser_host_lobby(state, &mut writer, set_live_frame).await?;
+                    handle_browser_host_client_message(
+                        state,
+                        player_id,
+                        message,
+                        &mut writer,
+                        set_connection,
+                        set_live_frame,
+                    )
+                    .await?;
                 }
             },
         }
@@ -807,6 +815,8 @@ struct BrowserHostLobby {
     players: Vec<LobbyPlayer>,
     relay_players: HashMap<PlayerId, PlayerId>,
     next_player_id: u64,
+    race_sequence: u64,
+    active_race: Option<RaceSnapshot>,
     events: Vec<String>,
     mod_config: ModConfigSnapshot,
 }
@@ -827,6 +837,8 @@ impl BrowserHostLobby {
             }],
             relay_players: HashMap::new(),
             next_player_id: 2,
+            race_sequence: 0,
+            active_race: None,
             events: vec!["host created room".to_string()],
             mod_config: browser_default_mod_config(),
         }
@@ -855,6 +867,11 @@ impl BrowserHostLobby {
             self.events.drain(0..self.events.len() - MAX_EVENTS);
         }
     }
+
+    fn next_race_sequence(&mut self) -> u64 {
+        self.race_sequence += 1;
+        self.race_sequence
+    }
 }
 
 async fn handle_browser_host_relay_message(
@@ -879,7 +896,7 @@ async fn handle_browser_host_relay_message(
             let lobby = BrowserHostLobby::new(room, host_name.to_string());
             *state = Some(lobby);
             if let Some(state) = state {
-                publish_browser_host_lobby(state, writer, set_live_frame).await?;
+                publish_browser_host_state(state, writer, set_live_frame).await?;
             }
         }
         RelayServerMessage::JoinForwarded {
@@ -897,7 +914,7 @@ async fn handle_browser_host_relay_message(
             };
             send_browser_host_direct(state, writer, pending_player_id, welcome).await?;
             state.push_event(format!("{} joined", assigned.name));
-            publish_browser_host_lobby(state, writer, set_live_frame).await?;
+            publish_browser_host_state(state, writer, set_live_frame).await?;
         }
         RelayServerMessage::ClientToHost {
             player_id, message, ..
@@ -907,13 +924,20 @@ async fn handle_browser_host_relay_message(
             };
             let Some(game_player_id) = state.game_player_id_for_relay(player_id) else {
                 state.push_event(format!("unknown relay player {} ignored", player_id.0));
-                publish_browser_host_lobby(state, writer, set_live_frame).await?;
+                publish_browser_host_state(state, writer, set_live_frame).await?;
                 return Ok(true);
             };
             let message = serde_json::from_value::<ClientMessage>(message)
                 .map_err(|error| format!("failed to decode client message: {error}"))?;
-            process_browser_host_client_message(state, game_player_id, message, set_connection);
-            publish_browser_host_lobby(state, writer, set_live_frame).await?;
+            handle_browser_host_client_message(
+                state,
+                game_player_id,
+                message,
+                writer,
+                set_connection,
+                set_live_frame,
+            )
+            .await?;
         }
         RelayServerMessage::ParticipantDisconnected { player_id, .. } => {
             if let Some(state) = state {
@@ -928,7 +952,7 @@ async fn handle_browser_host_relay_message(
                     player.connected = false;
                     let name = player.name.clone();
                     state.push_event(format!("{name} disconnected"));
-                    publish_browser_host_lobby(state, writer, set_live_frame).await?;
+                    publish_browser_host_state(state, writer, set_live_frame).await?;
                 }
             }
         }
@@ -945,6 +969,23 @@ async fn handle_browser_host_relay_message(
         RelayServerMessage::HostToClient { .. } | RelayServerMessage::HostBroadcast { .. } => {}
     }
     Ok(true)
+}
+
+async fn handle_browser_host_client_message(
+    state: &mut BrowserHostLobby,
+    player_id: PlayerId,
+    message: ClientMessage,
+    writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    set_connection: WriteSignal<ConnectionState>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+) -> Result<(), String> {
+    if matches!(message, ClientMessage::StartCountdown) && player_id == PlayerId(1) {
+        run_browser_host_countdown(state, writer, set_connection, set_live_frame).await?;
+        return Ok(());
+    }
+
+    process_browser_host_client_message(state, player_id, message, set_connection);
+    publish_browser_host_state(state, writer, set_live_frame).await
 }
 
 fn process_browser_host_client_message(
@@ -1044,12 +1085,7 @@ fn process_browser_host_client_message(
                 state.push_event(format!("updated {changed} AI racer difficulty"));
             }
         }
-        ClientMessage::StartCountdown if player_id == PlayerId(1) => {
-            set_connection.set(ConnectionState::Connected {
-                message: "Browser race hosting is not implemented yet".to_string(),
-            });
-            state.push_event("browser race hosting is not implemented yet");
-        }
+        ClientMessage::StartCountdown if player_id == PlayerId(1) => {}
         ClientMessage::Leave => {
             if let Some(player) = state
                 .players
@@ -1061,9 +1097,36 @@ fn process_browser_host_client_message(
                 state.push_event(format!("{name} left"));
             }
         }
-        ClientMessage::KeyInput { .. } | ClientMessage::RestartRace => {}
+        ClientMessage::KeyInput { .. } => {
+            set_connection.set(ConnectionState::Connected {
+                message: "Browser-hosted gameplay input is not implemented yet".to_string(),
+            });
+            if let Some(race) = &mut state.active_race {
+                race.events =
+                    vec!["browser-hosted gameplay input is not implemented yet".to_string()];
+            }
+        }
+        ClientMessage::RestartRace => {}
         _ => {}
     }
+}
+
+async fn publish_browser_host_state(
+    state: &BrowserHostLobby,
+    writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+) -> Result<(), String> {
+    if let Some(snapshot) = &state.active_race {
+        set_live_frame.set(Some(GalleryFrame::Race(snapshot.clone())));
+        return send_browser_host_broadcast(
+            state,
+            writer,
+            ServerMessage::RaceSnapshot(snapshot.clone()),
+        )
+        .await;
+    }
+
+    publish_browser_host_lobby(state, writer, set_live_frame).await
 }
 
 async fn publish_browser_host_lobby(
@@ -1080,6 +1143,115 @@ async fn publish_browser_host_lobby(
         events: frame.events,
     };
     send_browser_host_broadcast(state, writer, message).await
+}
+
+async fn run_browser_host_countdown(
+    state: &mut BrowserHostLobby,
+    writer: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    set_connection: WriteSignal<ConnectionState>,
+    set_live_frame: WriteSignal<Option<GalleryFrame>>,
+) -> Result<(), String> {
+    if state.active_race.is_some() {
+        state.push_event("race already started");
+        publish_browser_host_state(state, writer, set_live_frame).await?;
+        return Ok(());
+    }
+
+    let racers: Vec<LobbyPlayer> = state
+        .players
+        .iter()
+        .filter(|player| player.connected && player.ready)
+        .cloned()
+        .collect();
+    if racers.is_empty() {
+        state.push_event("cannot start without ready racers");
+        publish_browser_host_lobby(state, writer, set_live_frame).await?;
+        return Ok(());
+    }
+
+    set_connection.set(ConnectionState::Connected {
+        message: "Starting browser-hosted race shell".to_string(),
+    });
+
+    state.active_race = Some(browser_host_race_snapshot(
+        state.next_race_sequence(),
+        NetworkRacePhase::WaitingForHost,
+        &state.mod_config,
+        &racers,
+        vec!["browser host preparing race".to_string()],
+    ));
+    publish_browser_host_state(state, writer, set_live_frame).await?;
+
+    for remaining_seconds in [3, 2, 1] {
+        state.active_race = Some(browser_host_race_snapshot(
+            state.next_race_sequence(),
+            NetworkRacePhase::Countdown { remaining_seconds },
+            &state.mod_config,
+            &racers,
+            vec![format!("countdown {remaining_seconds}")],
+        ));
+        publish_browser_host_state(state, writer, set_live_frame).await?;
+        TimeoutFuture::new(1000).await;
+    }
+
+    state.active_race = Some(browser_host_race_snapshot(
+        state.next_race_sequence(),
+        NetworkRacePhase::Racing,
+        &state.mod_config,
+        &racers,
+        vec!["browser-hosted gameplay input is not implemented yet".to_string()],
+    ));
+    publish_browser_host_state(state, writer, set_live_frame).await
+}
+
+fn browser_host_race_snapshot(
+    sequence: u64,
+    phase: NetworkRacePhase,
+    mod_config: &ModConfigSnapshot,
+    racers: &[LobbyPlayer],
+    events: Vec<String>,
+) -> RaceSnapshot {
+    RaceSnapshot {
+        sequence,
+        phase,
+        mod_config: mod_config.clone(),
+        track_words: browser_host_track_words(),
+        bonuses: Vec::new(),
+        players: racers.iter().map(browser_host_player_snapshot).collect(),
+        events,
+    }
+}
+
+fn browser_host_player_snapshot(player: &LobbyPlayer) -> PlayerSnapshot {
+    PlayerSnapshot {
+        id: player.id,
+        name: player.name.clone(),
+        kind: player.kind,
+        color: player.color,
+        word_index: 0,
+        input: String::new(),
+        typo_index: None,
+        word_overrides: Vec::new(),
+        finished: false,
+        connected: player.connected,
+        shielded: false,
+        focused: false,
+        inked: false,
+        boosted: false,
+        stunned: false,
+        impact_remaining_ms: 0,
+        impact_cue: None,
+        item_cue: None,
+    }
+}
+
+fn browser_host_track_words() -> Vec<String> {
+    [
+        "spark", "river", "focus", "cyclone", "maple", "harbor", "pixel", "finish",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 async fn send_browser_host_direct(
@@ -1379,8 +1551,9 @@ fn relay_has_path_or_query(relay: &str) -> bool {
 mod tests {
     use super::{
         BrowserHostLobby, add_browser_lobby_human, browser_ai_wpm, browser_controls,
-        browser_unique_lobby_name, build_track_window, key_name_to_protocol_key, marker_position,
-        ordered_players_for_local_perspective, relay_join_url, should_capture_global_gameplay_key,
+        browser_host_race_snapshot, browser_unique_lobby_name, build_track_window,
+        key_name_to_protocol_key, marker_position, ordered_players_for_local_perspective,
+        relay_join_url, should_capture_global_gameplay_key,
     };
     use crate::fixtures::{GalleryFrame, SCENARIOS, scenario_frame};
     use typekart_protocol::{
@@ -1631,6 +1804,40 @@ mod tests {
         assert!(
             browser_ai_wpm(AiDifficultySnapshot::Hard) > browser_ai_wpm(AiDifficultySnapshot::Easy)
         );
+    }
+
+    #[test]
+    fn browser_host_race_snapshot_uses_lobby_racers() {
+        let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+        let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+        let joiner = add_browser_lobby_human(&mut lobby, PlayerId(4), "laura");
+        let racers = vec![lobby.players[0].clone(), joiner];
+
+        let snapshot = browser_host_race_snapshot(
+            7,
+            NetworkRacePhase::Countdown {
+                remaining_seconds: 3,
+            },
+            &lobby.mod_config,
+            &racers,
+            vec!["countdown 3".to_string()],
+        );
+
+        assert_eq!(snapshot.sequence, 7);
+        assert_eq!(
+            snapshot.phase,
+            NetworkRacePhase::Countdown {
+                remaining_seconds: 3
+            }
+        );
+        assert_eq!(snapshot.players.len(), 2);
+        assert_eq!(snapshot.players[0].id, PlayerId(1));
+        assert_eq!(snapshot.players[1].id, PlayerId(2));
+        assert_eq!(
+            snapshot.track_words.first().map(String::as_str),
+            Some("spark")
+        );
+        assert!(snapshot.bonuses.is_empty());
     }
 
     fn scenario_race_with_finished_local() -> typekart_protocol::RaceSnapshot {

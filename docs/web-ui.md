@@ -4,13 +4,13 @@ TypeKart has an early browser UI in `web/typekart-web`. The web app is a Leptos
 CSR application served by Trunk.
 
 The current browser build can join and play in a CLI-hosted online room. It can
-also create a browser-hosted relay room for lobby management, but browser-hosted
-races are not implemented yet.
+also create a browser-hosted relay room, manage the lobby, and broadcast a
+race-shell countdown. Browser-hosted gameplay input does not advance racers yet.
 
 ## Current Capabilities
 
 - Join an existing online room through the TypeKart relay.
-- Create a browser-hosted relay room for lobby-only testing.
+- Create a browser-hosted relay room for lobby and race-shell testing.
 - Disconnect from an active browser relay session and retry joining after a
   failure or closed room.
 - Render lobby, race, and results messages from a CLI host.
@@ -20,6 +20,8 @@ races are not implemented yet.
   player's current phase.
 - Show host-only lobby management controls for adding AI racers, changing AI
   difficulty, and removing lobby players.
+- Start a browser-hosted race shell that broadcasts `WaitingForHost`,
+  `Countdown`, and `Racing` snapshots to connected clients.
 - Type during a race with letter keys, Space, and Backspace without manually
   focusing the race panel.
 - Render the browser player as the first race lane.
@@ -29,8 +31,9 @@ races are not implemented yet.
 
 ## Known Limitations
 
-- Browser-hosted races are not implemented.
-- Browser-hosted rooms currently support lobby management only.
+- Browser-hosted race gameplay is not implemented.
+- Browser-hosted race input currently reports that gameplay input is not
+  implemented and does not advance racers.
 - Automatic reconnect is not implemented.
 - Renderer parity with the terminal UI is incomplete.
 - Browser item/effect behavior needs structured manual validation.
@@ -73,8 +76,9 @@ To create a browser-hosted lobby, leave `Room` blank and click `Create room`.
 The relay assigns a room code and the browser becomes the host. Other browser
 or terminal clients can join that room and appear in the lobby. The browser host
 can rename itself, add AI racers, change AI difficulty, remove AI racers, and
-kick non-host human players. Pressing `Start` currently reports that browser
-race hosting is not implemented.
+kick non-host human players. Pressing `Start` broadcasts a race shell with
+`WaitingForHost`, a `3 -> 2 -> 1` countdown, and a `Racing` snapshot. Typing
+after that does not advance racers yet.
 
 The browser disables the connection fields while connected. Use `Disconnect` to
 leave the current relay session, edit the connection fields, and join again.
@@ -110,6 +114,10 @@ Browser-hosted lobby validation:
 8. Kick a non-host human player.
 9. Change one AI racer's difficulty.
 10. Change all AI racers to Easy or Hard.
+11. Click `Start` and confirm the host and joiners render the race track.
+12. Confirm the countdown advances `3 -> 2 -> 1` and then reaches `Racing`.
+13. Type from a browser or terminal joiner and confirm the UI reports that
+    browser-hosted gameplay input is not implemented yet.
 
 ## Checks
 
@@ -139,8 +147,10 @@ as `ServerMessage`, and sends browser commands back as
 As a lobby-only host, the browser sends `RelayClientMessage::CreateRoom`,
 maintains a small authoritative lobby model in the browser, handles
 `JoinForwarded` and `ClientToHost` relay envelopes, sends direct `Welcome`
-messages, and broadcasts `LobbySnapshot` updates. This is intentionally limited
-to lobby state until the shared game engine is ready to run in the browser.
+messages, and broadcasts `LobbySnapshot` updates. It can also synthesize a
+temporary `RaceSnapshot` sequence for the browser-hosted race shell. The race
+shell uses fixed demo track words and no bonus words; it exists to validate
+host-driven race phases before the shared game engine runs in the browser.
 
 The browser stores two ids after joining:
 
@@ -157,8 +167,8 @@ The CLI host remains authoritative. The relay is still an opaque routing layer.
 ## Next Work
 
 See [Web UI Implementation Plan](web-ui-implementation-plan.md) for the full
-milestone plan. The near-term target is turning the browser-hosted lobby into a
-browser-hosted race:
+milestone plan. The near-term target is turning the browser-hosted race shell
+into a playable browser-hosted race:
 
 - Add a manual browser validation checklist.
 - Improve focus and phase-aware controls.
