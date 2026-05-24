@@ -21,12 +21,11 @@ use crate::game::{
     items::ItemRegistry,
     lobby::{
         LOBBY_COLOR_ROTATION, connected_player_count, first_available_color,
-        first_available_player_id, new_human_lobby_player, ready_connected_participants,
+        first_available_player_id, new_human_lobby_player,
         set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
     },
     mods::ActiveModConfig,
     race::{PlayerColorId, RacePlayerId, RaceRuntimeState, RaceState},
-    race_flow::advance_race_flow,
     track::{Track, WordList},
     typing::KeyAction,
 };
@@ -34,9 +33,7 @@ use anyhow::{Context, Result, bail};
 
 #[cfg(test)]
 use super::host_lifecycle::build_race_result_rows as build_network_race_result_rows;
-use super::host_lifecycle::{
-    build_race_results_message, finish_summary_log, finished_player_message,
-};
+use super::host_lifecycle::build_race_results_message;
 use super::log::{SharedNetworkLog, push_network_log};
 #[cfg(test)]
 use super::protocol::RaceResultRow;
@@ -50,6 +47,7 @@ mod host_ai;
 mod host_bonus;
 mod host_items;
 mod host_lobby;
+mod host_race;
 mod host_snapshots;
 use host_ai::NetworkAiRacer;
 #[cfg(test)]
@@ -62,6 +60,8 @@ use host_bonus::apply_network_key_input;
 use host_items::activate_network_pickup;
 #[cfg(test)]
 use host_lobby::{cleanup_disconnected_waiting_players, remove_lobby_player, rename_lobby_player};
+#[cfg(test)]
+use host_race::{reset_race_from_lobby, update_race_status};
 #[cfg(test)]
 use host_snapshots::build_race_snapshot;
 
@@ -481,15 +481,6 @@ fn welcome_joiner(
     Ok(write_stream)
 }
 
-fn current_race_connected_player_count(state: &HostState) -> usize {
-    state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.connected)
-        .count()
-}
-
 fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mutex<HostState>>) {
     let mut reader = BufReader::new(stream);
     loop {
@@ -617,7 +608,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                     format!("input player={} key={key:?}", player_id.0),
                 );
                 if host_bonus::apply_network_key_input(&mut state, player_id, action, now) {
-                    update_race_status(&mut state, now);
+                    host_race::update_race_status(&mut state, now);
                     if state.phase == NetworkRacePhase::Finished {
                         if let Err(error) = broadcast_race_snapshot(&mut state) {
                             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -781,7 +772,7 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
             NetworkRacePhase::WaitingForHost
             | NetworkRacePhase::Lobby
             | NetworkRacePhase::Finished => {
-                if let Err(error) = reset_race_from_lobby(&mut state) {
+                if let Err(error) = host_race::reset_race_from_lobby(&mut state) {
                     server_eprintln!("Failed to prepare race: {error:#}");
                     push_network_log(
                         &state.debug_log,
@@ -796,7 +787,7 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
             }
         }
 
-        if current_race_connected_player_count(&state) < 1 {
+        if host_race::current_race_connected_player_count(&state) < 1 {
             server_println!("Cannot start: at least one ready connected racer is required");
             return;
         }
@@ -818,37 +809,13 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
     }
 }
 
-fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
-    host_lobby::cleanup_disconnected_waiting_players(state);
-
-    let word_count = state.race.track.len();
-    let track = Track::generate(&state.word_list, word_count)
-        .context("failed to generate rematch track")?;
-    let now = Instant::now();
-    let participants = ready_connected_participants(&state.players);
-    state.race = RaceState::from_participants(track, participants, now);
-    host_ai::reset_network_ai_timing(state, now);
-
-    state.bonuses = BonusState::generate(&state.race.track, &state.word_list);
-    state.runtime.reset();
-    state.race_results_sent = false;
-    state.events.clear();
-    state.phase = NetworkRacePhase::WaitingForHost;
-    push_network_log(
-        &state.debug_log,
-        format!("prepared rematch racers={}", state.race.players.len()),
-    );
-
-    Ok(())
-}
-
 fn return_to_lobby(state: &mut HostState) -> Result<()> {
     let event = match state.phase {
         NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => "Race cancelled",
         NetworkRacePhase::Finished => "Returned to lobby",
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => return Ok(()),
     };
-    reset_race_from_lobby(state)?;
+    host_race::reset_race_from_lobby(state)?;
     push_event(state, event.to_string());
     push_network_log(&state.debug_log, event.to_ascii_lowercase());
     if let Err(error) = broadcast_race_snapshot(state) {
@@ -882,7 +849,7 @@ fn apply_line_input(state: &Arc<Mutex<HostState>>, player_id: PlayerId, line: &s
     }
     host_bonus::apply_network_key_input(&mut state, player_id, KeyAction::Space, now);
 
-    update_race_status(&mut state, now);
+    host_race::update_race_status(&mut state, now);
     if state.phase == NetworkRacePhase::Finished {
         if let Err(error) = broadcast_race_snapshot(&mut state) {
             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
@@ -990,7 +957,7 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
             let now = Instant::now();
             host_items::advance_network_mushrooms(&mut state, now);
             host_ai::advance_network_ai_racers(&mut state, now);
-            update_race_status(&mut state, now);
+            host_race::update_race_status(&mut state, now);
             let expired_choices = expire_bonus_cooldowns(&mut state, now);
             if expired_choices > 0 {
                 push_network_log(
@@ -1023,7 +990,7 @@ fn reconcile_phase_after_disconnect(state: &mut HostState, now: Instant) {
                 cancel_countdown(state);
             }
         }
-        NetworkRacePhase::Racing => update_race_status(state, now),
+        NetworkRacePhase::Racing => host_race::update_race_status(state, now),
         NetworkRacePhase::Finished => {}
         NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {}
     }
@@ -1145,31 +1112,6 @@ fn broadcast_race_results_once(state: &mut HostState) -> Result<()> {
     broadcast_race_results(state)?;
     state.race_results_sent = true;
     Ok(())
-}
-
-fn update_race_status(state: &mut HostState, now: Instant) {
-    if state.phase != NetworkRacePhase::Racing {
-        return;
-    }
-
-    let outcome = advance_race_flow(
-        &mut state.runtime.lifecycle,
-        &state.race,
-        now,
-        POST_FIRST_FINISH_TIMEOUT,
-    );
-
-    for finished in outcome.newly_finished {
-        let message = finished_player_message(&finished);
-        push_event(state, message.clone());
-        push_network_log(&state.debug_log, message);
-    }
-
-    if let Some(summary) = outcome.finished {
-        state.phase = NetworkRacePhase::Finished;
-        push_event(state, "Race finished".to_string());
-        push_network_log(&state.debug_log, finish_summary_log(&summary));
-    }
 }
 
 fn protocol_key_to_action(key: ProtocolKey) -> KeyAction {

@@ -368,6 +368,9 @@ Candidate extractions:
 - `src/net/server/host_snapshots.rs`: network-specific snapshot sequencing,
   bonus cooldown refresh, player-kind mapping, and snapshot broadcast logging
   around shared snapshot projection.
+- `src/net/server/host_race.rs`: network-specific race lifecycle state
+  mutations around shared `race_flow`, including rematch preparation and finish
+  status updates.
 - `src/net/server/host_ai.rs`: network-specific AI timing map and debug
   logging around shared `ai_driver` and shared lobby AI policy.
 - `src/net/server/host_bonus.rs`: network-specific event/log handling around
@@ -402,6 +405,10 @@ Progress:
 - `src/net/server/host_snapshots.rs` now owns network-host snapshot adaptation
   around shared `snapshot`: sequence increments, cooldown expiry before
   projection, player-kind lookup, and snapshot/delta broadcast log messages.
+- `src/net/server/host_race.rs` now owns network-host race lifecycle mutation
+  around shared `race_flow`: connected-racer counts, rematch/race reset from
+  lobby participants, runtime reset, race-finish status updates, and
+  finish-summary event/log messages.
 
 ## Suggested Order
 
@@ -415,6 +422,15 @@ Progress:
 8. Migrate local terminal session rules to shared gameplay modules.
 9. Split network host adapter modules after shared ownership boundaries are
    clear.
+
+## Deferred Cleanup
+
+- Split large inline Rust test modules into sibling `tests.rs` modules or
+  focused integration tests after the shared-logic refactors stabilize. Rust
+  commonly keeps unit tests beside production code, but the current large
+  modules in files like `src/net/server.rs`, `src/ui/session.rs`, and
+  `src/game/item_effects.rs` are making navigation harder. Deferring this
+  avoids moving tests repeatedly while production code is still being split.
 
 ## Out Of Scope For This Refactor
 
