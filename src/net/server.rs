@@ -17,7 +17,6 @@ use crate::game::{
     ai::AiDifficulty,
     bonus::BonusState,
     bonus_flow::BonusAttempt,
-    input_rules::player_input_is_paused as shared_player_input_is_paused,
     items::ItemRegistry,
     lobby::{
         LOBBY_COLOR_ROTATION, connected_player_count, first_available_color,
@@ -27,7 +26,6 @@ use crate::game::{
     mods::ActiveModConfig,
     race::{PlayerColorId, RacePlayerId, RaceRuntimeState, RaceState},
     track::{Track, WordList},
-    typing::KeyAction,
 };
 use anyhow::{Context, Result, bail};
 
@@ -38,13 +36,15 @@ use super::log::{SharedNetworkLog, push_network_log};
 #[cfg(test)]
 use super::protocol::RaceResultRow;
 use super::protocol::{
-    AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey,
+    AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind,
     ServerMessage, version_mismatch_message,
 };
 use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
 mod host_ai;
 mod host_bonus;
+mod host_handshake;
+mod host_input;
 mod host_items;
 mod host_lobby;
 mod host_race;
@@ -56,6 +56,9 @@ use host_ai::set_lobby_ai_difficulty;
 use host_ai::{add_lobby_ai_racer, add_network_ai_racers, advance_network_ai_racers};
 #[cfg(test)]
 use host_bonus::apply_network_key_input;
+#[cfg(test)]
+use host_handshake::{read_join_hello, welcome_joiner};
+use host_input::NetworkInputOutcome;
 #[cfg(test)]
 use host_items::activate_network_pickup;
 #[cfg(test)]
@@ -104,12 +107,6 @@ pub struct HostConfig {
 struct ConnectedClient {
     player_id: PlayerId,
     stream: TcpStream,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct JoinHello {
-    name: String,
-    client_version: String,
 }
 
 struct HostState {
@@ -217,7 +214,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         let stream = stream.context("failed to accept client connection")?;
         let peer = stream.peer_addr().ok();
 
-        let join_hello = match read_join_hello(&stream) {
+        let join_hello = match host_handshake::read_join_hello(&stream) {
             Ok(join_hello) => join_hello,
             Err(error) => {
                 server_eprintln!("Rejected connection: {error:#}");
@@ -283,13 +280,14 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 push_network_log(&state.debug_log, "join rejected: no colors available");
                 continue;
             };
-            let write_stream = match welcome_joiner(&stream, player_id, assigned_color) {
-                Ok(write_stream) => write_stream,
-                Err(error) => {
-                    server_eprintln!("Rejected connection: {error:#}");
-                    continue;
-                }
-            };
+            let write_stream =
+                match host_handshake::welcome_joiner(&stream, player_id, assigned_color) {
+                    Ok(write_stream) => write_stream,
+                    Err(error) => {
+                        server_eprintln!("Rejected connection: {error:#}");
+                        continue;
+                    }
+                };
 
             state.clients.push(ConnectedClient {
                 player_id,
@@ -404,81 +402,6 @@ fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
     if let Err(error) = broadcast_lobby_snapshot(&mut state) {
         server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
     }
-}
-
-fn read_join_hello(stream: &TcpStream) -> Result<JoinHello> {
-    let mut reader = BufReader::new(
-        stream
-            .try_clone()
-            .context("failed to clone client stream for reading")?,
-    );
-    let Some(message) = read_client_message(&mut reader).context("failed to read client hello")?
-    else {
-        bail!("client disconnected before hello");
-    };
-    let ClientMessage::Hello {
-        name,
-        client_version,
-    } = message
-    else {
-        send_server_message(
-            stream
-                .try_clone()
-                .context("failed to clone client stream for error response")?,
-            &ServerMessage::Error {
-                message: "Expected hello message".to_string(),
-            },
-        )?;
-        bail!("client sent non-hello first message");
-    };
-
-    if name.trim().is_empty() {
-        send_server_message(
-            stream
-                .try_clone()
-                .context("failed to clone client stream for error response")?,
-            &ServerMessage::Error {
-                message: "Name cannot be empty".to_string(),
-            },
-        )?;
-        bail!("client sent empty name");
-    }
-
-    if client_version.trim().is_empty() {
-        send_server_message(
-            stream
-                .try_clone()
-                .context("failed to clone client stream for error response")?,
-            &ServerMessage::Error {
-                message: "Client version cannot be empty".to_string(),
-            },
-        )?;
-        bail!("client sent empty version");
-    }
-
-    Ok(JoinHello {
-        name: name.trim().to_string(),
-        client_version: client_version.trim().to_string(),
-    })
-}
-
-fn welcome_joiner(
-    stream: &TcpStream,
-    player_id: PlayerId,
-    assigned_color: AssignedColor,
-) -> Result<TcpStream> {
-    let mut write_stream = stream
-        .try_clone()
-        .context("failed to clone client stream for writing")?;
-    write_server_message(
-        &mut write_stream,
-        &ServerMessage::Welcome {
-            player_id,
-            assigned_color,
-        },
-    )?;
-
-    Ok(write_stream)
 }
 
 fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mutex<HostState>>) {
@@ -599,17 +522,14 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
             ClientMessage::KeyInput { key, .. } => {
                 let now = std::time::Instant::now();
                 let mut state = state.lock().expect("host state poisoned");
-                if state.phase != NetworkRacePhase::Racing {
-                    continue;
-                }
-                let action = protocol_key_to_action(key);
-                push_network_log(
-                    &state.debug_log,
-                    format!("input player={} key={key:?}", player_id.0),
-                );
-                if host_bonus::apply_network_key_input(&mut state, player_id, action, now) {
-                    host_race::update_race_status(&mut state, now);
-                    if state.phase == NetworkRacePhase::Finished {
+                match host_input::apply_protocol_key_input(&mut state, player_id, key, now) {
+                    NetworkInputOutcome::Ignored => {}
+                    NetworkInputOutcome::Updated => {
+                        if let Err(error) = broadcast_race_delta(&mut state) {
+                            server_eprintln!("Failed to broadcast race delta: {error:#}");
+                        }
+                    }
+                    NetworkInputOutcome::Finished => {
                         if let Err(error) = broadcast_race_snapshot(&mut state) {
                             server_eprintln!("Failed to broadcast race snapshot: {error:#}");
                         }
@@ -617,8 +537,6 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                         if let Err(error) = broadcast_race_results_once(&mut state) {
                             server_eprintln!("Failed to broadcast race results: {error:#}");
                         }
-                    } else if let Err(error) = broadcast_race_delta(&mut state) {
-                        server_eprintln!("Failed to broadcast race delta: {error:#}");
                     }
                 }
             }
@@ -835,55 +753,24 @@ fn current_phase(state: &Arc<Mutex<HostState>>) -> NetworkRacePhase {
 fn apply_line_input(state: &Arc<Mutex<HostState>>, player_id: PlayerId, line: &str) {
     let now = std::time::Instant::now();
     let mut state = state.lock().expect("host state poisoned");
-    if state.phase != NetworkRacePhase::Racing {
-        return;
-    }
-
-    for ch in line.chars() {
-        let action = if ch == ' ' {
-            KeyAction::Space
-        } else {
-            KeyAction::Char(ch)
-        };
-        host_bonus::apply_network_key_input(&mut state, player_id, action, now);
-    }
-    host_bonus::apply_network_key_input(&mut state, player_id, KeyAction::Space, now);
-
-    host_race::update_race_status(&mut state, now);
-    if state.phase == NetworkRacePhase::Finished {
-        if let Err(error) = broadcast_race_snapshot(&mut state) {
-            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+    match host_input::apply_line_input_to_race(&mut state, player_id, line, now) {
+        NetworkInputOutcome::Ignored => {}
+        NetworkInputOutcome::Updated => {
+            if let Err(error) = broadcast_race_delta(&mut state) {
+                server_eprintln!("Failed to broadcast race delta: {error:#}");
+            }
         }
-        server_println!("Race finished");
-        push_network_log(&state.debug_log, "race finished after host line input");
-        if let Err(error) = broadcast_race_results_once(&mut state) {
-            server_eprintln!("Failed to broadcast race results: {error:#}");
+        NetworkInputOutcome::Finished => {
+            if let Err(error) = broadcast_race_snapshot(&mut state) {
+                server_eprintln!("Failed to broadcast race snapshot: {error:#}");
+            }
+            server_println!("Race finished");
+            push_network_log(&state.debug_log, "race finished after host line input");
+            if let Err(error) = broadcast_race_results_once(&mut state) {
+                server_eprintln!("Failed to broadcast race results: {error:#}");
+            }
         }
-    } else if let Err(error) = broadcast_race_delta(&mut state) {
-        server_eprintln!("Failed to broadcast race delta: {error:#}");
     }
-}
-
-fn player_input_is_paused(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
-    shared_player_input_is_paused(
-        &state.race,
-        &state.runtime.player_effects,
-        RacePlayerId(player_id.0),
-        now,
-    )
-}
-
-fn player_label(state: &HostState, player_id: PlayerId) -> String {
-    player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0))
-}
-
-fn player_name(state: &HostState, id: PlayerId) -> Option<String> {
-    state
-        .race
-        .players
-        .iter()
-        .find(|player| player.id == RacePlayerId(id.0))
-        .map(|player| player.name.clone())
 }
 
 fn run_countdown(state: Arc<Mutex<HostState>>) {
@@ -1112,14 +999,6 @@ fn broadcast_race_results_once(state: &mut HostState) -> Result<()> {
     broadcast_race_results(state)?;
     state.race_results_sent = true;
     Ok(())
-}
-
-fn protocol_key_to_action(key: ProtocolKey) -> KeyAction {
-    match key {
-        ProtocolKey::Char(' ') | ProtocolKey::Space => KeyAction::Space,
-        ProtocolKey::Char(ch) => KeyAction::Char(ch),
-        ProtocolKey::Backspace => KeyAction::Backspace,
-    }
 }
 
 impl From<AssignedColor> for PlayerColorId {

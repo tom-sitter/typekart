@@ -371,6 +371,10 @@ Candidate extractions:
 - `src/net/server/host_race.rs`: network-specific race lifecycle state
   mutations around shared `race_flow`, including rematch preparation and finish
   status updates.
+- `src/net/server/host_handshake.rs`: TCP join handshake validation and welcome
+  message handling.
+- `src/net/server/host_input.rs`: TCP/protocol input translation and
+  network-host race input outcomes around shared typing and bonus rules.
 - `src/net/server/host_ai.rs`: network-specific AI timing map and debug
   logging around shared `ai_driver` and shared lobby AI policy.
 - `src/net/server/host_bonus.rs`: network-specific event/log handling around
@@ -409,6 +413,13 @@ Progress:
   around shared `race_flow`: connected-racer counts, rematch/race reset from
   lobby participants, runtime reset, race-finish status updates, and
   finish-summary event/log messages.
+- `src/net/server/host_handshake.rs` now owns the TCP join handshake: requiring
+  `Hello` as the first client message, validating non-empty names and versions,
+  and sending `Welcome` to accepted joiners.
+- `src/net/server/host_input.rs` now owns network-host input adaptation:
+  translating protocol keys and line input into shared `KeyAction`s, invoking
+  shared bonus/typing flow, applying race-status updates, and reporting whether
+  the server should broadcast a delta or final results.
 
 ## Suggested Order
 

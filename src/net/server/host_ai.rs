@@ -24,7 +24,7 @@ use crate::net::{
     protocol::{LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind},
 };
 
-use super::{HostState, host_bonus, player_label, push_event};
+use super::{HostState, host_bonus, host_input::player_label, push_event};
 
 #[derive(Debug, Clone)]
 pub(super) struct NetworkAiRacer {

@@ -20,7 +20,11 @@ use crate::game::{
 };
 use crate::net::{log::push_network_log, protocol::PlayerId};
 
-use super::{HostState, host_items, player_input_is_paused, player_label, player_name, push_event};
+use super::{
+    HostState,
+    host_input::{player_input_is_paused, player_label, player_name},
+    host_items, push_event,
+};
 
 pub(super) fn apply_network_key_input(
     state: &mut HostState,
