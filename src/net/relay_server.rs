@@ -21,7 +21,7 @@ use tungstenite::{Error as WebSocketError, Message, accept, error::ProtocolError
 
 use super::{
     protocol::{PlayerId, version_mismatch_message},
-    relay::{RelayClientMessage, RelayServerMessage, RoomCode},
+    relay::{RelayClientMessage, RelayServerMessage, RoomCode, generate_room_code},
 };
 
 #[derive(Debug, Clone)]
@@ -843,7 +843,7 @@ fn create_room(
     }
 
     loop {
-        let room = RoomCode::generate();
+        let room = generate_room_code();
         if !state.rooms.contains_key(&room) {
             if let Some(routing) = &shared.redis_routing
                 && !routing

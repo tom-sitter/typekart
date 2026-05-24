@@ -190,11 +190,21 @@ Current issue:
 
 Suggested extraction:
 
-- Create a snapshot builder near `src/net/protocol_types.rs` or a new
-  browser-safe module such as `src/game/snapshot.rs`.
-- Inputs should be shared state plus an adapter for player kind/color/mod
-  metadata.
-- Outputs should remain protocol types.
+- `src/game/snapshot.rs` builds protocol-shaped race, delta, player, bonus,
+  item cue, and impact cue snapshots from shared race state.
+- Inputs are shared state plus adapter-provided phase, sequence, mod config,
+  events, and player-kind mapping.
+- Terminal and browser hosts still own when snapshots are emitted and how they
+  are broadcast.
+
+Progress:
+
+- Terminal networking now uses the `typekart-protocol` crate directly instead
+  of a separate local protocol module copy.
+- Terminal-hosted and browser-hosted race snapshots now use the shared snapshot
+  builder for core race, player, bonus, and effect fields.
+- Relay room-code generation moved to a free helper because `RoomCode` now comes
+  from the external protocol crate.
 
 Validation:
 
@@ -223,16 +233,34 @@ Keep outside shared policy:
 
 Suggested API shape:
 
-- `LobbyState` with game-level player records, host id, max players, and AI
-  settings.
-- Commands such as `SetReady`, `Rename`, `AddAi`, `RemovePlayer`,
-  `SetAiDifficulty`, and `SelectRaceParticipants`.
-- Events such as `PlayerRenamed`, `PlayerRemoved`, `AiAdded`, and
-  `LobbyRejected`.
+- Start with pure helpers in `src/game/lobby.rs` for name dedupe, player id
+  assignment, color assignment, host-ready defaults, AI lobby player creation,
+  and race participant selection.
+- Later slices can introduce a fuller `LobbyState` command/event layer once the
+  remaining host-specific roster mutations are smaller.
+
+Progress:
+
+- `src/game/lobby.rs` now owns shared lobby helper policy for terminal and
+  browser hosts.
+- Terminal-hosted and browser-hosted games use the same helpers for human
+  lobby players, AI lobby players, unique names, player ids, color selection,
+  and race participant conversion.
+- Terminal-hosted and browser-hosted games now share lobby command policy for
+  ready/unready, rename, add AI, remove/kick player, AI difficulty changes, and
+  phase/roster validation.
+- Transport-specific behavior remains in the adapters: TCP stream cleanup,
+  relay participant mapping, browser signals, kick side effects, and event/feed
+  wording.
+- A fuller `LobbyState` command/event owner is intentionally deferred until a
+  future cleanup needs to remove more host orchestration from the adapters.
 
 Validation:
 
-- Move server lobby tests into shared tests where possible.
+- Shared lobby helper tests cover name suffixes, player-id allocation, and
+  ready participant selection.
+- Shared lobby command-policy tests cover rename dedupe, roster limits, host
+  removal rejection, readiness, and AI difficulty updates.
 - Keep protocol broadcast tests in `src/net/server.rs`.
 
 ### 6. Shared Results And Rematch Flow

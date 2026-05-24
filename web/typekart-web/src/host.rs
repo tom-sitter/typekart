@@ -11,30 +11,36 @@ use leptos::prelude::*;
 use rand::thread_rng;
 use typekart::game::{
     ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
-    bonus::{BonusChoiceStatus, BonusState},
+    bonus::BonusState,
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
-    item_effects::{
-        AttackDirection, RaceImpactCueKind, RaceItemCueKind, RaceItemCuePlacement,
-        RaceItemEffectState, activate_item_pickup, advance_mushrooms,
-        player_has_active_mushroom_effect, player_is_stunned,
-    },
+    item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
+    lobby::{
+        add_ai_lobby_player as shared_add_ai_lobby_player, color_for_lobby_slot,
+        first_available_player_id, lobby_name_or_default, lobby_players_to_participants,
+        new_human_lobby_player, remove_lobby_player as shared_remove_lobby_player,
+        rename_lobby_player as shared_rename_lobby_player,
+        set_lobby_ai_difficulty as shared_set_lobby_ai_difficulty,
+        set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
+    },
     player::PlayerState,
     race::{
-        PlayerColorId, RaceParticipant, RacePlayer, RacePlayerId, RaceState,
-        RaceRuntimeState, build_race_result_rows as build_shared_race_result_rows,
+        PlayerColorId, RacePlayer, RacePlayerId, RaceState, RaceRuntimeState,
+        build_race_result_rows as build_shared_race_result_rows,
     },
     race_flow::{race_flow_is_finished, update_race_flow},
+    snapshot::{
+        RaceSnapshotInput, assigned_color, build_bonus_snapshots, build_player_snapshots,
+        build_race_snapshot, player_color_id,
+    },
     track::{Track, WordList},
     typing::KeyAction,
 };
 use typekart_protocol::{
-    AiDifficultySnapshot, AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshotStatus,
-    BonusPointSnapshot, ClientMessage, ImpactCueSnapshot, ImpactCueSnapshotKind,
-    ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, ModConfigSnapshot,
-    NetworkRacePhase, PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceResultStatus,
-    RaceSnapshot, RelayClientMessage, RelayServerMessage, RoomCode, ServerMessage,
+    AiDifficultySnapshot, AssignedColor, ClientMessage, LobbyPlayer, ModConfigSnapshot,
+    NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey, RaceResultStatus, RaceSnapshot,
+    RelayClientMessage, RelayServerMessage, RoomCode, ServerMessage,
 };
 
 use crate::fixtures::{GalleryFrame, LobbyFrame, ResultsFrame};
@@ -44,6 +50,7 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BROWSER_HOST_TRACK_WORD_COUNT: usize = 16;
 const BROWSER_HOST_AI_TICK_MS: u32 = 250;
 const BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
+const BROWSER_HOST_MAX_PLAYERS: usize = 6;
 
 pub(crate) async fn host_browser_lobby(
     relay_url: String,
@@ -174,7 +181,7 @@ impl BrowserHostLobby {
             room,
             players: vec![LobbyPlayer {
                 id: PlayerId(1),
-                name: browser_lobby_name_or_default(&host_name, "host"),
+                name: lobby_name_or_default(&host_name, "host"),
                 kind: PlayerKind::Human,
                 color: AssignedColor::Cyan,
                 ready: true,
@@ -212,6 +219,16 @@ impl BrowserHostLobby {
             players: self.players.clone(),
             mod_config: self.mod_config.clone(),
             events: self.events.clone(),
+        }
+    }
+
+    fn phase(&self) -> NetworkRacePhase {
+        if let Some(snapshot) = &self.active_race {
+            snapshot.phase
+        } else if self.active_results.is_some() {
+            NetworkRacePhase::Finished
+        } else {
+            NetworkRacePhase::Lobby
         }
     }
 
@@ -347,93 +364,79 @@ fn process_browser_host_client_message(
 ) {
     match message {
         ClientMessage::Rename { name } => {
-            let name = name.trim();
-            if name.is_empty() {
-                return;
-            }
-            if let Some(index) = state
-                .players
-                .iter()
-                .position(|player| player.id == player_id)
-            {
-                let unique_name = browser_unique_lobby_name(
-                    state
-                        .players
-                        .iter()
-                        .filter(|candidate| candidate.id != player_id),
-                    name,
-                );
-                state.players[index].name = unique_name;
-                let renamed = state.players[index].name.clone();
-                state.push_event(format!("{renamed} renamed"));
+            let phase = state.phase();
+            match shared_rename_lobby_player(
+                &mut state.players,
+                phase,
+                player_id,
+                &name,
+            ) {
+                Ok(outcome) => {
+                    state.push_event(format!(
+                        "{} renamed to {}",
+                        outcome.previous_name, outcome.new_name
+                    ));
+                }
+                Err(error) => state.push_event(error.to_string()),
             }
         }
         ClientMessage::SetReady { ready } => {
-            if let Some(player) = state
-                .players
-                .iter_mut()
-                .find(|player| player.id == player_id)
-            {
-                player.ready = ready;
-                let name = player.name.clone();
-                state.push_event(format!(
-                    "{name} {}",
-                    if ready { "ready" } else { "not ready" }
-                ));
+            match shared_set_lobby_ready(&mut state.players, player_id, ready) {
+                Ok(outcome) => {
+                    state.push_event(format!(
+                        "{} {}",
+                        outcome.name,
+                        if outcome.ready { "ready" } else { "not ready" }
+                    ));
+                }
+                Err(error) => state.push_event(error.to_string()),
             }
         }
         ClientMessage::AddAi if player_id == PlayerId(1) => {
-            if state.players.len() >= 6 {
-                state.push_event("lobby is full");
-                return;
+            let phase = state.phase();
+            match shared_add_ai_lobby_player(
+                &mut state.players,
+                phase,
+                BROWSER_HOST_MAX_PLAYERS,
+                AiDifficultySnapshot::Easy,
+                browser_ai_wpm(AiDifficultySnapshot::Easy),
+            ) {
+                Ok(outcome) => state.push_event(format!("{} added", outcome.player.name)),
+                Err(error) => state.push_event(error.to_string()),
             }
-            let id = browser_next_lobby_player_id(state);
-            let ai_number = state
-                .players
-                .iter()
-                .filter(|player| player.kind == PlayerKind::Bot)
-                .count()
-                + 1;
-            let name = browser_unique_lobby_name(state.players.iter(), &format!("ai-{ai_number}"));
-            state.players.push(LobbyPlayer {
-                id,
-                name: name.clone(),
-                kind: PlayerKind::Bot,
-                color: browser_color_for_slot(state.players.len()),
-                ready: true,
-                connected: true,
-                ai_difficulty: Some(AiDifficultySnapshot::Easy),
-                ai_wpm: Some(browser_ai_wpm(AiDifficultySnapshot::Easy)),
-            });
-            state.push_event(format!("{name} added"));
         }
         ClientMessage::RemoveLobbyPlayer { player_id: target } if player_id == PlayerId(1) => {
-            if target == PlayerId(1) {
-                return;
-            }
-            if let Some(index) = state.players.iter().position(|player| player.id == target) {
-                let removed = state.players.remove(index);
-                state.push_event(format!("{} removed", removed.name));
+            let phase = state.phase();
+            match shared_remove_lobby_player(&mut state.players, phase, target) {
+                Ok(outcome) => state.push_event(match outcome.player.kind {
+                    PlayerKind::Human => format!("{} kicked", outcome.player.name),
+                    PlayerKind::Bot => format!("{} removed", outcome.player.name),
+                }),
+                Err(error) => state.push_event(error.to_string()),
             }
         }
         ClientMessage::SetAiDifficulty {
             player_id: target,
             difficulty,
         } if player_id == PlayerId(1) => {
-            let mut changed = 0usize;
-            for player in &mut state.players {
-                if player.kind != PlayerKind::Bot {
-                    continue;
+            let phase = state.phase();
+            match shared_set_lobby_ai_difficulty(
+                &mut state.players,
+                phase,
+                target,
+                difficulty,
+                browser_ai_wpm(difficulty),
+            ) {
+                Ok(typekart::game::lobby::LobbyAiDifficultyOutcome::DefaultChanged { .. }) => {
+                    state.push_event("updated default AI racer difficulty");
                 }
-                if target.is_some() && target != Some(player.id) {
-                    continue;
+                Ok(typekart::game::lobby::LobbyAiDifficultyOutcome::PlayerChanged {
+                    name,
+                    ..
+                }) => {
+                    state.push_event(format!("{} set to {}", name, browser_ai_label(difficulty)));
                 }
-                player.ai_difficulty = Some(difficulty);
-                player.ai_wpm = Some(browser_ai_wpm(difficulty));
-                changed += 1;
-            }
-            if changed > 0 {
-                state.push_event(format!("updated {changed} AI racer difficulty"));
+                Err(error) => state.push_event(error.to_string()),
             }
         }
         ClientMessage::StartCountdown if player_id == PlayerId(1) => {}
@@ -527,12 +530,12 @@ async fn run_browser_host_countdown(
         return Ok(());
     }
 
-    let racers: Vec<LobbyPlayer> = state
+    let racers = state
         .players
         .iter()
         .filter(|player| player.connected && player.ready)
         .cloned()
-        .collect();
+        .collect::<Vec<_>>();
     if racers.is_empty() {
         state.push_event("cannot start without ready racers");
         publish_browser_host_lobby(state, writer, set_live_frame).await?;
@@ -589,7 +592,12 @@ async fn run_browser_host_countdown(
     state.next_track_words = browser_generate_track_words();
     state.runtime.reset();
     if let (Some(snapshot), Some(core_race)) = (&mut state.active_race, &state.core_race) {
-        browser_sync_snapshot_from_core(snapshot, core_race, &state.players, &state.runtime.player_effects);
+        browser_sync_snapshot_from_core(
+            snapshot,
+            core_race,
+            &state.players,
+            &state.runtime.player_effects,
+        );
     }
     state.ai_char_budget.clear();
     state.ai_last_tick_ms = Some(browser_now_ms());
@@ -624,48 +632,32 @@ fn browser_host_race_snapshot_with_track(
     bonuses: &BonusState,
     events: Vec<String>,
 ) -> RaceSnapshot {
-    RaceSnapshot {
-        sequence,
-        phase,
-        mod_config: mod_config.clone(),
-        track_words: track_words.to_vec(),
-        bonuses: browser_bonus_snapshots(bonuses, Instant::now()),
-        players: racers.iter().map(browser_host_player_snapshot).collect(),
-        events,
-    }
-}
-
-fn browser_host_player_snapshot(player: &LobbyPlayer) -> PlayerSnapshot {
-    PlayerSnapshot {
-        id: player.id,
-        name: player.name.clone(),
-        kind: player.kind,
-        color: player.color,
-        word_index: 0,
-        input: String::new(),
-        typo_index: None,
-        word_overrides: Vec::new(),
-        finished: false,
-        connected: player.connected,
-        shielded: false,
-        focused: false,
-        inked: false,
-        boosted: false,
-        stunned: false,
-        impact_remaining_ms: 0,
-        impact_cue: None,
-        item_cue: None,
-    }
+    let race = browser_host_core_race(racers, track_words.to_vec());
+    let player_effects = HashMap::new();
+    build_race_snapshot(
+        RaceSnapshotInput {
+            sequence,
+            phase,
+            mod_config: mod_config.clone(),
+            race: &race,
+            bonuses,
+            player_effects: &player_effects,
+            events,
+            now: Instant::now(),
+        },
+        |player_id| {
+            racers
+                .iter()
+                .find(|racer| racer.id == player_id)
+                .map(|racer| racer.kind)
+                .unwrap_or(PlayerKind::Human)
+        },
+    )
 }
 
 fn browser_host_core_race(racers: &[LobbyPlayer], track_words: Vec<String>) -> RaceState {
     let now = Instant::now();
-    let participants = racers.iter().map(|racer| RaceParticipant {
-        id: RacePlayerId(racer.id.0),
-        name: racer.name.clone(),
-        color: browser_player_color_id(racer.color),
-        connected: racer.connected,
-    });
+    let participants = lobby_players_to_participants(racers);
     RaceState::from_participants(Track::new(track_words), participants, now)
 }
 
@@ -834,8 +826,13 @@ fn browser_sync_active_race_from_core(state: &mut BrowserHostLobby) {
     let (Some(snapshot), Some(core_race)) = (&mut state.active_race, &state.core_race) else {
         return;
     };
-    browser_sync_snapshot_from_core(snapshot, core_race, &state.players, &state.runtime.player_effects);
-    snapshot.bonuses = browser_bonus_snapshots(&state.bonuses, Instant::now());
+    browser_sync_snapshot_from_core(
+        snapshot,
+        core_race,
+        &state.players,
+        &state.runtime.player_effects,
+    );
+    snapshot.bonuses = build_bonus_snapshots(&state.bonuses, Instant::now());
     state.race_sequence += 1;
     snapshot.sequence = state.race_sequence;
 }
@@ -1113,7 +1110,7 @@ fn browser_finish_race(state: &mut BrowserHostLobby) {
             placement: row.placement,
             player_id: PlayerId(row.player_id.0),
             name: row.name,
-            color: browser_assigned_color(row.color),
+            color: assigned_color(row.color),
             status: match row.status {
                 typekart::game::race::RaceResultStatus::Finished => RaceResultStatus::Finished,
                 typekart::game::race::RaceResultStatus::TimedOut => RaceResultStatus::TimedOut,
@@ -1174,111 +1171,13 @@ fn browser_sync_snapshot_from_core(
 ) {
     let now = Instant::now();
     snapshot.track_words = core_race.track.words.clone();
-    for snapshot_player in &mut snapshot.players {
-        let Some(core_player) = core_race
-            .players
+    snapshot.players = build_player_snapshots(core_race, player_effects, now, |player_id| {
+        lobby_players
             .iter()
-            .find(|player| player.id == RacePlayerId(snapshot_player.id.0))
-        else {
-            continue;
-        };
-        snapshot_player.name = core_player.name.clone();
-        snapshot_player.color = browser_assigned_color(core_player.color);
-        snapshot_player.word_index = core_player
-            .state
-            .word_index
-            .min(core_race.track.len().saturating_sub(1));
-        snapshot_player.input = core_player.state.input.clone();
-        snapshot_player.typo_index = core_player.state.typo_index;
-        snapshot_player.word_overrides = core_player
-            .state
-            .word_overrides
-            .iter()
-            .map(|(word_index, word)| typekart_protocol::WordOverrideSnapshot {
-                word_index: *word_index,
-                word: word.clone(),
-            })
-            .collect();
-        snapshot_player.finished = core_player.state.is_finished();
-        snapshot_player.connected = core_player.connected;
-        snapshot_player.shielded = core_player.state.has_active_shield(now);
-        snapshot_player.focused = core_player.state.has_active_focus(now);
-        snapshot_player.inked = core_player.state.is_inked_at(now);
-        snapshot_player.boosted = player_has_active_mushroom_effect(core_player, now);
-        let effects = player_effects
-            .get(&core_player.id)
-            .cloned()
-            .unwrap_or_default();
-        snapshot_player.stunned = effects
-            .stunned_until
-            .is_some_and(|until| until > now);
-        snapshot_player.impact_remaining_ms =
-            browser_remaining_ms(effects.impact_cue.map(|cue| cue.until), now);
-        snapshot_player.impact_cue = browser_impact_cue_snapshot(effects.impact_cue, now);
-        snapshot_player.item_cue = browser_item_cue_snapshot(effects.item_cue, now);
-        if let Some(lobby_player) = lobby_players
-            .iter()
-            .find(|lobby_player| lobby_player.id == snapshot_player.id)
-        {
-            snapshot_player.kind = lobby_player.kind;
-        }
-    }
-}
-
-fn browser_remaining_ms(until: Option<Instant>, now: Instant) -> u64 {
-    until
-        .filter(|until| *until > now)
-        .map(|until| until.saturating_duration_since(now).as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn browser_impact_cue_snapshot(
-    cue: Option<typekart::game::item_effects::RaceImpactCue>,
-    now: Instant,
-) -> Option<ImpactCueSnapshot> {
-    let cue = cue.filter(|cue| cue.until > now)?;
-    Some(ImpactCueSnapshot {
-        kind: match cue.kind {
-            RaceImpactCueKind::Banana => ImpactCueSnapshotKind::Banana,
-            RaceImpactCueKind::Cyclone => ImpactCueSnapshotKind::Cyclone,
-            RaceImpactCueKind::SquidInk => ImpactCueSnapshotKind::SquidInk,
-            RaceImpactCueKind::ShieldBlock => ImpactCueSnapshotKind::ShieldBlock,
-        },
-        remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
-    })
-}
-
-fn browser_item_cue_snapshot(
-    cue: Option<typekart::game::item_effects::RaceItemCue>,
-    now: Instant,
-) -> Option<ItemCueSnapshot> {
-    let cue = cue.filter(|cue| cue.until > now)?;
-    Some(ItemCueSnapshot {
-        kind: match cue.kind {
-            RaceItemCueKind::Banana { direction } => ItemCueSnapshotKind::Banana {
-                direction: browser_attack_direction(direction),
-            },
-            RaceItemCueKind::Cyclone { direction } => ItemCueSnapshotKind::Cyclone {
-                direction: browser_attack_direction(direction),
-            },
-            RaceItemCueKind::SquidInk => ItemCueSnapshotKind::SquidInk,
-        },
-        ascii_label: cue.ascii_label,
-        unicode_label: cue.unicode_label,
-        placement: match cue.placement {
-            RaceItemCuePlacement::Before => ItemCuePlacementSnapshot::Before,
-            RaceItemCuePlacement::After => ItemCuePlacementSnapshot::After,
-        },
-        remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
-    })
-}
-
-fn browser_attack_direction(direction: AttackDirection) -> AttackDirectionSnapshot {
-    match direction {
-        AttackDirection::Ahead => AttackDirectionSnapshot::Ahead,
-        AttackDirection::Behind => AttackDirectionSnapshot::Behind,
-        AttackDirection::Overlap => AttackDirectionSnapshot::Overlap,
-    }
+            .find(|lobby_player| lobby_player.id == player_id)
+            .map(|lobby_player| lobby_player.kind)
+            .unwrap_or(PlayerKind::Human)
+    });
 }
 
 fn browser_protocol_key_to_action(key: ProtocolKey) -> KeyAction {
@@ -1290,25 +1189,7 @@ fn browser_protocol_key_to_action(key: ProtocolKey) -> KeyAction {
 }
 
 fn browser_player_color_id(color: AssignedColor) -> PlayerColorId {
-    match color {
-        AssignedColor::Cyan => PlayerColorId::Cyan,
-        AssignedColor::Red => PlayerColorId::Red,
-        AssignedColor::Green => PlayerColorId::Green,
-        AssignedColor::Blue => PlayerColorId::Blue,
-        AssignedColor::Yellow => PlayerColorId::Yellow,
-        AssignedColor::Magenta => PlayerColorId::Magenta,
-    }
-}
-
-fn browser_assigned_color(color: PlayerColorId) -> AssignedColor {
-    match color {
-        PlayerColorId::Cyan => AssignedColor::Cyan,
-        PlayerColorId::Red => AssignedColor::Red,
-        PlayerColorId::Green => AssignedColor::Green,
-        PlayerColorId::Blue => AssignedColor::Blue,
-        PlayerColorId::Yellow => AssignedColor::Yellow,
-        PlayerColorId::Magenta => AssignedColor::Magenta,
-    }
+    player_color_id(color)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1339,35 +1220,6 @@ fn browser_generate_bonus_state(track_words: &[String]) -> BonusState {
         &Track::new(track_words.to_vec()),
         &WordList::from_static(BROWSER_HOST_WORDS),
     )
-}
-
-fn browser_bonus_snapshots(bonuses: &BonusState, now: Instant) -> Vec<BonusPointSnapshot> {
-    bonuses
-        .points
-        .iter()
-        .map(|point| BonusPointSnapshot {
-            after_word_index: point.after_word_index,
-            choices: point
-                .choices
-                .iter()
-                .map(|choice| typekart_protocol::BonusChoiceSnapshot {
-                    word: choice.word.clone(),
-                    status: match choice.status {
-                        BonusChoiceStatus::Available => BonusChoiceSnapshotStatus::Available,
-                        BonusChoiceStatus::Cooldown { until } if until <= now => {
-                            BonusChoiceSnapshotStatus::Available
-                        }
-                        BonusChoiceStatus::Cooldown { until } => {
-                            BonusChoiceSnapshotStatus::Cooldown {
-                                remaining_ms: until.saturating_duration_since(now).as_millis()
-                                    as u64,
-                            }
-                        }
-                    },
-                })
-                .collect(),
-        })
-        .collect()
 }
 
 fn browser_demo_track_words() -> Vec<String> {
@@ -1457,21 +1309,12 @@ fn add_browser_lobby_human(
     relay_player_id: PlayerId,
     name: &str,
 ) -> LobbyPlayer {
-    let name = browser_unique_lobby_name(
+    let name = unique_lobby_name(
         state.players.iter(),
-        &browser_lobby_name_or_default(name, "player"),
+        &lobby_name_or_default(name, "player"),
     );
     let player_id = browser_next_lobby_player_id(state);
-    let player = LobbyPlayer {
-        id: player_id,
-        name,
-        kind: PlayerKind::Human,
-        color: browser_color_for_slot(state.players.len()),
-        ready: false,
-        connected: true,
-        ai_difficulty: None,
-        ai_wpm: None,
-    };
+    let player = new_human_lobby_player(player_id, name, color_for_lobby_slot(state.players.len()));
     state.players.push(player.clone());
     state.next_player_id = state.next_player_id.max(player_id.0 + 1);
     state.relay_players.insert(relay_player_id, player_id);
@@ -1479,61 +1322,22 @@ fn add_browser_lobby_human(
 }
 
 fn browser_next_lobby_player_id(state: &mut BrowserHostLobby) -> PlayerId {
-    while state
-        .players
-        .iter()
-        .any(|player| player.id == PlayerId(state.next_player_id))
-    {
-        state.next_player_id += 1;
-    }
-    let player_id = PlayerId(state.next_player_id);
-    state.next_player_id += 1;
+    let player_id = first_available_player_id(&state.players, state.next_player_id);
+    state.next_player_id = player_id.0 + 1;
     player_id
-}
-
-fn browser_lobby_name_or_default(name: &str, fallback: &str) -> String {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        fallback.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn browser_unique_lobby_name<'a>(
-    players: impl Iterator<Item = &'a LobbyPlayer>,
-    requested: &str,
-) -> String {
-    let base = browser_lobby_name_or_default(requested, "player");
-    let existing: Vec<&str> = players.map(|player| player.name.as_str()).collect();
-    if !existing.iter().any(|name| *name == base) {
-        return base;
-    }
-    for suffix in 2..100 {
-        let candidate = format!("{base}{suffix}");
-        if !existing.iter().any(|name| *name == candidate) {
-            return candidate;
-        }
-    }
-    base
-}
-
-fn browser_color_for_slot(slot: usize) -> AssignedColor {
-    const COLORS: [AssignedColor; 6] = [
-        AssignedColor::Cyan,
-        AssignedColor::Red,
-        AssignedColor::Green,
-        AssignedColor::Blue,
-        AssignedColor::Yellow,
-        AssignedColor::Magenta,
-    ];
-    COLORS[slot % COLORS.len()]
 }
 
 fn browser_ai_wpm(difficulty: AiDifficultySnapshot) -> u32 {
     match difficulty {
         AiDifficultySnapshot::Easy => 45,
         AiDifficultySnapshot::Hard => 85,
+    }
+}
+
+fn browser_ai_label(difficulty: AiDifficultySnapshot) -> &'static str {
+    match difficulty {
+        AiDifficultySnapshot::Easy => "easy",
+        AiDifficultySnapshot::Hard => "hard",
     }
 }
 
@@ -1637,7 +1441,7 @@ fn browser_lobby_names_are_deduped() {
         },
     ];
 
-    assert_eq!(browser_unique_lobby_name(existing.iter(), "tom"), "tom3");
+    assert_eq!(unique_lobby_name(existing.iter(), "tom"), "tom3");
 }
 
 #[test]
@@ -1659,7 +1463,7 @@ fn browser_generated_track_uses_shared_track_length() {
 fn browser_generated_track_includes_bonus_snapshots() {
     let words = browser_generate_track_words();
     let bonuses = browser_generate_bonus_state(&words);
-    let snapshots = browser_bonus_snapshots(&bonuses, std::time::Instant::now());
+    let snapshots = build_bonus_snapshots(&bonuses, std::time::Instant::now());
 
     assert!(!snapshots.is_empty());
     assert!(snapshots.iter().all(|point| point.choices.len() == 3));
@@ -2001,7 +1805,7 @@ fn browser_host_bonus_word_claims_choice_after_space() {
     assert!(lobby.runtime.bonus_attempts.contains_key(&PlayerId(1)));
     assert!(matches!(
         lobby.active_race.as_ref().unwrap().bonuses[0].choices[0].status,
-        BonusChoiceSnapshotStatus::Available
+        typekart_protocol::BonusChoiceSnapshotStatus::Available
     ));
 
     apply_browser_host_race_key_input(
@@ -2019,7 +1823,7 @@ fn browser_host_bonus_word_claims_choice_after_space() {
     assert_eq!(lobby.runtime.spent_bonus_gaps.get(&PlayerId(1)), Some(&0));
     assert!(matches!(
         lobby.active_race.as_ref().unwrap().bonuses[0].choices[0].status,
-        BonusChoiceSnapshotStatus::Cooldown { .. }
+        typekart_protocol::BonusChoiceSnapshotStatus::Cooldown { .. }
     ));
     assert!(lobby.events.iter().any(|event| event.contains("got")));
     assert!(

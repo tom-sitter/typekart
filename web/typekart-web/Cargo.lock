@@ -1671,6 +1671,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "typekart-protocol",
 ]
 
 [[package]]

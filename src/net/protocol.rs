@@ -4,10 +4,7 @@
 //! the same JSON contract without compiling the terminal client or native
 //! networking stack.
 
-#[path = "protocol_types.rs"]
-mod protocol_types;
-
-pub use protocol_types::*;
+pub use typekart_protocol::*;
 
 use crate::game::{ai::AiDifficulty, mods::ActiveModConfig};
 

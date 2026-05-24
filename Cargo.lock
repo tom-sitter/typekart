@@ -1327,6 +1327,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tungstenite",
+ "typekart-protocol",
+]
+
+[[package]]
+name = "typekart-protocol"
+version = "0.1.6"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

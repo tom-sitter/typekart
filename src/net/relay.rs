@@ -18,24 +18,22 @@ const ROOM_CODE_WORDS: &[&str] = &[
 ];
 const ROOM_CODE_WORD_COUNT: usize = 3;
 
-impl RoomCode {
-    pub fn generate() -> Self {
-        let mut rng = thread_rng();
-        let words = ROOM_CODE_WORDS
-            .choose_multiple(&mut rng, ROOM_CODE_WORD_COUNT)
-            .copied()
-            .collect::<Vec<_>>();
-        Self::from_normalized_words(words.join("-"))
-    }
+pub fn generate_room_code() -> RoomCode {
+    let mut rng = thread_rng();
+    let words = ROOM_CODE_WORDS
+        .choose_multiple(&mut rng, ROOM_CODE_WORD_COUNT)
+        .copied()
+        .collect::<Vec<_>>();
+    RoomCode::from_normalized_words(words.join("-"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RoomCode;
+    use super::{RoomCode, generate_room_code};
 
     #[test]
     fn generated_room_codes_are_valid() {
-        let code = RoomCode::generate();
+        let code = generate_room_code();
 
         assert!(RoomCode::parse(code.as_str()).is_ok());
     }

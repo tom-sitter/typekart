@@ -19,7 +19,7 @@ use rand::{Rng, thread_rng};
 use crate::game::{
     ai::AiDifficulty,
     ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
-    bonus::{BonusChoiceStatus, BonusState},
+    bonus::BonusState,
     bonus_flow::{
         BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key,
         claim_active_bonus,
@@ -28,39 +28,42 @@ use crate::game::{
         player_input_is_paused as shared_player_input_is_paused, player_input_is_paused_or_finished,
     },
     item_effects::{
-        AttackDirection, RaceImpactCue, RaceImpactCueKind, RaceItemCue, RaceItemCueKind,
-        RaceItemCuePlacement, activate_item_pickup, advance_mushrooms,
-        player_has_active_mushroom_effect, player_is_stunned as shared_player_is_stunned,
+        activate_item_pickup, advance_mushrooms, player_has_active_mushroom_effect,
+        player_is_stunned as shared_player_is_stunned,
     },
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
+    lobby::{
+        LOBBY_COLOR_ROTATION, add_ai_lobby_player as shared_add_ai_lobby_player,
+        color_for_lobby_slot, connected_player_count, first_available_color,
+        first_available_player_id, new_human_lobby_player, ready_connected_participants,
+        remove_lobby_player as shared_remove_lobby_player,
+        rename_lobby_player as shared_rename_lobby_player,
+        set_lobby_ai_difficulty as shared_set_lobby_ai_difficulty,
+        set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
+    },
     mods::ActiveModConfig,
     race::{
-        PlayerColorId, RaceLifecycleStatus, RaceParticipant, RacePlayerId, RaceRuntimeState,
-        RaceState, build_race_result_rows as build_shared_race_result_rows,
+        PlayerColorId, RaceLifecycleStatus, RacePlayerId, RaceRuntimeState, RaceState,
+        build_race_result_rows as build_shared_race_result_rows,
     },
     race_flow::update_race_flow,
+    snapshot::{
+        RaceDeltaSnapshotInput, RaceSnapshotInput,
+        build_race_delta_snapshot as build_shared_race_delta_snapshot,
+        build_race_snapshot as build_shared_race_snapshot,
+    },
     track::{Track, WordList},
     typing::KeyAction,
 };
 
 use super::log::{SharedNetworkLog, push_network_log};
 use super::protocol::{
-    AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshot, BonusChoiceSnapshotStatus,
-    BonusPointSnapshot, ClientMessage, ImpactCueSnapshot, ImpactCueSnapshotKind,
-    ItemCuePlacementSnapshot, ItemCueSnapshot, ItemCueSnapshotKind, LobbyPlayer, NetworkRacePhase,
-    PlayerId, PlayerKind, PlayerSnapshot, ProtocolKey, RaceDeltaSnapshot, RaceResultRow,
-    RaceResultStatus, RaceSnapshot, ServerMessage, WordOverrideSnapshot, version_mismatch_message,
+    AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey,
+    RaceDeltaSnapshot, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
+    version_mismatch_message,
 };
 use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
-const COLOR_ROTATION: [AssignedColor; 6] = [
-    AssignedColor::Cyan,
-    AssignedColor::Red,
-    AssignedColor::Green,
-    AssignedColor::Blue,
-    AssignedColor::Yellow,
-    AssignedColor::Magenta,
-];
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(100);
 static SERVER_CONSOLE_LOGGING: AtomicBool = AtomicBool::new(true);
@@ -175,7 +178,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
             id: PlayerId(1),
             name: host_name,
             kind: PlayerKind::Human,
-            color: COLOR_ROTATION[0],
+            color: LOBBY_COLOR_ROTATION[0],
             ready: true,
             connected: true,
             ai_difficulty: None,
@@ -275,9 +278,18 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 continue;
             }
 
-            let player_name = unique_player_name(&requested_player_name, &state.players);
+            let player_name = unique_lobby_name(state.players.iter(), &requested_player_name);
             let player_id = first_available_player_id(&state.players, next_player_id);
-            let assigned_color = first_available_color(&state.players);
+            let Some(assigned_color) = first_available_color(&state.players) else {
+                send_server_message(
+                    stream,
+                    &ServerMessage::Error {
+                        message: "Lobby is full: no colors available".to_string(),
+                    },
+                )?;
+                push_network_log(&state.debug_log, "join rejected: no colors available");
+                continue;
+            };
             let write_stream = match welcome_joiner(&stream, player_id, assigned_color) {
                 Ok(write_stream) => write_stream,
                 Err(error) => {
@@ -347,7 +359,7 @@ fn add_network_ai_racers(
     for index in 0..ai_racer_count {
         let player_id = PlayerId(index as u64 + 2);
         let name = format!("ai-{}", index + 1);
-        let color = COLOR_ROTATION[index + 1];
+        let color = color_for_lobby_slot(index + 1);
         race.add_player(RacePlayerId(player_id.0), name.clone(), color.into(), now);
         ai_racers.insert(
             player_id,
@@ -375,8 +387,11 @@ fn add_network_ai_racers(
 }
 
 fn validate_host_capacity(max_players: usize, ai_racer_count: usize) -> Result<()> {
-    if max_players == 0 || max_players > COLOR_ROTATION.len() {
-        bail!("max players must be between 1 and {}", COLOR_ROTATION.len());
+    if max_players == 0 || max_players > LOBBY_COLOR_ROTATION.len() {
+        bail!(
+            "max players must be between 1 and {}",
+            LOBBY_COLOR_ROTATION.len()
+        );
     }
     if ai_racer_count >= max_players {
         bail!("ai racers must be less than max players so the host has a slot");
@@ -424,16 +439,11 @@ fn has_embedded_host_player(state: &Arc<Mutex<HostState>>) -> bool {
 
 fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
     let mut state = state.lock().expect("host state poisoned");
-    if let Some(host) = state
-        .players
-        .iter_mut()
-        .find(|player| player.id == PlayerId(1))
-    {
-        host.ready = ready;
+    if let Ok(outcome) = shared_set_lobby_ready(&mut state.players, PlayerId(1), ready) {
         server_println!(
             "{} is {}",
-            host.name,
-            if ready { "ready" } else { "not ready" }
+            outcome.name,
+            if outcome.ready { "ready" } else { "not ready" }
         );
     }
     print_lobby_snapshot(&state.players);
@@ -442,33 +452,27 @@ fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
     }
 }
 
-fn lobby_can_manage_roster(state: &HostState) -> bool {
-    matches!(
-        state.phase,
-        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
-    )
-}
-
 fn add_lobby_ai_racer(state: &mut HostState) -> Result<()> {
-    if !lobby_can_manage_roster(state) {
-        bail!("AI racers can only be changed in the lobby");
-    }
-    if connected_player_count(&state.players) >= state.max_players {
-        bail!("Lobby is full");
-    }
-
-    let player_id = first_available_player_id(&state.players, 2);
-    let color = first_available_color(&state.players);
-    let name = next_ai_name(&state.players);
     let now = Instant::now();
     let mut rng = thread_rng();
     let words_per_minute = rng.gen_range(state.ai_difficulty.wpm_range());
+    let added = shared_add_ai_lobby_player(
+        &mut state.players,
+        state.phase,
+        state.max_players,
+        state.ai_difficulty.into(),
+        words_per_minute.round() as u32,
+    )?;
+    let player = added.player;
 
-    state
-        .race
-        .add_player(RacePlayerId(player_id.0), name.clone(), color.into(), now);
+    state.race.add_player(
+        RacePlayerId(player.id.0),
+        player.name.clone(),
+        player.color.into(),
+        now,
+    );
     state.ai_racers.insert(
-        player_id,
+        player.id,
         NetworkAiRacer {
             difficulty: state.ai_difficulty,
             words_per_minute,
@@ -476,22 +480,12 @@ fn add_lobby_ai_racer(state: &mut HostState) -> Result<()> {
             last_update: now,
         },
     );
-    state.players.push(LobbyPlayer {
-        id: player_id,
-        name: name.clone(),
-        kind: PlayerKind::Bot,
-        color,
-        ready: true,
-        connected: true,
-        ai_difficulty: Some(state.ai_difficulty.into()),
-        ai_wpm: Some(words_per_minute.round() as u32),
-    });
-    push_event(state, format!("{name} added"));
+    push_event(state, format!("{} added", player.name));
     push_network_log(
         &state.debug_log,
         format!(
             "ai added player={} difficulty={} wpm={:.0}",
-            player_id.0,
+            player.id.0,
             state.ai_difficulty.name(),
             words_per_minute
         ),
@@ -501,18 +495,9 @@ fn add_lobby_ai_racer(state: &mut HostState) -> Result<()> {
 }
 
 fn remove_lobby_player(state: &mut HostState, player_id: PlayerId) -> Result<()> {
-    if !lobby_can_manage_roster(state) {
-        bail!("Racers can only be removed in the lobby");
-    }
-    if player_id == PlayerId(1) {
-        bail!("Host cannot be removed");
-    }
-
-    let Some(player) = state.players.iter().find(|player| player.id == player_id) else {
-        bail!("Selected racer is no longer in the lobby");
-    };
-    let name = player.name.clone();
-    let kind = player.kind;
+    let removed = shared_remove_lobby_player(&mut state.players, state.phase, player_id)?;
+    let name = removed.player.name;
+    let kind = removed.player.kind;
 
     if kind == PlayerKind::Human {
         for client in state
@@ -531,7 +516,6 @@ fn remove_lobby_player(state: &mut HostState, player_id: PlayerId) -> Result<()>
         state.clients.retain(|client| client.player_id != player_id);
     }
 
-    state.players.retain(|player| player.id != player_id);
     state
         .race
         .players
@@ -566,117 +550,51 @@ fn set_lobby_ai_difficulty(
     player_id: Option<PlayerId>,
     difficulty: AiDifficulty,
 ) -> Result<()> {
-    if !lobby_can_manage_roster(state) {
-        bail!("AI difficulty can only be changed in the lobby");
-    }
-
-    state.ai_difficulty = difficulty;
-    let Some(player_id) = player_id else {
-        push_event(
-            state,
-            format!("New AI difficulty set to {}", difficulty.name()),
-        );
-        push_network_log(
-            &state.debug_log,
-            format!("default ai difficulty={}", difficulty.name()),
-        );
-        return Ok(());
-    };
-
-    let Some(ai) = state.ai_racers.get_mut(&player_id) else {
-        push_event(
-            state,
-            format!("New AI difficulty set to {}", difficulty.name()),
-        );
-        push_network_log(
-            &state.debug_log,
-            format!("default ai difficulty={}", difficulty.name()),
-        );
-        return Ok(());
-    };
-
     let mut rng = thread_rng();
-    ai.difficulty = difficulty;
-    ai.words_per_minute = rng.gen_range(difficulty.wpm_range());
-    let words_per_minute = ai.words_per_minute;
-    ai.char_budget = 0.0;
-    ai.last_update = Instant::now();
-    let _ = ai;
-    if let Some(player) = state
-        .players
-        .iter_mut()
-        .find(|player| player.id == player_id)
-    {
-        player.ai_difficulty = Some(difficulty.into());
-        player.ai_wpm = Some(words_per_minute.round() as u32);
-        let name = player.name.clone();
-        let _ = player;
-        push_event(state, format!("{name} set to {}", difficulty.name()));
-        push_network_log(
-            &state.debug_log,
-            format!(
-                "ai difficulty player={} difficulty={} wpm={:.0}",
-                player_id.0,
-                difficulty.name(),
-                words_per_minute
-            ),
-        );
+    let words_per_minute = rng.gen_range(difficulty.wpm_range());
+    let outcome = shared_set_lobby_ai_difficulty(
+        &mut state.players,
+        state.phase,
+        player_id,
+        difficulty.into(),
+        words_per_minute.round() as u32,
+    )?;
+
+    match outcome {
+        crate::game::lobby::LobbyAiDifficultyOutcome::DefaultChanged { .. } => {
+            state.ai_difficulty = difficulty;
+            push_event(
+                state,
+                format!("New AI difficulty set to {}", difficulty.name()),
+            );
+            push_network_log(
+                &state.debug_log,
+                format!("default ai difficulty={}", difficulty.name()),
+            );
+        }
+        crate::game::lobby::LobbyAiDifficultyOutcome::PlayerChanged {
+            player_id, name, ..
+        } => {
+            if let Some(ai) = state.ai_racers.get_mut(&player_id) {
+                ai.difficulty = difficulty;
+                ai.words_per_minute = words_per_minute;
+                ai.char_budget = 0.0;
+                ai.last_update = Instant::now();
+            }
+            push_event(state, format!("{name} set to {}", difficulty.name()));
+            push_network_log(
+                &state.debug_log,
+                format!(
+                    "ai difficulty player={} difficulty={} wpm={:.0}",
+                    player_id.0,
+                    difficulty.name(),
+                    words_per_minute
+                ),
+            );
+        }
     }
 
     Ok(())
-}
-
-fn next_ai_name(players: &[LobbyPlayer]) -> String {
-    let mut index = 1;
-    loop {
-        let name = format!("ai-{index}");
-        if !players
-            .iter()
-            .any(|player| player.name.eq_ignore_ascii_case(&name))
-        {
-            return name;
-        }
-        index += 1;
-    }
-}
-
-fn unique_player_name(requested_name: &str, players: &[LobbyPlayer]) -> String {
-    let base_name = requested_name.trim();
-    if !connected_name_exists(base_name, players) {
-        return base_name.to_string();
-    }
-
-    let mut suffix = 2;
-    loop {
-        let candidate = format!("{base_name}{suffix}");
-        if !connected_name_exists(&candidate, players) {
-            return candidate;
-        }
-        suffix += 1;
-    }
-}
-
-fn connected_name_exists(name: &str, players: &[LobbyPlayer]) -> bool {
-    players
-        .iter()
-        .any(|player| player.connected && player.name.eq_ignore_ascii_case(name))
-}
-
-fn new_human_lobby_player(
-    id: PlayerId,
-    name: impl Into<String>,
-    color: AssignedColor,
-) -> LobbyPlayer {
-    LobbyPlayer {
-        id,
-        name: name.into(),
-        kind: PlayerKind::Human,
-        color,
-        ready: id == PlayerId(1),
-        connected: true,
-        ai_difficulty: None,
-        ai_wpm: None,
-    }
 }
 
 fn read_join_hello(stream: &TcpStream) -> Result<JoinHello> {
@@ -754,10 +672,6 @@ fn welcome_joiner(
     Ok(write_stream)
 }
 
-fn connected_player_count(players: &[LobbyPlayer]) -> usize {
-    players.iter().filter(|player| player.connected).count()
-}
-
 fn current_race_connected_player_count(state: &HostState) -> usize {
     state
         .race
@@ -765,26 +679,6 @@ fn current_race_connected_player_count(state: &HostState) -> usize {
         .iter()
         .filter(|player| player.connected)
         .count()
-}
-
-fn first_available_player_id(players: &[LobbyPlayer], start_at: u64) -> PlayerId {
-    let mut id = start_at;
-    while players.iter().any(|player| player.id == PlayerId(id)) {
-        id += 1;
-    }
-    PlayerId(id)
-}
-
-fn first_available_color(players: &[LobbyPlayer]) -> AssignedColor {
-    COLOR_ROTATION
-        .iter()
-        .copied()
-        .find(|color| {
-            !players
-                .iter()
-                .any(|player| player.connected && player.color == *color)
-        })
-        .expect("color rotation covers the configured player limit")
 }
 
 fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mutex<HostState>>) {
@@ -809,19 +703,27 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
             }
             ClientMessage::SetReady { ready } => {
                 let mut state = state.lock().expect("host state poisoned");
-                if let Some(player) = state
-                    .players
-                    .iter_mut()
-                    .find(|player| player.id == player_id)
-                {
-                    let name = player.name.clone();
-                    player.ready = ready;
-                    server_println!("{} is {}", name, if ready { "ready" } else { "not ready" });
-                    push_event(
-                        &mut state,
-                        format!("{} {}", name, if ready { "ready" } else { "not ready" }),
-                    );
-                    push_network_log(&state.debug_log, format!("{name} ready={ready}"));
+                match shared_set_lobby_ready(&mut state.players, player_id, ready) {
+                    Ok(outcome) => {
+                        server_println!(
+                            "{} is {}",
+                            outcome.name,
+                            if outcome.ready { "ready" } else { "not ready" }
+                        );
+                        push_event(
+                            &mut state,
+                            format!(
+                                "{} {}",
+                                outcome.name,
+                                if outcome.ready { "ready" } else { "not ready" }
+                            ),
+                        );
+                        push_network_log(
+                            &state.debug_log,
+                            format!("{} ready={}", outcome.name, outcome.ready),
+                        );
+                    }
+                    Err(error) => push_event(&mut state, error.to_string()),
                 }
                 print_lobby_snapshot(&state.players);
                 if let Err(error) = broadcast_lobby_snapshot(&mut state) {
@@ -950,55 +852,25 @@ fn rename_lobby_player(
     player_id: PlayerId,
     requested_name: &str,
 ) -> Result<()> {
-    if !matches!(
-        state.phase,
-        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
-    ) {
-        bail!("Renaming is only available in the lobby");
-    }
-
-    let requested_name = requested_name.trim();
-    if requested_name.is_empty() {
-        bail!("Name cannot be empty");
-    }
-
-    let existing_name = state
-        .players
-        .iter()
-        .find(|player| {
-            player.id == player_id && player.connected && player.kind == PlayerKind::Human
-        })
-        .map(|player| player.name.clone())
-        .context("Player is no longer in the lobby")?;
-    let other_players = state
-        .players
-        .iter()
-        .filter(|player| player.id != player_id)
-        .cloned()
-        .collect::<Vec<_>>();
-    let new_name = unique_player_name(requested_name, &other_players);
-
-    if let Some(player) = state
-        .players
-        .iter_mut()
-        .find(|player| player.id == player_id)
-    {
-        player.name = new_name.clone();
-    }
+    let outcome =
+        shared_rename_lobby_player(&mut state.players, state.phase, player_id, requested_name)?;
     if let Some(racer) = state
         .race
         .players
         .iter_mut()
         .find(|racer| racer.id == RacePlayerId(player_id.0))
     {
-        racer.name = new_name.clone();
+        racer.name = outcome.new_name.clone();
     }
-    push_event(state, format!("{existing_name} renamed to {new_name}"));
+    push_event(
+        state,
+        format!("{} renamed to {}", outcome.previous_name, outcome.new_name),
+    );
     push_network_log(
         &state.debug_log,
         format!(
-            "player={} renamed {existing_name} -> {new_name}",
-            player_id.0
+            "player={} renamed {} -> {}",
+            outcome.player_id.0, outcome.previous_name, outcome.new_name
         ),
     );
 
@@ -1172,17 +1044,7 @@ fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
     let track = Track::generate(&state.word_list, word_count)
         .context("failed to generate rematch track")?;
     let now = Instant::now();
-    let participants = state
-        .players
-        .iter()
-        .filter(|player| player.connected && player.ready)
-        .map(|player| RaceParticipant {
-            id: RacePlayerId(player.id.0),
-            name: player.name.clone(),
-            color: player.color.into(),
-            connected: player.connected,
-        })
-        .collect::<Vec<_>>();
+    let participants = ready_connected_participants(&state.players);
     state.race = RaceState::from_participants(track, participants, now);
     reset_network_ai_timing(state, now);
 
@@ -2052,15 +1914,19 @@ fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
     expire_bonus_cooldowns(state, now);
 
     state.snapshot_sequence += 1;
-    RaceSnapshot {
-        sequence: state.snapshot_sequence,
-        phase: state.phase,
-        mod_config: (&state.active_mod_config).into(),
-        track_words: state.race.track.words.clone(),
-        bonuses: build_bonus_snapshots(&state.bonuses, now),
-        players: build_player_snapshots(state, now),
-        events: state.events.clone(),
-    }
+    build_shared_race_snapshot(
+        RaceSnapshotInput {
+            sequence: state.snapshot_sequence,
+            phase: state.phase,
+            mod_config: (&state.active_mod_config).into(),
+            race: &state.race,
+            bonuses: &state.bonuses,
+            player_effects: &state.runtime.player_effects,
+            events: state.events.clone(),
+            now,
+        },
+        |player_id| player_kind(state, player_id),
+    )
 }
 
 fn build_race_delta_snapshot(state: &mut HostState) -> RaceDeltaSnapshot {
@@ -2068,111 +1934,18 @@ fn build_race_delta_snapshot(state: &mut HostState) -> RaceDeltaSnapshot {
     expire_bonus_cooldowns(state, now);
 
     state.snapshot_sequence += 1;
-    RaceDeltaSnapshot {
-        sequence: state.snapshot_sequence,
-        phase: state.phase,
-        bonuses: build_bonus_snapshots(&state.bonuses, now),
-        players: build_player_snapshots(state, now),
-        events: state.events.clone(),
-    }
-}
-
-fn build_player_snapshots(state: &HostState, now: Instant) -> Vec<PlayerSnapshot> {
-    state
-        .race
-        .players
-        .iter()
-        .map(|player| {
-            let player_id = PlayerId(player.id.0);
-            let effects = state
-                .runtime
-                .player_effects
-                .get(&RacePlayerId(player_id.0))
-                .cloned()
-                .unwrap_or_default();
-            PlayerSnapshot {
-                id: player_id,
-                name: player.name.clone(),
-                kind: player_kind(state, player_id),
-                color: player.color.into(),
-                word_index: player.state.word_index,
-                input: player.state.input.clone(),
-                typo_index: player.state.typo_index,
-                word_overrides: player
-                    .state
-                    .word_overrides
-                    .iter()
-                    .map(|(word_index, word)| WordOverrideSnapshot {
-                        word_index: *word_index,
-                        word: word.clone(),
-                    })
-                    .collect(),
-                finished: player.state.is_finished(),
-                connected: player.connected,
-                shielded: player.state.has_active_shield(now),
-                focused: player.state.has_active_focus(now),
-                inked: player.state.is_inked_at(now),
-                boosted: player_has_active_mushroom_effect(player, now),
-                stunned: effects.stunned_until.is_some_and(|until| until > now),
-                impact_remaining_ms: remaining_ms(effects.impact_cue.map(|cue| cue.until), now),
-                impact_cue: build_impact_cue_snapshot(effects.impact_cue, now),
-                item_cue: build_item_cue_snapshot(effects.item_cue.clone(), now),
-            }
-        })
-        .collect()
-}
-
-fn remaining_ms(until: Option<Instant>, now: Instant) -> u64 {
-    until
-        .filter(|until| *until > now)
-        .map(|until| until.saturating_duration_since(now).as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn build_item_cue_snapshot(cue: Option<RaceItemCue>, now: Instant) -> Option<ItemCueSnapshot> {
-    let cue = cue.filter(|cue| cue.until > now)?;
-    Some(ItemCueSnapshot {
-        kind: match cue.kind {
-            RaceItemCueKind::Banana { direction } => ItemCueSnapshotKind::Banana {
-                direction: network_attack_direction(direction),
-            },
-            RaceItemCueKind::Cyclone { direction } => ItemCueSnapshotKind::Cyclone {
-                direction: network_attack_direction(direction),
-            },
-            RaceItemCueKind::SquidInk => ItemCueSnapshotKind::SquidInk,
+    build_shared_race_delta_snapshot(
+        RaceDeltaSnapshotInput {
+            sequence: state.snapshot_sequence,
+            phase: state.phase,
+            race: &state.race,
+            bonuses: &state.bonuses,
+            player_effects: &state.runtime.player_effects,
+            events: state.events.clone(),
+            now,
         },
-        ascii_label: cue.ascii_label,
-        unicode_label: cue.unicode_label,
-        placement: match cue.placement {
-            RaceItemCuePlacement::Before => ItemCuePlacementSnapshot::Before,
-            RaceItemCuePlacement::After => ItemCuePlacementSnapshot::After,
-        },
-        remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
-    })
-}
-
-fn build_impact_cue_snapshot(
-    cue: Option<RaceImpactCue>,
-    now: Instant,
-) -> Option<ImpactCueSnapshot> {
-    let cue = cue.filter(|cue| cue.until > now)?;
-    Some(ImpactCueSnapshot {
-        kind: match cue.kind {
-            RaceImpactCueKind::Banana => ImpactCueSnapshotKind::Banana,
-            RaceImpactCueKind::Cyclone => ImpactCueSnapshotKind::Cyclone,
-            RaceImpactCueKind::SquidInk => ImpactCueSnapshotKind::SquidInk,
-            RaceImpactCueKind::ShieldBlock => ImpactCueSnapshotKind::ShieldBlock,
-        },
-        remaining_ms: cue.until.saturating_duration_since(now).as_millis() as u64,
-    })
-}
-
-fn network_attack_direction(direction: AttackDirection) -> AttackDirectionSnapshot {
-    match direction {
-        AttackDirection::Ahead => AttackDirectionSnapshot::Ahead,
-        AttackDirection::Behind => AttackDirectionSnapshot::Behind,
-        AttackDirection::Overlap => AttackDirectionSnapshot::Overlap,
-    }
+        |player_id| player_kind(state, player_id),
+    )
 }
 
 fn player_kind(state: &HostState, player_id: PlayerId) -> PlayerKind {
@@ -2182,35 +1955,6 @@ fn player_kind(state: &HostState, player_id: PlayerId) -> PlayerKind {
         .find(|player| player.id == player_id)
         .map(|player| player.kind)
         .unwrap_or(PlayerKind::Human)
-}
-
-fn build_bonus_snapshots(bonuses: &BonusState, now: Instant) -> Vec<BonusPointSnapshot> {
-    bonuses
-        .points
-        .iter()
-        .map(|point| BonusPointSnapshot {
-            after_word_index: point.after_word_index,
-            choices: point
-                .choices
-                .iter()
-                .map(|choice| BonusChoiceSnapshot {
-                    word: choice.word.clone(),
-                    status: match choice.status {
-                        BonusChoiceStatus::Available => BonusChoiceSnapshotStatus::Available,
-                        BonusChoiceStatus::Cooldown { until } if until <= now => {
-                            BonusChoiceSnapshotStatus::Available
-                        }
-                        BonusChoiceStatus::Cooldown { until } => {
-                            BonusChoiceSnapshotStatus::Cooldown {
-                                remaining_ms: until.saturating_duration_since(now).as_millis()
-                                    as u64,
-                            }
-                        }
-                    },
-                })
-                .collect(),
-        })
-        .collect()
 }
 
 fn protocol_key_to_action(key: ProtocolKey) -> KeyAction {
@@ -2268,22 +2012,22 @@ mod tests {
 
     use super::{
         AssignedColor, ConnectedClient, HostState, NetworkAiRacer, NetworkRacePhase,
-        POST_FIRST_FINISH_TIMEOUT, PlayerId, RaceImpactCueKind, activate_network_pickup,
-        add_lobby_ai_racer, add_network_ai_racers, advance_network_ai_racers,
-        apply_network_key_input, broadcast_lobby_snapshot, broadcast_race_results_once,
-        broadcast_race_snapshot, build_race_result_rows, build_race_snapshot,
-        cleanup_disconnected_waiting_players, client_is_in_current_race, connected_player_count,
-        first_available_color, handle_client_messages, handle_player_disconnect,
-        new_human_lobby_player, push_event, read_join_hello, reconcile_phase_after_disconnect,
-        remove_lobby_player, rename_lobby_player, reset_race_from_lobby, return_to_lobby,
-        set_lobby_ai_difficulty, unique_player_name, update_host_ready, update_race_status,
-        validate_host_capacity, welcome_joiner,
+        POST_FIRST_FINISH_TIMEOUT, PlayerId, activate_network_pickup, add_lobby_ai_racer,
+        add_network_ai_racers, advance_network_ai_racers, apply_network_key_input,
+        broadcast_lobby_snapshot, broadcast_race_results_once, broadcast_race_snapshot,
+        build_race_result_rows, build_race_snapshot, cleanup_disconnected_waiting_players,
+        client_is_in_current_race, connected_player_count, first_available_color,
+        handle_client_messages, handle_player_disconnect, new_human_lobby_player, push_event,
+        read_join_hello, reconcile_phase_after_disconnect, remove_lobby_player,
+        rename_lobby_player, reset_race_from_lobby, return_to_lobby, set_lobby_ai_difficulty,
+        unique_lobby_name, update_host_ready, update_race_status, validate_host_capacity,
+        welcome_joiner,
     };
     use crate::game::{
         ai::AiDifficulty,
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         effects::ActiveEffect,
-        item_effects::RaceItemEffectState,
+        item_effects::{RaceImpactCueKind, RaceItemEffectState},
         items::{HeldItem, ItemActivation, ItemDefinition, ItemPickup, ItemRegistry},
         mods::{ActiveModConfig, ContentMetadata},
         race::{PlayerColorId, RacePlayerId, RaceRuntimeState, RaceState},
@@ -2364,14 +2108,14 @@ mod tests {
 
     #[test]
     fn duplicate_human_names_get_numbered_suffixes() {
-        let players = vec![
+        let players = [
             lobby_player(PlayerId(1), "tom", PlayerKind::Human, true),
             lobby_player(PlayerId(2), "Tom2", PlayerKind::Human, true),
             lobby_player(PlayerId(3), "tom3", PlayerKind::Human, false),
         ];
 
-        assert_eq!(unique_player_name("tom", &players), "tom3");
-        assert_eq!(unique_player_name("alex", &players), "alex");
+        assert_eq!(unique_lobby_name(players.iter(), "tom"), "tom3");
+        assert_eq!(unique_lobby_name(players.iter(), "alex"), "alex");
     }
 
     #[test]
@@ -2549,7 +2293,7 @@ mod tests {
         ];
 
         assert_eq!(connected_player_count(&players), 1);
-        assert_eq!(first_available_color(&players), AssignedColor::Red);
+        assert_eq!(first_available_color(&players), Some(AssignedColor::Red));
     }
 
     #[test]
