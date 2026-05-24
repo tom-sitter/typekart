@@ -20,10 +20,7 @@ use crate::game::{
 };
 use crate::net::{log::push_network_log, protocol::PlayerId};
 
-use super::{
-    HostState, activate_network_pickup, player_input_is_paused, player_label, player_name,
-    push_event,
-};
+use super::{HostState, host_items, player_input_is_paused, player_label, player_name, push_event};
 
 pub(super) fn apply_network_key_input(
     state: &mut HostState,
@@ -207,7 +204,7 @@ fn handle_network_bonus_claim_outcome(
                 &state.debug_log,
                 format!("{name} picked up {item_name} from network bonus"),
             );
-            activate_network_pickup(state, player_id, item, now);
+            host_items::activate_network_pickup(state, player_id, item, now);
         }
         None => {
             push_event(state, format!("{name} missed the bonus"));

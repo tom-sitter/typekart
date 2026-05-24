@@ -384,6 +384,9 @@ Progress:
 - `src/net/server/host_bonus.rs` now owns network-host bonus adapter flow around
   shared `bonus_flow`: human bonus input, AI bonus claims, bonus feed/log text,
   item roll context, and handoff to network item activation.
+- `src/net/server/host_items.rs` now owns network-host item side effects around
+  shared `item_effects`: item activation reports, interrupted bonus cleanup,
+  AI typing budget resets, mushroom advancement, and item event logging.
 
 ## Suggested Order
 

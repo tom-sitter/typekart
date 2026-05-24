@@ -1,7 +1,7 @@
 //! Authoritative TCP host for multiplayer races.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::{self, BufRead, BufReader},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::{
@@ -24,8 +24,7 @@ use crate::game::{
     input_rules::{
         player_input_is_paused as shared_player_input_is_paused, player_input_is_paused_or_finished,
     },
-    item_effects::{activate_item_pickup, advance_mushrooms},
-    items::{ItemPickup, ItemRegistry},
+    items::ItemRegistry,
     lobby::{
         LOBBY_COLOR_ROTATION, add_ai_lobby_player as shared_add_ai_lobby_player,
         color_for_lobby_slot, connected_player_count, first_available_color,
@@ -62,8 +61,11 @@ use super::protocol::{
 use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
 mod host_bonus;
+mod host_items;
 #[cfg(test)]
 use host_bonus::apply_network_key_input;
+#[cfg(test)]
+use host_items::activate_network_pickup;
 
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(100);
@@ -1126,53 +1128,6 @@ fn player_input_is_paused(state: &HostState, player_id: PlayerId, now: Instant) 
     )
 }
 
-fn activate_network_pickup(
-    state: &mut HostState,
-    player_id: PlayerId,
-    item: ItemPickup,
-    now: Instant,
-) {
-    let ai_players = state
-        .ai_racers
-        .keys()
-        .map(|player_id| RacePlayerId(player_id.0))
-        .collect::<HashSet<_>>();
-    let report = activate_item_pickup(
-        &mut state.race,
-        &mut state.runtime.player_effects,
-        &ai_players,
-        &state.item_registry,
-        RacePlayerId(player_id.0),
-        item,
-        now,
-    );
-
-    for interrupted in report.interrupted_players {
-        state
-            .runtime
-            .bonus_attempts
-            .remove(&PlayerId(interrupted.0));
-    }
-    for ai_id in report.reset_ai_players {
-        if let Some(ai) = state.ai_racers.get_mut(&PlayerId(ai_id.0)) {
-            ai.char_budget = 0.0;
-        }
-    }
-    for event in report.events {
-        push_network_log(&state.debug_log, event.clone());
-        push_event(state, event);
-    }
-}
-
-fn advance_network_mushrooms(state: &mut HostState, now: Instant) {
-    for interrupted in advance_mushrooms(&mut state.race, now) {
-        state
-            .runtime
-            .bonus_attempts
-            .remove(&PlayerId(interrupted.0));
-    }
-}
-
 fn advance_network_ai_racers(state: &mut HostState, now: Instant) {
     if state.phase != NetworkRacePhase::Racing {
         reset_network_ai_timing(state, now);
@@ -1330,7 +1285,7 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
             }
 
             let now = Instant::now();
-            advance_network_mushrooms(&mut state, now);
+            host_items::advance_network_mushrooms(&mut state, now);
             advance_network_ai_racers(&mut state, now);
             update_race_status(&mut state, now);
             let expired_choices = expire_bonus_cooldowns(&mut state, now);
