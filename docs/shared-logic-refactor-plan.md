@@ -364,10 +364,10 @@ Candidate extractions:
   race-flow outcomes and result snapshots.
 - `src/net/host_lobby.rs`: TCP-specific lobby side effects around shared lobby
   policy, including client kicks and lobby snapshot broadcasts.
-- `src/net/host_ai.rs`: network-specific AI timing map and debug logging around
-  shared `ai_driver`.
-- `src/net/host_bonus.rs`: network-specific event/log handling around shared
-  `bonus_flow`.
+- `src/net/server/host_ai.rs`: network-specific AI timing map and debug
+  logging around shared `ai_driver` and shared lobby AI policy.
+- `src/net/server/host_bonus.rs`: network-specific event/log handling around
+  shared `bonus_flow`.
 
 Constraint:
 
@@ -387,6 +387,10 @@ Progress:
 - `src/net/server/host_items.rs` now owns network-host item side effects around
   shared `item_effects`: item activation reports, interrupted bonus cleanup,
   AI typing budget resets, mushroom advancement, and item event logging.
+- `src/net/server/host_ai.rs` now owns network-host AI roster and race ticking
+  around shared `lobby` and `ai_driver`: initial bot creation, lobby add/remove
+  difficulty tuning, countdown timing resets, bonus-claim attempts, typing
+  budget advancement, and AI finish events.
 
 ## Suggested Order
 
