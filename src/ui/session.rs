@@ -21,6 +21,8 @@ use crate::game::{
     },
     mods::ActiveModConfig,
     player::PlayerState,
+    race::{PlayerColorId, RaceLifecycleState, RacePlayer, RacePlayerId, RaceState},
+    race_flow::advance_race_flow,
     track::{Track, WordList},
     typing::{KeyAction, TypingEvent, apply_key, first_typo_index},
 };
@@ -272,6 +274,17 @@ fn next_local_ai_id(ai_racers: &[AiRacer]) -> usize {
         id += 1;
     }
     id
+}
+
+fn local_ai_color(id: usize) -> PlayerColorId {
+    match id % 6 {
+        1 => PlayerColorId::Red,
+        2 => PlayerColorId::Green,
+        3 => PlayerColorId::Blue,
+        4 => PlayerColorId::Yellow,
+        5 => PlayerColorId::Magenta,
+        _ => PlayerColorId::Cyan,
+    }
 }
 
 impl LocalSession {
@@ -659,31 +672,41 @@ impl LocalSession {
             return;
         }
 
-        if self.race_status.first_finished_at.is_none() {
-            self.race_status.first_finished_at = self.first_finished_at();
-        }
-
-        let Some(first_finished_at) = self.race_status.first_finished_at else {
-            return;
+        let race = self.shared_race_state();
+        let mut lifecycle = RaceLifecycleState {
+            placements: Vec::new(),
+            first_finished_at: self.race_status.first_finished_at,
         };
+        let outcome = advance_race_flow(&mut lifecycle, &race, now, POST_FIRST_FINISH_TIMEOUT);
+        self.race_status.first_finished_at = lifecycle.first_finished_at;
 
-        if self.all_racers_finished()
-            || now.saturating_duration_since(first_finished_at) >= POST_FIRST_FINISH_TIMEOUT
-        {
+        if outcome.finished.is_some() {
             self.race_status.ended_at = Some(now);
             self.events.push("Race ended");
         }
     }
 
-    fn first_finished_at(&self) -> Option<Instant> {
-        std::iter::once(self.player.finished_at)
-            .chain(self.ai_racers.iter().map(|ai| ai.player.finished_at))
-            .flatten()
-            .min()
-    }
+    fn shared_race_state(&self) -> RaceState {
+        let mut players = Vec::with_capacity(self.ai_racers.len() + 1);
+        players.push(RacePlayer {
+            id: RacePlayerId(1),
+            name: "you".to_string(),
+            color: PlayerColorId::Cyan,
+            state: self.player.clone(),
+            connected: true,
+        });
+        players.extend(self.ai_racers.iter().map(|ai| RacePlayer {
+            id: RacePlayerId((ai.id + 1) as u64),
+            name: ai.name.clone(),
+            color: local_ai_color(ai.id),
+            state: ai.player.clone(),
+            connected: true,
+        }));
 
-    fn all_racers_finished(&self) -> bool {
-        self.player.is_finished() && self.ai_racers.iter().all(|ai| ai.player.is_finished())
+        RaceState {
+            track: self.track.clone(),
+            players,
+        }
     }
 
     fn tick_ai_racers(&mut self, now: Instant) {

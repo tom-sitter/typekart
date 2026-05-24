@@ -25,22 +25,21 @@ use typekart::game::{
         set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
     },
     player::PlayerState,
-    race::{
-        PlayerColorId, RacePlayer, RacePlayerId, RaceState, RaceRuntimeState,
-        build_race_result_rows as build_shared_race_result_rows,
-    },
-    race_flow::{race_flow_is_finished, update_race_flow},
+    race::{PlayerColorId, RacePlayer, RacePlayerId, RaceState, RaceRuntimeState},
+    race_flow::{advance_race_flow, update_race_flow},
     snapshot::{
-        RaceSnapshotInput, assigned_color, build_bonus_snapshots, build_player_snapshots,
-        build_race_snapshot, player_color_id,
+        RaceSnapshotInput, build_bonus_snapshots,
+        build_placement_snapshots as build_shared_placement_snapshots, build_player_snapshots,
+        build_race_result_snapshots as build_shared_race_result_snapshots, build_race_snapshot,
+        player_color_id,
     },
     track::{Track, WordList},
     typing::KeyAction,
 };
 use typekart_protocol::{
     AiDifficultySnapshot, AssignedColor, ClientMessage, LobbyPlayer, ModConfigSnapshot,
-    NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey, RaceResultStatus, RaceSnapshot,
-    RelayClientMessage, RelayServerMessage, RoomCode, ServerMessage,
+    NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey, RaceSnapshot, RelayClientMessage,
+    RelayServerMessage, RoomCode, ServerMessage,
 };
 
 use crate::fixtures::{GalleryFrame, LobbyFrame, ResultsFrame};
@@ -1085,14 +1084,14 @@ fn browser_update_race_status(state: &mut BrowserHostLobby, now: Instant) -> boo
         return false;
     };
 
-    let update = update_race_flow(
+    let outcome = advance_race_flow(
         &mut state.runtime.lifecycle,
         core_race,
         now,
         BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
     );
 
-    if !race_flow_is_finished(&update) {
+    if outcome.finished.is_none() {
         return false;
     }
 
@@ -1104,47 +1103,23 @@ fn browser_finish_race(state: &mut BrowserHostLobby) {
     let Some(core_race) = &state.core_race else {
         return;
     };
-    let rows = build_shared_race_result_rows(core_race, &state.runtime.lifecycle.placements, Instant::now())
-        .into_iter()
-        .map(|row| typekart_protocol::RaceResultRow {
-            placement: row.placement,
-            player_id: PlayerId(row.player_id.0),
-            name: row.name,
-            color: assigned_color(row.color),
-            status: match row.status {
-                typekart::game::race::RaceResultStatus::Finished => RaceResultStatus::Finished,
-                typekart::game::race::RaceResultStatus::TimedOut => RaceResultStatus::TimedOut,
-                typekart::game::race::RaceResultStatus::Disconnected => {
-                    RaceResultStatus::Disconnected
-                }
-            },
-            progress_words: row.progress_words,
-            track_words: row.track_words,
-            wpm: row.wpm,
-            accuracy_percent: row.accuracy_percent,
-            typo_chars: row.typo_chars,
-            backspaces: row.backspaces,
-        })
-        .collect();
+    let rows = build_shared_race_result_snapshots(
+        core_race,
+        &state.runtime.lifecycle.placements,
+        Instant::now(),
+    );
     if let Some(snapshot) = &mut state.active_race {
         snapshot.phase = NetworkRacePhase::Finished;
         snapshot.events = vec!["Race finished".to_string()];
     }
     state.active_results = Some(ResultsFrame {
-        placements: browser_protocol_placements(&state.runtime.lifecycle.placements),
+        placements: build_shared_placement_snapshots(&state.runtime.lifecycle.placements),
         rows,
         events: vec!["Race finished".to_string()],
     });
     state.active_race = None;
     state.ai_char_budget.clear();
     state.ai_last_tick_ms = None;
-}
-
-fn browser_protocol_placements(placements: &[RacePlayerId]) -> Vec<PlayerId> {
-    placements
-        .iter()
-        .map(|player_id| PlayerId(player_id.0))
-        .collect()
 }
 
 fn browser_host_ai_elapsed_ms(state: &mut BrowserHostLobby, tick_ms: u32) -> f64 {
@@ -1359,6 +1334,7 @@ mod tests {
     use typekart::game::bonus::{BonusChoice, BonusPoint, BonusState};
     use typekart::game::items::{HeldItem, ItemPickup};
     use typekart::game::race::RacePlayerId;
+    use typekart_protocol::RaceResultStatus;
 
 
 #[test]
@@ -1512,6 +1488,10 @@ fn browser_host_race_snapshot_uses_lobby_racers() {
 fn browser_host_race_key_input_advances_words() {
     let room = RoomCode::parse("rocket-salad-tiger").unwrap();
     let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+    lobby
+        .item_registry
+        .items
+        .retain(|item| item.id.as_str() == "banana");
     let racers = vec![lobby.players[0].clone()];
     lobby.active_race = Some(browser_host_race_snapshot(
         1,

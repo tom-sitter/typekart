@@ -323,6 +323,57 @@ Validation:
 - Existing terminal renderer tests should move toward shared view-model tests.
 - Browser renderer tests should assert against the same view-model output.
 
+### 8. Local Session Shared Engine Migration
+
+Goal: move single-player/local terminal rules onto the same shared race engine
+used by network and browser hosts.
+
+Current issue:
+
+- `src/ui/session.rs` still owns bespoke local versions of several gameplay
+  rules that now exist in shared modules.
+- This makes local play the most likely place for old bugs to reappear after
+  network/browser fixes.
+
+Migration targets:
+
+- Race lifecycle and timeout policy.
+- AI driver state and WPM advancement.
+- Bonus attempt state and claim resolution.
+- Item effect mutation and impact cues.
+- Result row construction.
+
+Progress:
+
+- Local race-end status now builds a temporary shared `RaceState` and advances
+  lifecycle through `src/game/race_flow.rs`, so local play uses the same
+  all-finished and post-first-finish timeout policy as network/browser races.
+
+Validation:
+
+- Local session finish/timeout tests.
+- Full `ui::session` test module.
+
+### 9. Network Host Module Split
+
+Goal: shrink `src/net/server.rs` without moving rules back out of shared code.
+
+Candidate extractions:
+
+- `src/net/host_lifecycle.rs`: host-only broadcast sequencing around shared
+  race-flow outcomes and result snapshots.
+- `src/net/host_lobby.rs`: TCP-specific lobby side effects around shared lobby
+  policy, including client kicks and lobby snapshot broadcasts.
+- `src/net/host_ai.rs`: network-specific AI timing map and debug logging around
+  shared `ai_driver`.
+- `src/net/host_bonus.rs`: network-specific event/log handling around shared
+  `bonus_flow`.
+
+Constraint:
+
+- These modules should not own gameplay policy. They should orchestrate
+  transport, logging, and adapter state around shared `src/game` helpers.
+
 ## Suggested Order
 
 1. Split `web/typekart-web/src/main.rs` into smaller modules.
@@ -332,6 +383,9 @@ Validation:
 5. Extract shared lobby policy.
 6. Consolidate rematch/result orchestration through the shared facade.
 7. Extract renderer view-model helpers only after gameplay parity is stable.
+8. Migrate local terminal session rules to shared gameplay modules.
+9. Split network host adapter modules after shared ownership boundaries are
+   clear.
 
 ## Out Of Scope For This Refactor
 

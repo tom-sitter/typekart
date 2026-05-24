@@ -10,7 +10,8 @@ use typekart_protocol::{
     AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshot, BonusChoiceSnapshotStatus,
     BonusPointSnapshot, ImpactCueSnapshot, ImpactCueSnapshotKind, ItemCuePlacementSnapshot,
     ItemCueSnapshot, ItemCueSnapshotKind, ModConfigSnapshot, NetworkRacePhase, PlayerId,
-    PlayerKind, PlayerSnapshot, RaceDeltaSnapshot, RaceSnapshot, WordOverrideSnapshot,
+    PlayerKind, PlayerSnapshot, RaceDeltaSnapshot, RaceResultRow as ProtocolRaceResultRow,
+    RaceResultStatus as ProtocolRaceResultStatus, RaceSnapshot, WordOverrideSnapshot,
 };
 
 use super::{
@@ -19,7 +20,7 @@ use super::{
         AttackDirection, RaceImpactCue, RaceImpactCueKind, RaceItemCue, RaceItemCueKind,
         RaceItemCuePlacement, RaceItemEffectState, player_has_active_mushroom_effect,
     },
-    race::{PlayerColorId, RacePlayerId, RaceState},
+    race::{PlayerColorId, RacePlayerId, RaceResultStatus, RaceState, build_race_result_rows},
 };
 
 pub struct RaceSnapshotInput<'a> {
@@ -142,6 +143,36 @@ pub fn build_bonus_snapshots(bonuses: &BonusState, now: Instant) -> Vec<BonusPoi
         .collect()
 }
 
+pub fn build_race_result_snapshots(
+    race: &RaceState,
+    placements: &[RacePlayerId],
+    now: Instant,
+) -> Vec<ProtocolRaceResultRow> {
+    build_race_result_rows(race, placements, now)
+        .into_iter()
+        .map(|row| ProtocolRaceResultRow {
+            placement: row.placement,
+            player_id: PlayerId(row.player_id.0),
+            name: row.name,
+            color: assigned_color(row.color),
+            status: protocol_result_status(row.status),
+            progress_words: row.progress_words,
+            track_words: row.track_words,
+            wpm: row.wpm,
+            accuracy_percent: row.accuracy_percent,
+            typo_chars: row.typo_chars,
+            backspaces: row.backspaces,
+        })
+        .collect()
+}
+
+pub fn build_placement_snapshots(placements: &[RacePlayerId]) -> Vec<PlayerId> {
+    placements
+        .iter()
+        .map(|player_id| PlayerId(player_id.0))
+        .collect()
+}
+
 pub fn build_item_cue_snapshot(cue: Option<RaceItemCue>, now: Instant) -> Option<ItemCueSnapshot> {
     let cue = cue.filter(|cue| cue.until > now)?;
     Some(ItemCueSnapshot {
@@ -202,6 +233,14 @@ pub fn player_color_id(color: AssignedColor) -> PlayerColorId {
     }
 }
 
+fn protocol_result_status(status: RaceResultStatus) -> ProtocolRaceResultStatus {
+    match status {
+        RaceResultStatus::Finished => ProtocolRaceResultStatus::Finished,
+        RaceResultStatus::TimedOut => ProtocolRaceResultStatus::TimedOut,
+        RaceResultStatus::Disconnected => ProtocolRaceResultStatus::Disconnected,
+    }
+}
+
 pub fn remaining_ms(until: Option<Instant>, now: Instant) -> u64 {
     until
         .filter(|until| *until > now)
@@ -219,9 +258,15 @@ fn attack_direction(direction: AttackDirection) -> AttackDirectionSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::Duration};
+    use std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    };
 
-    use super::{build_bonus_snapshots, build_player_snapshots};
+    use super::{
+        build_bonus_snapshots, build_placement_snapshots, build_player_snapshots,
+        build_race_result_snapshots,
+    };
     use crate::game::{
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         race::{PlayerColorId, RacePlayerId, RaceState},
@@ -272,5 +317,24 @@ mod tests {
         assert_eq!(snapshot[0].word_index, 1);
         assert_eq!(snapshot[0].input, "tw");
         assert_eq!(snapshot[0].color, typekart_protocol::AssignedColor::Cyan);
+    }
+
+    #[test]
+    fn race_result_snapshots_convert_shared_rows_to_protocol_rows() {
+        let now = Instant::now();
+        let mut race = RaceState::new(Track::new(vec!["go".to_string()]));
+        race.add_player(RacePlayerId(1), "host", PlayerColorId::Cyan, now);
+        race.players[0].state.finished_at = Some(now);
+
+        let rows = build_race_result_snapshots(&race, &[RacePlayerId(1)], now);
+        let placements = build_placement_snapshots(&[RacePlayerId(1)]);
+
+        assert_eq!(placements, vec![typekart_protocol::PlayerId(1)]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].player_id, typekart_protocol::PlayerId(1));
+        assert_eq!(
+            rows[0].status,
+            typekart_protocol::RaceResultStatus::Finished
+        );
     }
 }

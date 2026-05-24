@@ -42,14 +42,13 @@ use crate::game::{
         set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
     },
     mods::ActiveModConfig,
-    race::{
-        PlayerColorId, RaceLifecycleStatus, RacePlayerId, RaceRuntimeState, RaceState,
-        build_race_result_rows as build_shared_race_result_rows,
-    },
-    race_flow::update_race_flow,
+    race::{PlayerColorId, RacePlayerId, RaceRuntimeState, RaceState},
+    race_flow::advance_race_flow,
     snapshot::{
         RaceDeltaSnapshotInput, RaceSnapshotInput,
+        build_placement_snapshots as build_shared_placement_snapshots,
         build_race_delta_snapshot as build_shared_race_delta_snapshot,
+        build_race_result_snapshots as build_shared_race_result_snapshots,
         build_race_snapshot as build_shared_race_snapshot,
     },
     track::{Track, WordList},
@@ -59,8 +58,7 @@ use crate::game::{
 use super::log::{SharedNetworkLog, push_network_log};
 use super::protocol::{
     AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey,
-    RaceDeltaSnapshot, RaceResultRow, RaceResultStatus, RaceSnapshot, ServerMessage,
-    version_mismatch_message,
+    RaceDeltaSnapshot, RaceResultRow, RaceSnapshot, ServerMessage, version_mismatch_message,
 };
 use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
@@ -1524,6 +1522,15 @@ fn player_label(state: &HostState, player_id: PlayerId) -> String {
     player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0))
 }
 
+fn player_name(state: &HostState, id: PlayerId) -> Option<String> {
+    state
+        .race
+        .players
+        .iter()
+        .find(|player| player.id == RacePlayerId(id.0))
+        .map(|player| player.name.clone())
+}
+
 fn run_countdown(state: Arc<Mutex<HostState>>) {
     for remaining_seconds in [2, 1] {
         thread::sleep(Duration::from_secs(1));
@@ -1779,7 +1786,7 @@ fn log_race_delta(state: &HostState) {
 fn broadcast_race_results(state: &mut HostState) -> Result<()> {
     let rows = build_race_result_rows(state, Instant::now());
     let row_count = rows.len();
-    let placements = protocol_placements(&state.runtime.lifecycle.placements);
+    let placements = build_shared_placement_snapshots(&state.runtime.lifecycle.placements);
     let results = ServerMessage::RaceResults {
         placements: placements.clone(),
         rows,
@@ -1817,33 +1824,7 @@ fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
 }
 
 fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow> {
-    build_shared_race_result_rows(&state.race, &state.runtime.lifecycle.placements, now)
-        .into_iter()
-        .map(|row| RaceResultRow {
-            placement: row.placement,
-            player_id: PlayerId(row.player_id.0),
-            name: row.name,
-            color: row.color.into(),
-            status: match row.status {
-                crate::game::race::RaceResultStatus::Finished => RaceResultStatus::Finished,
-                crate::game::race::RaceResultStatus::TimedOut => RaceResultStatus::TimedOut,
-                crate::game::race::RaceResultStatus::Disconnected => RaceResultStatus::Disconnected,
-            },
-            progress_words: row.progress_words,
-            track_words: row.track_words,
-            wpm: row.wpm,
-            accuracy_percent: row.accuracy_percent,
-            typo_chars: row.typo_chars,
-            backspaces: row.backspaces,
-        })
-        .collect()
-}
-
-fn protocol_placements(placements: &[RacePlayerId]) -> Vec<PlayerId> {
-    placements
-        .iter()
-        .map(|player_id| PlayerId(player_id.0))
-        .collect()
+    build_shared_race_result_snapshots(&state.race, &state.runtime.lifecycle.placements, now)
 }
 
 fn broadcast_race_results_once(state: &mut HostState) -> Result<()> {
@@ -1862,51 +1843,37 @@ fn update_race_status(state: &mut HostState, now: Instant) {
         return;
     }
 
-    let update = update_race_flow(
+    let outcome = advance_race_flow(
         &mut state.runtime.lifecycle,
         &state.race,
         now,
         POST_FIRST_FINISH_TIMEOUT,
     );
 
-    for id in update.newly_finished {
-        let placement = state
-            .runtime
-            .lifecycle
-            .placements
-            .iter()
-            .position(|placed| *placed == id)
-            .map(|index| index + 1)
-            .unwrap_or(state.runtime.lifecycle.placements.len());
-        let name = player_name(state, PlayerId(id.0)).unwrap_or_else(|| format!("player {}", id.0));
-        push_event(state, format!("{placement}. {name} finished"));
-        push_network_log(&state.debug_log, format!("{placement}. {name} finished"));
+    for finished in outcome.newly_finished {
+        push_event(
+            state,
+            format!("{}. {} finished", finished.placement, finished.name),
+        );
+        push_network_log(
+            &state.debug_log,
+            format!("{}. {} finished", finished.placement, finished.name),
+        );
     }
 
-    if let RaceLifecycleStatus::Finished {
-        all_connected_finished,
-        all_connected_disconnected,
-        timeout_expired,
-    } = update.status
-    {
+    if let Some(summary) = outcome.finished {
         state.phase = NetworkRacePhase::Finished;
         push_event(state, "Race finished".to_string());
         push_network_log(
             &state.debug_log,
             format!(
-                "race finished all_connected_finished={all_connected_finished} all_connected_disconnected={all_connected_disconnected} timeout_expired={timeout_expired}"
+                "race finished all_connected_finished={} all_connected_disconnected={} timeout_expired={}",
+                summary.all_connected_finished,
+                summary.all_connected_disconnected,
+                summary.timeout_expired
             ),
         );
     }
-}
-
-fn player_name(state: &HostState, id: PlayerId) -> Option<String> {
-    state
-        .race
-        .players
-        .iter()
-        .find(|player| player.id == RacePlayerId(id.0))
-        .map(|player| player.name.clone())
 }
 
 fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
