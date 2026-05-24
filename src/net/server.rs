@@ -31,7 +31,6 @@ use anyhow::{Context, Result, bail};
 
 #[cfg(test)]
 use super::host_lifecycle::build_race_result_rows as build_network_race_result_rows;
-use super::host_lifecycle::build_race_results_message;
 use super::log::{SharedNetworkLog, push_network_log};
 #[cfg(test)]
 use super::protocol::RaceResultRow;
@@ -43,6 +42,7 @@ use super::transport::{read_client_message, write_server_message as write_framed
 
 mod host_ai;
 mod host_bonus;
+mod host_broadcast;
 mod host_handshake;
 mod host_input;
 mod host_items;
@@ -56,6 +56,10 @@ use host_ai::set_lobby_ai_difficulty;
 use host_ai::{add_lobby_ai_racer, add_network_ai_racers, advance_network_ai_racers};
 #[cfg(test)]
 use host_bonus::apply_network_key_input;
+use host_broadcast::{
+    broadcast_lobby_snapshot, broadcast_race_delta, broadcast_race_results_once,
+    broadcast_race_snapshot,
+};
 #[cfg(test)]
 use host_handshake::{read_join_hello, welcome_joiner};
 use host_input::NetworkInputOutcome;
@@ -658,31 +662,6 @@ fn print_lobby_snapshot(players: &[LobbyPlayer]) {
     }
 }
 
-fn broadcast_lobby_snapshot(state: &mut HostState) -> Result<()> {
-    let snapshot = ServerMessage::LobbySnapshot {
-        players: state.players.clone(),
-        host_id: PlayerId(1),
-        mod_config: (&state.active_mod_config).into(),
-        events: state.events.clone(),
-    };
-
-    let mut failed_clients = Vec::new();
-    for client in state.clients.iter_mut() {
-        if let Err(error) = write_server_message(&mut client.stream, &snapshot) {
-            server_eprintln!(
-                "Failed to send lobby snapshot to player {}: {error:#}",
-                client.player_id.0
-            );
-            failed_clients.push(client.player_id);
-        }
-    }
-
-    state
-        .clients
-        .retain(|client| !failed_clients.contains(&client.player_id));
-    Ok(())
-}
-
 fn start_countdown(state: Arc<Mutex<HostState>>) {
     let should_start = {
         let mut state = state.lock().expect("host state poisoned");
@@ -914,70 +893,6 @@ fn expire_bonus_cooldowns(state: &mut HostState, now: Instant) -> usize {
     state.bonuses.expire_cooldowns(track, now)
 }
 
-fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
-    let snapshot = ServerMessage::RaceSnapshot(host_snapshots::build_race_snapshot(state));
-    host_snapshots::log_race_snapshot(state);
-    broadcast_server_message_to_clients(state, &snapshot)
-}
-
-fn broadcast_race_delta(state: &mut HostState) -> Result<()> {
-    let delta = ServerMessage::RaceDelta(host_snapshots::build_race_delta_snapshot(state));
-    host_snapshots::log_race_delta(state);
-    broadcast_server_message_to_clients(state, &delta)
-}
-
-fn broadcast_server_message_to_clients(
-    state: &mut HostState,
-    message: &ServerMessage,
-) -> Result<()> {
-    let mut failed_clients = Vec::new();
-    for client in state.clients.iter_mut() {
-        if let Err(error) = write_server_message(&mut client.stream, message) {
-            server_eprintln!(
-                "Failed to send server message to player {}: {error:#}",
-                client.player_id.0
-            );
-            failed_clients.push(client.player_id);
-        }
-    }
-
-    state
-        .clients
-        .retain(|client| !failed_clients.contains(&client.player_id));
-    Ok(())
-}
-
-fn broadcast_race_results(state: &mut HostState) -> Result<()> {
-    let results = build_race_results_message(
-        &state.race,
-        &state.runtime.lifecycle.placements,
-        Instant::now(),
-    );
-    push_network_log(
-        &state.debug_log,
-        format!(
-            "broadcast race results placements={:?} rows={}",
-            results.placements, results.row_count
-        ),
-    );
-
-    let mut failed_clients = Vec::new();
-    for client in state.clients.iter_mut() {
-        if let Err(error) = write_server_message(&mut client.stream, &results.message) {
-            server_eprintln!(
-                "Failed to send race results to player {}: {error:#}",
-                client.player_id.0
-            );
-            failed_clients.push(client.player_id);
-        }
-    }
-
-    state
-        .clients
-        .retain(|client| !failed_clients.contains(&client.player_id));
-    Ok(())
-}
-
 #[cfg(test)]
 fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
     race.players
@@ -988,17 +903,6 @@ fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
 #[cfg(test)]
 fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow> {
     build_network_race_result_rows(&state.race, &state.runtime.lifecycle.placements, now)
-}
-
-fn broadcast_race_results_once(state: &mut HostState) -> Result<()> {
-    if state.race_results_sent {
-        push_network_log(&state.debug_log, "skipped duplicate race results broadcast");
-        return Ok(());
-    }
-
-    broadcast_race_results(state)?;
-    state.race_results_sent = true;
-    Ok(())
 }
 
 impl From<AssignedColor> for PlayerColorId {

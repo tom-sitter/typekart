@@ -368,6 +368,8 @@ Candidate extractions:
 - `src/net/server/host_snapshots.rs`: network-specific snapshot sequencing,
   bonus cooldown refresh, player-kind mapping, and snapshot broadcast logging
   around shared snapshot projection.
+- `src/net/server/host_broadcast.rs`: network-specific client fanout for lobby
+  snapshots, race snapshots/deltas, and one-shot race results.
 - `src/net/server/host_race.rs`: network-specific race lifecycle state
   mutations around shared `race_flow`, including rematch preparation and finish
   status updates.
@@ -409,6 +411,10 @@ Progress:
 - `src/net/server/host_snapshots.rs` now owns network-host snapshot adaptation
   around shared `snapshot`: sequence increments, cooldown expiry before
   projection, player-kind lookup, and snapshot/delta broadcast log messages.
+- `src/net/server/host_broadcast.rs` now owns network-host client fanout:
+  building lobby/race/result protocol messages, writing them to connected TCP
+  clients, pruning failed client streams, and preserving one-shot result
+  broadcast semantics.
 - `src/net/server/host_race.rs` now owns network-host race lifecycle mutation
   around shared `race_flow`: connected-racer counts, rematch/race reset from
   lobby participants, runtime reset, race-finish status updates, and
