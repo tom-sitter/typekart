@@ -155,15 +155,26 @@ Shared behavior:
 
 Suggested API shape:
 
-- `BonusAttemptState` in `src/game`.
-- A function that accepts `RaceState`, `BonusState`, `RaceRuntimeState`, player
-  id, key action, item registry, and current time.
-- A small event enum such as `BonusAttemptStarted`, `BonusClaimed`,
-  `BonusLost`, `BonusBailed`, and `BonusInputChanged`.
+- `src/game/bonus_flow.rs` owns `BonusAttempt`, bonus key handling, claim
+  resolution, spent-gap recording, and semantic bonus-flow events.
+- Hosts pass `RaceState`, `BonusState`, runtime attempt/spent maps, player ids,
+  key action, item roll context, item registry, current time, and RNG.
+- Hosts remain responsible for protocol-specific feed messages, debug logs,
+  snapshot broadcasting, and activating any item returned by the shared claim
+  outcome.
+
+Progress:
+
+- Terminal network-hosted races and browser-hosted races now use
+  `apply_bonus_key` for human bonus typing.
+- Network AI bonus claims now use the shared claim helper after choosing an
+  available bonus choice.
+- Existing browser/network bonus tests remain at the adapter layer, with new
+  focused rule tests in `src/game/bonus_flow.rs`.
 
 Validation:
 
-- Port existing server and browser bonus tests to shared tests first.
+- Keep expanding focused shared tests as future contested/edge cases are found.
 - Keep protocol-specific events/log strings at the adapter layer.
 
 ### 4. Shared Snapshot Builder

@@ -220,6 +220,10 @@ impl RaceState {
         self.players.iter().find(|player| player.id == id)
     }
 
+    pub fn player_mut(&mut self, id: RacePlayerId) -> Option<&mut RacePlayer> {
+        self.players.iter_mut().find(|player| player.id == id)
+    }
+
     pub fn apply_key_input(
         &mut self,
         id: RacePlayerId,

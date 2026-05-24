@@ -6,6 +6,7 @@
 pub mod ai;
 pub mod ai_driver;
 pub mod bonus;
+pub mod bonus_flow;
 pub mod effects;
 pub mod engine;
 pub mod input_rules;

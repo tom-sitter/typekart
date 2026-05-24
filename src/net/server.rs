@@ -19,7 +19,11 @@ use rand::{Rng, thread_rng};
 use crate::game::{
     ai::AiDifficulty,
     ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
-    bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
+    bonus::{BonusChoiceStatus, BonusState},
+    bonus_flow::{
+        BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key,
+        claim_active_bonus,
+    },
     input_rules::{
         player_input_is_paused as shared_player_input_is_paused, player_input_is_paused_or_finished,
     },
@@ -36,7 +40,7 @@ use crate::game::{
     },
     race_flow::update_race_flow,
     track::{Track, WordList},
-    typing::{KeyAction, first_typo_index},
+    typing::KeyAction,
 };
 
 use super::log::{SharedNetworkLog, push_network_log};
@@ -115,7 +119,7 @@ struct HostState {
     active_mod_config: ActiveModConfig,
     max_players: usize,
     ai_difficulty: AiDifficulty,
-    runtime: RaceRuntimeState<PlayerId, NetworkBonusAttempt>,
+    runtime: RaceRuntimeState<PlayerId, BonusAttempt>,
     phase: NetworkRacePhase,
     snapshot_sequence: u64,
     events: Vec<String>,
@@ -129,12 +133,6 @@ struct NetworkAiRacer {
     words_per_minute: f64,
     char_budget: f64,
     last_update: Instant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NetworkBonusAttempt {
-    point_index: usize,
-    choice_index: usize,
 }
 
 pub fn run_host(config: HostConfig) -> Result<()> {
@@ -1266,16 +1264,28 @@ fn apply_network_key_input(
         return true;
     }
 
-    if state.runtime.bonus_attempts.contains_key(&player_id) {
-        apply_network_bonus_typing_action(state, player_id, action, now);
-        return true;
-    }
-
-    if let KeyAction::Char(ch) = action
-        && let Some(attempt) = network_bonus_start(state, player_id, ch, now)
-    {
-        state.runtime.bonus_attempts.insert(player_id, attempt);
-        apply_network_bonus_char(state, player_id, ch);
+    let item_context = network_item_roll_context(state, player_id, 5);
+    let item_registry = state.item_registry.clone();
+    let mut rng = thread_rng();
+    let bonus_outcome = apply_bonus_key(
+        &mut BonusFlowState {
+            race: &mut state.race,
+            bonuses: &mut state.bonuses,
+            bonus_attempts: &mut state.runtime.bonus_attempts,
+            spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
+        },
+        player_id,
+        RacePlayerId(player_id.0),
+        action,
+        now,
+        BonusClaimRoll {
+            item_context,
+            item_registry: &item_registry,
+            rng: &mut rng,
+        },
+    );
+    if bonus_outcome.handled {
+        handle_network_bonus_events(state, player_id, bonus_outcome.events, now);
         return true;
     }
 
@@ -1285,213 +1295,80 @@ fn apply_network_key_input(
         .is_some()
 }
 
-fn apply_network_bonus_typing_action(
+fn handle_network_bonus_events(
     state: &mut HostState,
     player_id: PlayerId,
-    action: KeyAction,
+    events: Vec<BonusFlowEvent>,
     now: Instant,
 ) {
-    match action {
-        KeyAction::Char(ch) => apply_network_bonus_char(state, player_id, ch),
-        KeyAction::Backspace => {
-            let Some(player) = state
-                .race
-                .players
-                .iter_mut()
-                .find(|player| player.id == RacePlayerId(player_id.0))
-            else {
-                state.runtime.bonus_attempts.remove(&player_id);
-                return;
-            };
-
-            let previous_typo = player.state.typo_index;
-            if player.state.input.pop().is_some() {
-                player.state.stats.backspaces += 1;
+    for event in events {
+        match event {
+            BonusFlowEvent::TypoStarted => {
+                push_network_log(
+                    &state.debug_log,
+                    format!("{} bonus typo started", player_label(state, player_id)),
+                );
             }
-
-            let input_is_empty = player.state.input.is_empty();
-            let input = player.state.input.clone();
-            let _ = player;
-
-            recalculate_network_bonus_typo(state, player_id, &input);
-
-            let typo_cleared = previous_typo.is_some()
-                && state
-                    .race
-                    .player(RacePlayerId(player_id.0))
-                    .is_some_and(|player| player.state.typo_index.is_none());
-            if typo_cleared {
+            BonusFlowEvent::TypoCleared => {
                 push_network_log(
                     &state.debug_log,
                     format!("{} bonus typo cleared", player_label(state, player_id)),
                 );
             }
-            if input_is_empty {
-                state.runtime.bonus_attempts.remove(&player_id);
+            BonusFlowEvent::AttemptCancelled => {
                 push_network_log(
                     &state.debug_log,
                     format!("{} bonus attempt cancelled", player_label(state, player_id)),
                 );
             }
-        }
-        KeyAction::Space => {
-            if network_bonus_completed_without_typo(state, player_id) {
-                claim_network_bonus(state, player_id, now);
-            } else {
-                apply_network_bonus_char(state, player_id, ' ');
+            BonusFlowEvent::ClaimResolved(outcome) => {
+                handle_network_bonus_claim_outcome(state, player_id, outcome.pickup, now);
             }
+            BonusFlowEvent::AttemptInvalidated => {
+                push_network_log(
+                    &state.debug_log,
+                    format!(
+                        "{} bonus attempt invalidated",
+                        player_label(state, player_id)
+                    ),
+                );
+            }
+            BonusFlowEvent::AttemptStarted(_) | BonusFlowEvent::InputChanged => {}
         }
     }
-}
-
-fn network_bonus_start(
-    state: &HostState,
-    player_id: PlayerId,
-    ch: char,
-    now: Instant,
-) -> Option<NetworkBonusAttempt> {
-    let player = state.race.player(RacePlayerId(player_id.0))?;
-    if player.state.held_item.is_some()
-        || player.state.has_active_shield(now)
-        || player.state.has_active_focus(now)
-        || player.state.typo_index.is_some()
-        || !player.state.input.is_empty()
-        || player.state.is_finished()
-    {
-        return None;
-    }
-
-    let (point_index, point) = state.bonuses.point_for_gap(player.state.word_index)?;
-    if state
-        .runtime
-        .spent_bonus_gaps
-        .get(&player_id)
-        .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
-    {
-        return None;
-    }
-
-    point
-        .available_choice_starting_with(ch, now)
-        .map(|(choice_index, _)| NetworkBonusAttempt {
-            point_index,
-            choice_index,
-        })
-}
-
-fn apply_network_bonus_char(state: &mut HostState, player_id: PlayerId, ch: char) {
-    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
-        return;
-    };
-    let Some(target) = network_bonus_target(state, attempt).map(str::to_owned) else {
-        state.runtime.bonus_attempts.remove(&player_id);
-        return;
-    };
-    let Some(player) = state
-        .race
-        .players
-        .iter_mut()
-        .find(|player| player.id == RacePlayerId(player_id.0))
-    else {
-        state.runtime.bonus_attempts.remove(&player_id);
-        return;
-    };
-
-    let previous_typo = player.state.typo_index;
-    let input_index = player.state.input.chars().count();
-    let is_correct = previous_typo.is_none() && target.chars().nth(input_index) == Some(ch);
-
-    player.state.stats.typed_chars += 1;
-    if is_correct {
-        player.state.stats.correct_chars += 1;
-    } else {
-        player.state.stats.typo_chars += 1;
-    }
-
-    player.state.input.push(ch);
-    player.state.typo_index = first_typo_index(&player.state.input, &target);
-    if previous_typo.is_none() && player.state.typo_index.is_some() {
-        push_network_log(
-            &state.debug_log,
-            format!("{} bonus typo started", player_label(state, player_id)),
-        );
-    }
-}
-
-fn recalculate_network_bonus_typo(state: &mut HostState, player_id: PlayerId, input: &str) {
-    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
-        return;
-    };
-    let target = network_bonus_target(state, attempt).map(str::to_owned);
-    let Some(player) = state
-        .race
-        .players
-        .iter_mut()
-        .find(|player| player.id == RacePlayerId(player_id.0))
-    else {
-        state.runtime.bonus_attempts.remove(&player_id);
-        return;
-    };
-
-    player.state.typo_index = target
-        .as_deref()
-        .and_then(|target| first_typo_index(input, target));
-}
-
-fn network_bonus_completed_without_typo(state: &HostState, player_id: PlayerId) -> bool {
-    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
-        return false;
-    };
-    let Some(target) = network_bonus_target(state, attempt) else {
-        return false;
-    };
-    let Some(player) = state.race.player(RacePlayerId(player_id.0)) else {
-        return false;
-    };
-
-    player.state.typo_index.is_none() && player.state.input == target
 }
 
 fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let Some(attempt) = state.runtime.bonus_attempts.remove(&player_id) else {
-        return;
-    };
-
-    let after_word_index = state
-        .bonuses
-        .points
-        .get(attempt.point_index)
-        .map(|point| point.after_word_index);
     let item_context = network_item_roll_context(state, player_id, 5);
     let item_registry = state.item_registry.clone();
     let mut rng = thread_rng();
-    let pickup = claim_bonus_choice(
-        &mut state.bonuses,
-        attempt.point_index,
-        attempt.choice_index,
+    let Some(outcome) = claim_active_bonus(
+        &mut BonusFlowState {
+            race: &mut state.race,
+            bonuses: &mut state.bonuses,
+            bonus_attempts: &mut state.runtime.bonus_attempts,
+            spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
+        },
+        player_id,
+        RacePlayerId(player_id.0),
         now,
-        item_context,
-        &item_registry,
-        &mut rng,
-    );
+        BonusClaimRoll {
+            item_context,
+            item_registry: &item_registry,
+            rng: &mut rng,
+        },
+    ) else {
+        return;
+    };
+    handle_network_bonus_claim_outcome(state, player_id, outcome.pickup, now);
+}
 
-    if let Some(player) = state
-        .race
-        .players
-        .iter_mut()
-        .find(|player| player.id == RacePlayerId(player_id.0))
-    {
-        player.state.input.clear();
-        player.state.typo_index = None;
-    }
-
-    if let Some(after_word_index) = after_word_index {
-        state
-            .runtime
-            .spent_bonus_gaps
-            .insert(player_id, after_word_index);
-    }
-
+fn handle_network_bonus_claim_outcome(
+    state: &mut HostState,
+    player_id: PlayerId,
+    pickup: Option<ItemPickup>,
+    now: Instant,
+) {
     let name = player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0));
     match pickup {
         Some(item) => {
@@ -1511,16 +1388,6 @@ fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant)
             );
         }
     }
-}
-
-fn network_bonus_target(state: &HostState, attempt: NetworkBonusAttempt) -> Option<&str> {
-    state
-        .bonuses
-        .points
-        .get(attempt.point_index)?
-        .choices
-        .get(attempt.choice_index)
-        .map(|choice| choice.word.as_str())
 }
 
 fn player_has_nearby_racer(
@@ -1713,7 +1580,7 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
     let choice_index = available_choices[rng.gen_range(0..available_choices.len())];
     state.runtime.bonus_attempts.insert(
         player_id,
-        NetworkBonusAttempt {
+        BonusAttempt {
             point_index,
             choice_index,
         },

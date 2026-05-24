@@ -11,7 +11,8 @@ use leptos::prelude::*;
 use rand::thread_rng;
 use typekart::game::{
     ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
-    bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
+    bonus::{BonusChoiceStatus, BonusState},
+    bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
     item_effects::{
         AttackDirection, RaceImpactCueKind, RaceItemCueKind, RaceItemCuePlacement,
         RaceItemEffectState, activate_item_pickup, advance_mushrooms,
@@ -26,7 +27,7 @@ use typekart::game::{
     },
     race_flow::{race_flow_is_finished, update_race_flow},
     track::{Track, WordList},
-    typing::{KeyAction, first_typo_index},
+    typing::KeyAction,
 };
 use typekart_protocol::{
     AiDifficultySnapshot, AssignedColor, AttackDirectionSnapshot, BonusChoiceSnapshotStatus,
@@ -43,12 +44,6 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BROWSER_HOST_TRACK_WORD_COUNT: usize = 16;
 const BROWSER_HOST_AI_TICK_MS: u32 = 250;
 const BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BrowserBonusAttempt {
-    point_index: usize,
-    choice_index: usize,
-}
 
 pub(crate) async fn host_browser_lobby(
     relay_url: String,
@@ -164,7 +159,7 @@ struct BrowserHostLobby {
     active_race: Option<RaceSnapshot>,
     active_results: Option<ResultsFrame>,
     core_race: Option<RaceState>,
-    runtime: RaceRuntimeState<PlayerId, BrowserBonusAttempt>,
+    runtime: RaceRuntimeState<PlayerId, BonusAttempt>,
     ai_char_budget: HashMap<PlayerId, AiDriverState>,
     ai_last_tick_ms: Option<f64>,
     events: Vec<String>,
@@ -751,29 +746,38 @@ fn apply_browser_host_race_key_input(
     }
 
     let action = browser_protocol_key_to_action(key);
-    if state.runtime.bonus_attempts.contains_key(&player_id) {
+    let now = Instant::now();
+    let item_context = browser_item_roll_context(state, player_id, 5);
+    let item_registry = state.item_registry.clone();
+    let mut rng = thread_rng();
+    if let Some(core_race) = &mut state.core_race {
         let previous_event_count = state.events.len();
-        apply_browser_bonus_typing_action(state, player_id, action);
-        browser_sync_active_race_from_core(state);
-        set_browser_race_input_event(state, &player_name, previous_event_count);
-        set_connection.set(ConnectionState::Connected {
-            message: format!("{player_name} typed"),
-        });
-        return;
-    }
-
-    if let KeyAction::Char(ch) = action
-        && let Some(attempt) = browser_bonus_start(state, player_id, ch, Instant::now())
-    {
-        let previous_event_count = state.events.len();
-        state.runtime.bonus_attempts.insert(player_id, attempt);
-        apply_browser_bonus_char(state, player_id, ch);
-        browser_sync_active_race_from_core(state);
-        set_browser_race_input_event(state, &player_name, previous_event_count);
-        set_connection.set(ConnectionState::Connected {
-            message: format!("{player_name} typed"),
-        });
-        return;
+        let bonus_outcome = apply_bonus_key(
+            &mut BonusFlowState {
+                race: core_race,
+                bonuses: &mut state.bonuses,
+                bonus_attempts: &mut state.runtime.bonus_attempts,
+                spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
+            },
+            player_id,
+            RacePlayerId(player_id.0),
+            action,
+            now,
+            BonusClaimRoll {
+                item_context,
+                item_registry: &item_registry,
+                rng: &mut rng,
+            },
+        );
+        if bonus_outcome.handled {
+            handle_browser_bonus_events(state, player_id, bonus_outcome.events, now);
+            browser_sync_active_race_from_core(state);
+            set_browser_race_input_event(state, &player_name, previous_event_count);
+            set_connection.set(ConnectionState::Connected {
+                message: format!("{player_name} typed"),
+            });
+            return;
+        }
     }
 
     {
@@ -836,189 +840,25 @@ fn browser_sync_active_race_from_core(state: &mut BrowserHostLobby) {
     snapshot.sequence = state.race_sequence;
 }
 
-fn apply_browser_bonus_typing_action(
+fn handle_browser_bonus_events(
     state: &mut BrowserHostLobby,
     player_id: PlayerId,
-    action: KeyAction,
-) {
-    match action {
-        KeyAction::Char(ch) => apply_browser_bonus_char(state, player_id, ch),
-        KeyAction::Backspace => {
-            let Some(player) = state
-                .core_race
-                .as_mut()
-                .and_then(|race| {
-                    race.players
-                        .iter_mut()
-                        .find(|player| player.id == RacePlayerId(player_id.0))
-                })
-            else {
-                state.runtime.bonus_attempts.remove(&player_id);
-                return;
-            };
-
-            if player.state.input.pop().is_some() {
-                player.state.stats.backspaces += 1;
-            }
-            let input = player.state.input.clone();
-            let input_is_empty = input.is_empty();
-            recalculate_browser_bonus_typo(state, player_id, &input);
-            if input_is_empty {
-                state.runtime.bonus_attempts.remove(&player_id);
-            }
-        }
-        KeyAction::Space => {
-            if browser_bonus_completed_without_typo(state, player_id) {
-                claim_browser_bonus(state, player_id, Instant::now());
-            } else {
-                apply_browser_bonus_char(state, player_id, ' ');
-            }
-        }
-    }
-}
-
-fn browser_bonus_start(
-    state: &BrowserHostLobby,
-    player_id: PlayerId,
-    ch: char,
+    events: Vec<BonusFlowEvent>,
     now: Instant,
-) -> Option<BrowserBonusAttempt> {
-    let player = state.core_race.as_ref()?.player(RacePlayerId(player_id.0))?;
-    if player.state.held_item.is_some()
-        || player.state.has_active_shield(now)
-        || player.state.has_active_focus(now)
-        || player.state.typo_index.is_some()
-        || !player.state.input.is_empty()
-        || player.state.is_finished()
-    {
-        return None;
+) {
+    for event in events {
+        if let BonusFlowEvent::ClaimResolved(outcome) = event {
+            handle_browser_bonus_claim_outcome(state, player_id, outcome.pickup, now);
+        }
     }
-
-    let (point_index, point) = state.bonuses.point_for_gap(player.state.word_index)?;
-    if state.runtime
-        .spent_bonus_gaps
-        .get(&player_id)
-        .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
-    {
-        return None;
-    }
-
-    point
-        .available_choice_starting_with(ch, now)
-        .map(|(choice_index, _)| BrowserBonusAttempt {
-            point_index,
-            choice_index,
-        })
 }
 
-fn apply_browser_bonus_char(state: &mut BrowserHostLobby, player_id: PlayerId, ch: char) {
-    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
-        return;
-    };
-    let Some(target) = browser_bonus_target(state, attempt).map(str::to_owned) else {
-        state.runtime.bonus_attempts.remove(&player_id);
-        return;
-    };
-    let Some(player) = state.core_race.as_mut().and_then(|race| {
-        race.players
-            .iter_mut()
-            .find(|player| player.id == RacePlayerId(player_id.0))
-    })
-    else {
-        state.runtime.bonus_attempts.remove(&player_id);
-        return;
-    };
-
-    let previous_typo = player.state.typo_index;
-    let input_index = player.state.input.chars().count();
-    let is_correct = previous_typo.is_none() && target.chars().nth(input_index) == Some(ch);
-
-    player.state.stats.typed_chars += 1;
-    if is_correct {
-        player.state.stats.correct_chars += 1;
-    } else {
-        player.state.stats.typo_chars += 1;
-    }
-
-    player.state.input.push(ch);
-    player.state.typo_index = first_typo_index(&player.state.input, &target);
-}
-
-fn recalculate_browser_bonus_typo(state: &mut BrowserHostLobby, player_id: PlayerId, input: &str) {
-    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
-        return;
-    };
-    let target = browser_bonus_target(state, attempt).map(str::to_owned);
-    let Some(player) = state.core_race.as_mut().and_then(|race| {
-        race.players
-            .iter_mut()
-            .find(|player| player.id == RacePlayerId(player_id.0))
-    })
-    else {
-        state.runtime.bonus_attempts.remove(&player_id);
-        return;
-    };
-
-    player.state.typo_index = target
-        .as_deref()
-        .and_then(|target| first_typo_index(input, target));
-}
-
-fn browser_bonus_completed_without_typo(state: &BrowserHostLobby, player_id: PlayerId) -> bool {
-    let Some(attempt) = state.runtime.bonus_attempts.get(&player_id).copied() else {
-        return false;
-    };
-    let Some(target) = browser_bonus_target(state, attempt) else {
-        return false;
-    };
-    let Some(player) = state
-        .core_race
-        .as_ref()
-        .and_then(|race| race.player(RacePlayerId(player_id.0)))
-    else {
-        return false;
-    };
-
-    player.state.typo_index.is_none() && player.state.input == target
-}
-
-fn claim_browser_bonus(state: &mut BrowserHostLobby, player_id: PlayerId, now: Instant) {
-    let Some(attempt) = state.runtime.bonus_attempts.remove(&player_id) else {
-        return;
-    };
-
-    let after_word_index = state
-        .bonuses
-        .points
-        .get(attempt.point_index)
-        .map(|point| point.after_word_index);
-    let item_context = browser_item_roll_context(state, player_id, 5);
-    let item_registry = state.item_registry.clone();
-    let mut rng = thread_rng();
-    let pickup = claim_bonus_choice(
-        &mut state.bonuses,
-        attempt.point_index,
-        attempt.choice_index,
-        now,
-        item_context,
-        &item_registry,
-        &mut rng,
-    );
-
-    if let Some(player) = state.core_race.as_mut().and_then(|race| {
-        race.players
-            .iter_mut()
-            .find(|player| player.id == RacePlayerId(player_id.0))
-    })
-    {
-        player.state.input.clear();
-        player.state.typo_index = None;
-    }
-
-    if let Some(after_word_index) = after_word_index {
-        state.runtime.spent_bonus_gaps.insert(player_id, after_word_index);
-    }
-
+fn handle_browser_bonus_claim_outcome(
+    state: &mut BrowserHostLobby,
+    player_id: PlayerId,
+    pickup: Option<ItemPickup>,
+    now: Instant,
+) {
     let name = state
         .players
         .iter()
@@ -1139,16 +979,6 @@ fn browser_position_band(state: &BrowserHostLobby, player_id: PlayerId) -> RaceP
     } else {
         RacePositionBand::Middle
     }
-}
-
-fn browser_bonus_target(state: &BrowserHostLobby, attempt: BrowserBonusAttempt) -> Option<&str> {
-    state
-        .bonuses
-        .points
-        .get(attempt.point_index)?
-        .choices
-        .get(attempt.choice_index)
-        .map(|choice| choice.word.as_str())
 }
 
 fn browser_item_pickup_name(item: ItemPickup) -> &'static str {
