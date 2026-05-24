@@ -281,6 +281,23 @@ Most of this is already partially shared through `RaceLifecycleState`,
 `RaceRuntimeState`, and result row helpers. The remaining work is to route both
 hosts through one facade method rather than calling helpers manually.
 
+Progress:
+
+- `src/game/race_flow.rs` now returns semantic race-finish outcomes with
+  newly finished player names/placements and finish summaries.
+- `src/game/snapshot.rs` now owns protocol result-row and placement conversion.
+- Terminal-hosted and browser-hosted games both use the shared finish outcome
+  and protocol result conversion helpers.
+- Rematch/runtime reset remains adapter-owned where track generation, lobby
+  cleanup, browser signals, and transport broadcasts are still adapter-specific.
+
+Validation:
+
+- Shared race-flow tests cover finish outcome construction.
+- Shared snapshot tests cover protocol result-row conversion.
+- Existing terminal and browser host result/rematch tests should continue to
+  cover adapter side effects.
+
 ### 7. Renderer View Model
 
 Goal: share layout-relevant race display calculations without forcing terminal
