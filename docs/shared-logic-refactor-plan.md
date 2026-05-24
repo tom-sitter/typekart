@@ -362,8 +362,9 @@ Candidate extractions:
 
 - `src/net/host_lifecycle.rs`: host-only broadcast sequencing around shared
   race-flow outcomes and result snapshots.
-- `src/net/host_lobby.rs`: TCP-specific lobby side effects around shared lobby
-  policy, including client kicks and lobby snapshot broadcasts.
+- `src/net/server/host_lobby.rs`: TCP-specific lobby side effects around
+  shared lobby policy, including client kicks, rename side effects, and waiting
+  roster cleanup.
 - `src/net/server/host_ai.rs`: network-specific AI timing map and debug
   logging around shared `ai_driver` and shared lobby AI policy.
 - `src/net/server/host_bonus.rs`: network-specific event/log handling around
@@ -391,6 +392,10 @@ Progress:
   around shared `lobby` and `ai_driver`: initial bot creation, lobby add/remove
   difficulty tuning, countdown timing resets, bonus-claim attempts, typing
   budget advancement, and AI finish events.
+- `src/net/server/host_lobby.rs` now owns network-host lobby side effects
+  around shared `lobby`: player removal, rename propagation into the mirrored
+  race roster, kicked-client socket closure, runtime cleanup for removed
+  players, and disconnected waiting-roster cleanup.
 
 ## Suggested Order
 

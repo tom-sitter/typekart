@@ -22,8 +22,6 @@ use crate::game::{
     lobby::{
         LOBBY_COLOR_ROTATION, connected_player_count, first_available_color,
         first_available_player_id, new_human_lobby_player, ready_connected_participants,
-        remove_lobby_player as shared_remove_lobby_player,
-        rename_lobby_player as shared_rename_lobby_player,
         set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
     },
     mods::ActiveModConfig,
@@ -56,6 +54,7 @@ use super::transport::{read_client_message, write_server_message as write_framed
 mod host_ai;
 mod host_bonus;
 mod host_items;
+mod host_lobby;
 use host_ai::NetworkAiRacer;
 #[cfg(test)]
 use host_ai::set_lobby_ai_difficulty;
@@ -65,6 +64,8 @@ use host_ai::{add_lobby_ai_racer, add_network_ai_racers, advance_network_ai_race
 use host_bonus::apply_network_key_input;
 #[cfg(test)]
 use host_items::activate_network_pickup;
+#[cfg(test)]
+use host_lobby::{cleanup_disconnected_waiting_players, remove_lobby_player, rename_lobby_player};
 
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(100);
@@ -407,57 +408,6 @@ fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
     }
 }
 
-fn remove_lobby_player(state: &mut HostState, player_id: PlayerId) -> Result<()> {
-    let removed = shared_remove_lobby_player(&mut state.players, state.phase, player_id)?;
-    let name = removed.player.name;
-    let kind = removed.player.kind;
-
-    if kind == PlayerKind::Human {
-        for client in state
-            .clients
-            .iter_mut()
-            .filter(|client| client.player_id == player_id)
-        {
-            let _ = write_server_message(
-                &mut client.stream,
-                &ServerMessage::Error {
-                    message: "Kicked by host".to_string(),
-                },
-            );
-            let _ = client.stream.shutdown(Shutdown::Both);
-        }
-        state.clients.retain(|client| client.player_id != player_id);
-    }
-
-    state
-        .race
-        .players
-        .retain(|player| player.id != RacePlayerId(player_id.0));
-    state.ai_racers.remove(&player_id);
-    state.runtime.bonus_attempts.remove(&player_id);
-    state.runtime.spent_bonus_gaps.remove(&player_id);
-    state
-        .runtime
-        .player_effects
-        .remove(&RacePlayerId(player_id.0));
-    push_event(
-        state,
-        match kind {
-            PlayerKind::Human => format!("{name} kicked"),
-            PlayerKind::Bot => format!("{name} removed"),
-        },
-    );
-    push_network_log(
-        &state.debug_log,
-        format!(
-            "lobby removed player={} name={name} kind={kind:?}",
-            player_id.0
-        ),
-    );
-
-    Ok(())
-}
-
 fn read_join_hello(stream: &TcpStream) -> Result<JoinHello> {
     let mut reader = BufReader::new(
         stream
@@ -554,7 +504,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         match message {
             ClientMessage::Rename { name } => {
                 let mut state = state.lock().expect("host state poisoned");
-                if let Err(error) = rename_lobby_player(&mut state, player_id, &name) {
+                if let Err(error) = host_lobby::rename_lobby_player(&mut state, player_id, &name) {
                     push_event(&mut state, error.to_string());
                 }
                 print_lobby_snapshot(&state.players);
@@ -617,7 +567,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
             }
             ClientMessage::RemoveLobbyPlayer { player_id: target } if player_id == PlayerId(1) => {
                 let mut state = state.lock().expect("host state poisoned");
-                if let Err(error) = remove_lobby_player(&mut state, target) {
+                if let Err(error) = host_lobby::remove_lobby_player(&mut state, target) {
                     push_event(&mut state, error.to_string());
                 }
                 print_lobby_snapshot(&state.players);
@@ -710,36 +660,6 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
     }
 }
 
-fn rename_lobby_player(
-    state: &mut HostState,
-    player_id: PlayerId,
-    requested_name: &str,
-) -> Result<()> {
-    let outcome =
-        shared_rename_lobby_player(&mut state.players, state.phase, player_id, requested_name)?;
-    if let Some(racer) = state
-        .race
-        .players
-        .iter_mut()
-        .find(|racer| racer.id == RacePlayerId(player_id.0))
-    {
-        racer.name = outcome.new_name.clone();
-    }
-    push_event(
-        state,
-        format!("{} renamed to {}", outcome.previous_name, outcome.new_name),
-    );
-    push_network_log(
-        &state.debug_log,
-        format!(
-            "player={} renamed {} -> {}",
-            outcome.player_id.0, outcome.previous_name, outcome.new_name
-        ),
-    );
-
-    Ok(())
-}
-
 fn handle_player_disconnect(state: &mut HostState, player_id: PlayerId, now: Instant) -> bool {
     if let Some(player) = state
         .players
@@ -775,7 +695,7 @@ fn handle_player_disconnect(state: &mut HostState, player_id: PlayerId, now: Ins
     }
 
     reconcile_phase_after_disconnect(state, now);
-    cleanup_disconnected_waiting_players(state);
+    host_lobby::cleanup_disconnected_waiting_players(state);
     false
 }
 
@@ -901,7 +821,7 @@ fn start_countdown(state: Arc<Mutex<HostState>>) {
 }
 
 fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
-    cleanup_disconnected_waiting_players(state);
+    host_lobby::cleanup_disconnected_waiting_players(state);
 
     let word_count = state.race.track.len();
     let track = Track::generate(&state.word_list, word_count)
@@ -1126,37 +1046,6 @@ fn cancel_countdown(state: &mut HostState) {
     push_event(state, "Countdown cancelled".to_string());
     push_network_log(&state.debug_log, "countdown cancelled no connected racers");
     server_println!("Countdown cancelled");
-}
-
-fn cleanup_disconnected_waiting_players(state: &mut HostState) {
-    if !matches!(
-        state.phase,
-        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost | NetworkRacePhase::Finished
-    ) {
-        return;
-    }
-
-    let disconnected_ids = state
-        .players
-        .iter()
-        .filter(|player| !player.connected)
-        .map(|player| player.id)
-        .collect::<Vec<_>>();
-    if disconnected_ids.is_empty() {
-        return;
-    }
-
-    state
-        .players
-        .retain(|player| !disconnected_ids.contains(&player.id));
-    state
-        .race
-        .players
-        .retain(|player| !disconnected_ids.contains(&PlayerId(player.id.0)));
-    push_network_log(
-        &state.debug_log,
-        format!("cleaned up disconnected waiting players={disconnected_ids:?}"),
-    );
 }
 
 fn push_event(state: &mut HostState, event: String) {
