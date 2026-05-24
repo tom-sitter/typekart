@@ -1746,6 +1746,10 @@ fn browser_host_race_key_input_marks_and_clears_typos() {
 fn browser_host_bonus_word_claims_choice_after_space() {
     let room = RoomCode::parse("rocket-salad-tiger").unwrap();
     let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+    lobby
+        .item_registry
+        .items
+        .retain(|item| item.id.as_str() == "shield");
     let racers = vec![lobby.players[0].clone()];
     let mut snapshot = browser_host_race_snapshot(
         1,
