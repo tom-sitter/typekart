@@ -256,7 +256,13 @@ fn activate_cyclone(
 ) -> ItemActivationReport {
     let mut report = ItemActivationReport::new();
     let attacker_name = player_label(race, player_id);
-    let Some(target_id) = first_place_target(race, Some(player_id)) else {
+    let Some(target_id) = first_place_target(race) else {
+        report
+            .events
+            .push(format!("{attacker_name} missed Cyclone"));
+        return report;
+    };
+    if target_id == player_id {
         report
             .events
             .push(format!("{attacker_name} missed Cyclone"));
@@ -473,10 +479,9 @@ fn apply_banana_to_player(
     Some(BananaResolution::SpunOut)
 }
 
-fn first_place_target(race: &RaceState, exclude: Option<RacePlayerId>) -> Option<RacePlayerId> {
+fn first_place_target(race: &RaceState) -> Option<RacePlayerId> {
     race.players
         .iter()
-        .filter(|player| Some(player.id) != exclude)
         .filter(|player| player.connected)
         .filter(|player| !player.state.is_finished())
         .max_by_key(|player| (player.state.word_index, player.state.input.chars().count()))
@@ -779,6 +784,92 @@ mod tests {
         assert_eq!(
             effects[&RacePlayerId(2)].impact_cue.unwrap().kind,
             RaceImpactCueKind::ShieldBlock
+        );
+    }
+
+    #[test]
+    fn cyclone_targets_actual_first_place_human() {
+        let now = Instant::now();
+        let mut race = race(&["one", "two", "three"]);
+        race.players[0].state.word_index = 1;
+        race.players[1].state.word_index = 0;
+        let mut effects = HashMap::new();
+
+        let report = activate_item_pickup(
+            &mut race,
+            &mut effects,
+            &HashSet::new(),
+            &ItemRegistry::builtin(),
+            RacePlayerId(2),
+            ItemPickup::Held(HeldItem::Cyclone),
+            now,
+        );
+
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| event == "guest hit host with Cyclone")
+        );
+        assert_eq!(race.players[0].state.word_override(1), Some("owt"));
+        assert_eq!(race.players[1].state.word_override(0), None);
+    }
+
+    #[test]
+    fn cyclone_misses_when_attacker_is_first_place() {
+        let now = Instant::now();
+        let mut race = race(&["one", "two", "three"]);
+        race.players[0].state.word_index = 2;
+        race.players[1].state.word_index = 1;
+        let mut effects = HashMap::new();
+
+        let report = activate_item_pickup(
+            &mut race,
+            &mut effects,
+            &HashSet::new(),
+            &ItemRegistry::builtin(),
+            RacePlayerId(1),
+            ItemPickup::Held(HeldItem::Cyclone),
+            now,
+        );
+
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| event == "host missed Cyclone")
+        );
+        assert_eq!(race.players[0].state.word_override(2), None);
+        assert_eq!(race.players[1].state.word_override(1), None);
+        assert!(!effects.contains_key(&RacePlayerId(2)));
+    }
+
+    #[test]
+    fn cyclone_targets_first_place_ai_and_resets_ai_budget() {
+        let now = Instant::now();
+        let mut race = race(&["one", "two", "three"]);
+        race.players[0].state.word_index = 0;
+        race.players[1].state.word_index = 1;
+        let mut effects = HashMap::new();
+        let ai_players = HashSet::from([RacePlayerId(2)]);
+
+        let report = activate_item_pickup(
+            &mut race,
+            &mut effects,
+            &ai_players,
+            &ItemRegistry::builtin(),
+            RacePlayerId(1),
+            ItemPickup::Held(HeldItem::Cyclone),
+            now,
+        );
+
+        assert_eq!(race.players[1].state.word_override(1), Some("owt"));
+        assert_eq!(report.reset_ai_players, vec![RacePlayerId(2)]);
+        assert!(
+            effects
+                .get(&RacePlayerId(2))
+                .and_then(|effect| effect.stunned_until)
+                .is_some_and(|until| until > now)
         );
     }
 }

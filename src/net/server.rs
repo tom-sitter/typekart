@@ -2399,6 +2399,67 @@ mod tests {
     }
 
     #[test]
+    fn network_cyclone_misses_when_attacker_is_first_place() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.race.players[0].state.word_index = 1;
+        state.race.players[1].state.word_index = 0;
+
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::Cyclone),
+            now,
+        );
+
+        let host = state.race.player(RacePlayerId(1)).unwrap();
+        let alex = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(host.state.word_override(1), None);
+        assert_eq!(alex.state.word_override(0), None);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event == "host missed Cyclone")
+        );
+    }
+
+    #[test]
+    fn network_cyclone_targets_first_place_ai() {
+        let now = std::time::Instant::now();
+        let mut state = test_host_state(NetworkRacePhase::Racing);
+        state.players[1].kind = PlayerKind::Bot;
+        state.race.players[0].state.word_index = 0;
+        state.race.players[1].state.word_index = 1;
+        state.ai_racers.insert(
+            PlayerId(2),
+            NetworkAiRacer {
+                difficulty: AiDifficulty::Easy,
+                words_per_minute: 60.0,
+                char_budget: 4.0,
+                last_update: now,
+            },
+        );
+
+        activate_network_pickup(
+            &mut state,
+            PlayerId(1),
+            ItemPickup::Held(HeldItem::Cyclone),
+            now,
+        );
+
+        let alex = state.race.player(RacePlayerId(2)).unwrap();
+        assert_eq!(alex.state.word_override(1), Some("owt"));
+        assert_eq!(state.ai_racers.get(&PlayerId(2)).unwrap().char_budget, 0.0);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event == "host hit alex with Cyclone")
+        );
+    }
+
+    #[test]
     fn network_cyclone_is_blocked_by_shield_and_consumes_shield() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);

@@ -4,7 +4,7 @@
 //! effects, and display-facing event history.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     time::{Duration, Instant},
 };
 
@@ -15,6 +15,10 @@ use crate::game::{
     ai_driver::{ai_chars_per_second, ai_effective_wpm, next_ai_key_for_player},
     bonus::{BonusState, claim_bonus_choice},
     effects::{ActiveEffect, AttackWarning, PendingAttack},
+    item_effects::{
+        AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
+        activate_item_pickup,
+    },
     items::{
         HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse, RacePositionBand,
         RacerPosition, select_nearest_banana_target,
@@ -188,6 +192,7 @@ impl ItemCue {
         }
     }
 
+    #[cfg(test)]
     fn cyclone(direction: AttackDirection, now: Instant) -> Self {
         let (ascii_label, unicode_label) = match direction {
             AttackDirection::Ahead => (" cy>>".to_string(), " 🌀 >>".to_string()),
@@ -997,142 +1002,101 @@ impl LocalSession {
     }
 
     fn use_cyclone(&mut self, attacker_ai_index: Option<usize>, now: Instant) {
-        let Some(target) = self.first_place_target(attacker_ai_index) else {
-            self.events.push("Missed Cyclone");
-            return;
-        };
+        let player_id = attacker_ai_index
+            .and_then(|index| self.ai_racers.get(index))
+            .map(|ai| RacePlayerId((ai.id + 1) as u64))
+            .unwrap_or(RacePlayerId(1));
+        self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Cyclone), now);
+    }
 
-        match target {
-            CycloneTarget::Player => {
-                if attacker_ai_index.is_none() {
-                    self.events.push("Missed Cyclone");
-                    return;
-                }
-                if let Some(ai_index) = attacker_ai_index {
-                    let attacker_word_index = self.ai_racers[ai_index].player.word_index;
-                    let direction = attack_direction(attacker_word_index, self.player.word_index);
-                    self.ai_racers[ai_index].item_cue = Some(ItemCue::cyclone(direction, now));
-                }
-                if self.apply_cyclone_to_player(now)
-                    && let Some(ai_index) = attacker_ai_index
-                {
-                    let ai_name = self.ai_racers[ai_index].name.clone();
-                    self.events.push(format!("{ai_name} hit you with Cyclone"));
-                }
-            }
-            CycloneTarget::Ai(ai_id) => {
-                let target_word_index = self
-                    .ai_racers
-                    .iter()
-                    .find(|ai| ai.id == ai_id)
-                    .map(|ai| ai.player.word_index);
-                if let Some(target_word_index) = target_word_index {
-                    let attacker_word_index = attacker_ai_index
-                        .and_then(|index| self.ai_racers.get(index))
-                        .map(|ai| ai.player.word_index)
-                        .unwrap_or(self.player.word_index);
-                    let direction = attack_direction(attacker_word_index, target_word_index);
-                    if let Some(ai_index) = attacker_ai_index {
-                        self.ai_racers[ai_index].item_cue = Some(ItemCue::cyclone(direction, now));
-                    } else {
-                        self.player_item_cue = Some(ItemCue::cyclone(direction, now));
-                    }
-                }
-                if self.apply_cyclone_to_ai(ai_id, now) {
-                    self.events.push(format!("Hit ai-{ai_id} with Cyclone"));
-                }
+    fn activate_shared_item_pickup(
+        &mut self,
+        player_id: RacePlayerId,
+        item: ItemPickup,
+        now: Instant,
+    ) {
+        let mut race = self.shared_race_state();
+        let ai_players = self
+            .ai_racers
+            .iter()
+            .map(|ai| RacePlayerId((ai.id + 1) as u64))
+            .collect::<HashSet<_>>();
+        let mut effects = HashMap::new();
+        let report = activate_item_pickup(
+            &mut race,
+            &mut effects,
+            &ai_players,
+            &self.item_registry,
+            player_id,
+            item,
+            now,
+        );
+
+        self.sync_from_shared_item_race(race);
+        for interrupted in report.interrupted_players {
+            if interrupted == RacePlayerId(1) {
+                self.bonus_attempt = None;
             }
         }
+        for reset_ai in report.reset_ai_players {
+            if let Some(ai) = self.local_ai_mut(reset_ai) {
+                ai.char_budget = 0.0;
+            }
+        }
+        self.apply_shared_item_effects(effects);
+        for event in report.events {
+            self.events.push(local_item_event(event));
+        }
     }
 
-    fn first_place_target(&self, attacker_ai_index: Option<usize>) -> Option<CycloneTarget> {
-        let mut racers = Vec::new();
-        if !self.player.is_finished() {
-            racers.push((
-                self.player.word_index,
-                self.player.input.chars().count(),
-                CycloneTarget::Player,
-            ));
+    fn sync_from_shared_item_race(&mut self, race: RaceState) {
+        for player in race.players {
+            if player.id == RacePlayerId(1) {
+                self.player = player.state;
+            } else if let Some(ai) = self.local_ai_mut(player.id) {
+                ai.player = player.state;
+            }
         }
-        racers.extend(
-            self.ai_racers
-                .iter()
-                .enumerate()
-                .filter(|(_, ai)| !ai.player.is_finished())
-                .filter(|(index, _)| Some(*index) != attacker_ai_index)
-                .map(|(_, ai)| {
-                    (
-                        ai.player.word_index,
-                        ai.player.input.chars().count(),
-                        CycloneTarget::Ai(ai.id),
-                    )
-                }),
-        );
-
-        racers
-            .into_iter()
-            .max_by_key(|(word_index, input_len, _)| (*word_index, *input_len))
-            .map(|(_, _, target)| target)
     }
 
-    fn apply_cyclone_to_player(&mut self, now: Instant) -> bool {
-        if self.player.has_active_shield(now) {
-            self.player
-                .active_effects
-                .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
-            self.player_impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::ShieldBlock,
-                until: now + Duration::from_millis(700),
-            });
-            self.events.push("Blocked Cyclone");
-            return false;
+    fn apply_shared_item_effects(
+        &mut self,
+        effects: HashMap<RacePlayerId, crate::game::item_effects::RaceItemEffectState>,
+    ) {
+        for (player_id, effect) in effects {
+            if player_id == RacePlayerId(1) {
+                if let Some(until) = effect.stunned_until {
+                    self.player_stunned_until = Some(until);
+                }
+                if let Some(cue) = effect.impact_cue {
+                    self.player_impact_cue = Some(ImpactCue {
+                        kind: impact_cue_kind(cue.kind),
+                        until: cue.until,
+                    });
+                }
+                if let Some(cue) = effect.item_cue {
+                    self.player_item_cue = Some(item_cue_from_shared(cue));
+                }
+            } else if let Some(ai) = self.local_ai_mut(player_id) {
+                if let Some(until) = effect.stunned_until {
+                    ai.stunned_until = Some(until);
+                }
+                if let Some(cue) = effect.impact_cue {
+                    ai.impact_cue = Some(ImpactCue {
+                        kind: impact_cue_kind(cue.kind),
+                        until: cue.until,
+                    });
+                }
+                if let Some(cue) = effect.item_cue {
+                    ai.item_cue = Some(item_cue_from_shared(cue));
+                }
+            }
         }
-        let applied = apply_cyclone_overrides(
-            &self.track,
-            &mut self.player,
-            self.item_registry.cyclone_effect().affected_words,
-        );
-        if applied {
-            self.player_stunned_until =
-                Some(now + Duration::from_millis(self.item_registry.cyclone_effect().stun_ms));
-            self.player_impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::Cyclone,
-                until: now + Duration::from_millis(1_200),
-            });
-        }
-        applied
     }
 
-    fn apply_cyclone_to_ai(&mut self, ai_id: usize, now: Instant) -> bool {
-        let Some(ai) = self.ai_racers.iter_mut().find(|ai| ai.id == ai_id) else {
-            return false;
-        };
-        if ai.player.has_active_shield(now) {
-            ai.player
-                .active_effects
-                .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
-            ai.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::ShieldBlock,
-                until: now + Duration::from_millis(700),
-            });
-            self.events.push(format!("{} blocked Cyclone", ai.name));
-            return false;
-        }
-        let applied = apply_cyclone_overrides(
-            &self.track,
-            &mut ai.player,
-            self.item_registry.cyclone_effect().affected_words,
-        );
-        if applied {
-            ai.stunned_until =
-                Some(now + Duration::from_millis(self.item_registry.cyclone_effect().stun_ms));
-            ai.char_budget = 0.0;
-            ai.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::Cyclone,
-                until: now + Duration::from_millis(1_200),
-            });
-        }
-        applied
+    fn local_ai_mut(&mut self, player_id: RacePlayerId) -> Option<&mut AiRacer> {
+        let ai_id = usize::try_from(player_id.0).ok()?.checked_sub(1)?;
+        self.ai_racers.iter_mut().find(|ai| ai.id == ai_id)
     }
 
     fn squid_ink_targets_excluding_ai(&self, ai_index: usize, now: Instant) -> Vec<RacerPosition> {
@@ -1852,6 +1816,59 @@ fn racer_position_band(
     }
 }
 
+fn impact_cue_kind(kind: RaceImpactCueKind) -> ImpactCueKind {
+    match kind {
+        RaceImpactCueKind::Banana => ImpactCueKind::Banana,
+        RaceImpactCueKind::Cyclone => ImpactCueKind::Cyclone,
+        RaceImpactCueKind::SquidInk => ImpactCueKind::SquidInk,
+        RaceImpactCueKind::ShieldBlock => ImpactCueKind::ShieldBlock,
+    }
+}
+
+fn item_cue_from_shared(cue: crate::game::item_effects::RaceItemCue) -> ItemCue {
+    ItemCue {
+        kind: item_cue_kind(cue.kind),
+        until: cue.until,
+        ascii_label: cue.ascii_label,
+        unicode_label: cue.unicode_label,
+    }
+}
+
+fn item_cue_kind(kind: RaceItemCueKind) -> ItemCueKind {
+    match kind {
+        RaceItemCueKind::Banana { direction } => ItemCueKind::Banana {
+            direction: attack_direction_from_shared(direction),
+        },
+        RaceItemCueKind::Cyclone { direction } => ItemCueKind::Cyclone {
+            direction: attack_direction_from_shared(direction),
+        },
+        RaceItemCueKind::SquidInk => ItemCueKind::SquidInk,
+    }
+}
+
+fn attack_direction_from_shared(direction: SharedAttackDirection) -> AttackDirection {
+    match direction {
+        SharedAttackDirection::Ahead => AttackDirection::Ahead,
+        SharedAttackDirection::Behind => AttackDirection::Behind,
+        SharedAttackDirection::Overlap => AttackDirection::Overlap,
+    }
+}
+
+fn local_item_event(event: String) -> String {
+    if event == "you missed Cyclone" {
+        "Missed Cyclone".to_string()
+    } else if event == "you blocked Cyclone" {
+        "Blocked Cyclone".to_string()
+    } else if let Some(target) = event
+        .strip_prefix("you hit ")
+        .and_then(|suffix| suffix.strip_suffix(" with Cyclone"))
+    {
+        format!("Hit {target} with Cyclone")
+    } else {
+        event
+    }
+}
+
 fn racer_name(id: usize) -> String {
     if id == 0 {
         "player".to_string()
@@ -1870,30 +1887,6 @@ fn player_has_active_mushroom(player: &PlayerState) -> bool {
             } if *remaining_words > 0
         )
     })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CycloneTarget {
-    Player,
-    Ai(usize),
-}
-
-fn apply_cyclone_overrides(track: &Track, player: &mut PlayerState, affected_words: usize) -> bool {
-    let mut applied = false;
-    for word_index in player.word_index..player.word_index.saturating_add(affected_words) {
-        let Some(word) = track.current_word(word_index) else {
-            break;
-        };
-        player
-            .word_overrides
-            .insert(word_index, word.chars().rev().collect());
-        applied = true;
-    }
-    if applied {
-        player.input.clear();
-        player.typo_index = None;
-    }
-    applied
 }
 
 fn event_message(event: TypingEvent, previous_word: Option<&str>) -> Option<String> {
@@ -2863,6 +2856,29 @@ mod tests {
                 .events
                 .entries()
                 .any(|entry| entry == "Hit ai-1 with Cyclone")
+        );
+    }
+
+    #[test]
+    fn first_place_ai_cyclone_misses_instead_of_hitting_player() {
+        let now = Instant::now();
+        let track = track(&["one", "two", "three"]);
+        let player = PlayerState::new(now);
+        let mut session =
+            LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
+        let mut ai = AiRacer::new(1, AiDifficulty::Easy, 80.0, now);
+        ai.player.word_index = 1;
+        ai.player.held_item = Some(HeldItem::Cyclone);
+        session.ai_racers.push(ai);
+
+        session.ai_use_item(0, now);
+
+        assert_eq!(session.player.word_override(0), None);
+        assert!(
+            session
+                .events
+                .entries()
+                .any(|entry| entry == "ai-1 missed Cyclone")
         );
     }
 

@@ -915,6 +915,7 @@ impl ItemRegistry {
             .items
             .iter()
             .filter(|item| item.enabled)
+            .filter(|item| !pickup_is_excluded_from_roll(item.pickup, context))
             .filter_map(|item| {
                 let weight = item.weight(context);
                 (weight > 0).then_some((item, weight))
@@ -936,6 +937,13 @@ impl ItemRegistry {
 
         None
     }
+}
+
+fn pickup_is_excluded_from_roll(pickup: ItemPickup, context: ItemRollContext) -> bool {
+    matches!(
+        (pickup, context.position),
+        (ItemPickup::Held(HeldItem::Cyclone), RacePositionBand::First)
+    )
 }
 
 #[cfg(test)]
@@ -1238,6 +1246,68 @@ mod tests {
                 has_nearby_racer: false,
                 position: RacePositionBand::Middle,
             })
+        );
+    }
+
+    #[test]
+    fn first_place_rolls_exclude_cyclone_even_when_weighted() {
+        let registry = ItemRegistry::new(vec![
+            ItemDefinition::built_in(
+                "cyclone",
+                "Cyclone",
+                ItemPickup::Held(HeldItem::Cyclone),
+                ItemActivation::Held,
+                100,
+                100,
+            ),
+            ItemDefinition::built_in(
+                "shield",
+                "Shield",
+                ItemPickup::Shield,
+                ItemActivation::Immediate,
+                1,
+                1,
+            ),
+        ])
+        .unwrap();
+        let mut rng = StdRng::seed_from_u64(1);
+
+        for _ in 0..10 {
+            assert_eq!(
+                registry.roll_pickup(
+                    &mut rng,
+                    ItemRollContext {
+                        has_nearby_racer: true,
+                        position: RacePositionBand::First,
+                    },
+                ),
+                Some(ItemPickup::Shield)
+            );
+        }
+    }
+
+    #[test]
+    fn first_place_roll_returns_none_when_only_cyclone_is_rollable() {
+        let registry = ItemRegistry::new(vec![ItemDefinition::built_in(
+            "cyclone",
+            "Cyclone",
+            ItemPickup::Held(HeldItem::Cyclone),
+            ItemActivation::Held,
+            100,
+            100,
+        )])
+        .unwrap();
+        let mut rng = StdRng::seed_from_u64(1);
+
+        assert_eq!(
+            registry.roll_pickup(
+                &mut rng,
+                ItemRollContext {
+                    has_nearby_racer: true,
+                    position: RacePositionBand::First,
+                },
+            ),
+            None
         );
     }
 
