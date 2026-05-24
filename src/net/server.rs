@@ -46,19 +46,24 @@ use crate::game::{
     race_flow::advance_race_flow,
     snapshot::{
         RaceDeltaSnapshotInput, RaceSnapshotInput,
-        build_placement_snapshots as build_shared_placement_snapshots,
         build_race_delta_snapshot as build_shared_race_delta_snapshot,
-        build_race_result_snapshots as build_shared_race_result_snapshots,
         build_race_snapshot as build_shared_race_snapshot,
     },
     track::{Track, WordList},
     typing::KeyAction,
 };
 
+#[cfg(test)]
+use super::host_lifecycle::build_race_result_rows as build_network_race_result_rows;
+use super::host_lifecycle::{
+    build_race_results_message, finish_summary_log, finished_player_message,
+};
 use super::log::{SharedNetworkLog, push_network_log};
+#[cfg(test)]
+use super::protocol::RaceResultRow;
 use super::protocol::{
     AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey,
-    RaceDeltaSnapshot, RaceResultRow, RaceSnapshot, ServerMessage, version_mismatch_message,
+    RaceDeltaSnapshot, RaceSnapshot, ServerMessage, version_mismatch_message,
 };
 use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
@@ -1784,24 +1789,22 @@ fn log_race_delta(state: &HostState) {
 }
 
 fn broadcast_race_results(state: &mut HostState) -> Result<()> {
-    let rows = build_race_result_rows(state, Instant::now());
-    let row_count = rows.len();
-    let placements = build_shared_placement_snapshots(&state.runtime.lifecycle.placements);
-    let results = ServerMessage::RaceResults {
-        placements: placements.clone(),
-        rows,
-    };
+    let results = build_race_results_message(
+        &state.race,
+        &state.runtime.lifecycle.placements,
+        Instant::now(),
+    );
     push_network_log(
         &state.debug_log,
         format!(
             "broadcast race results placements={:?} rows={}",
-            placements, row_count
+            results.placements, results.row_count
         ),
     );
 
     let mut failed_clients = Vec::new();
     for client in state.clients.iter_mut() {
-        if let Err(error) = write_server_message(&mut client.stream, &results) {
+        if let Err(error) = write_server_message(&mut client.stream, &results.message) {
             server_eprintln!(
                 "Failed to send race results to player {}: {error:#}",
                 client.player_id.0
@@ -1823,8 +1826,9 @@ fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
         .any(|player| player.id == RacePlayerId(player_id.0))
 }
 
+#[cfg(test)]
 fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow> {
-    build_shared_race_result_snapshots(&state.race, &state.runtime.lifecycle.placements, now)
+    build_network_race_result_rows(&state.race, &state.runtime.lifecycle.placements, now)
 }
 
 fn broadcast_race_results_once(state: &mut HostState) -> Result<()> {
@@ -1851,28 +1855,15 @@ fn update_race_status(state: &mut HostState, now: Instant) {
     );
 
     for finished in outcome.newly_finished {
-        push_event(
-            state,
-            format!("{}. {} finished", finished.placement, finished.name),
-        );
-        push_network_log(
-            &state.debug_log,
-            format!("{}. {} finished", finished.placement, finished.name),
-        );
+        let message = finished_player_message(&finished);
+        push_event(state, message.clone());
+        push_network_log(&state.debug_log, message);
     }
 
     if let Some(summary) = outcome.finished {
         state.phase = NetworkRacePhase::Finished;
         push_event(state, "Race finished".to_string());
-        push_network_log(
-            &state.debug_log,
-            format!(
-                "race finished all_connected_finished={} all_connected_disconnected={} timeout_expired={}",
-                summary.all_connected_finished,
-                summary.all_connected_disconnected,
-                summary.timeout_expired
-            ),
-        );
+        push_network_log(&state.debug_log, finish_summary_log(&summary));
     }
 }
 

@@ -374,6 +374,14 @@ Constraint:
 - These modules should not own gameplay policy. They should orchestrate
   transport, logging, and adapter state around shared `src/game` helpers.
 
+Progress:
+
+- `src/net/host_lifecycle.rs` now owns network-host result message construction
+  and race-finish feed/log formatting around shared `race_flow` and `snapshot`
+  helpers.
+- `src/net/server.rs` still owns socket writes, phase mutation, and
+  `HostState`, but no longer constructs race-result protocol messages inline.
+
 ## Suggested Order
 
 1. Split `web/typekart-web/src/main.rs` into smaller modules.
