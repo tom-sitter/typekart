@@ -381,6 +381,9 @@ Progress:
   helpers.
 - `src/net/server.rs` still owns socket writes, phase mutation, and
   `HostState`, but no longer constructs race-result protocol messages inline.
+- `src/net/server/host_bonus.rs` now owns network-host bonus adapter flow around
+  shared `bonus_flow`: human bonus input, AI bonus claims, bonus feed/log text,
+  item roll context, and handoff to network item activation.
 
 ## Suggested Order
 
