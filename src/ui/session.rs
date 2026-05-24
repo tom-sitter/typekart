@@ -12,6 +12,7 @@ use rand::{Rng, thread_rng};
 
 use crate::game::{
     ai::AiDifficulty,
+    ai_driver::{ai_chars_per_second, ai_effective_wpm, next_ai_key_for_player},
     bonus::{BonusState, claim_bonus_choice},
     effects::{ActiveEffect, AttackWarning, PendingAttack},
     items::{
@@ -716,7 +717,7 @@ impl LocalSession {
         );
         ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(effective_wpm);
         while ai.char_budget >= 1.0 && !ai.player.is_finished() {
-            let Some(action) = next_ai_key(&ai.player, &self.track) else {
+            let Some(action) = next_ai_key_for_player(&ai.player, &self.track) else {
                 break;
             };
             let events = apply_key(&mut ai.player, &self.track, action, now);
@@ -1787,29 +1788,6 @@ fn mushroom_step_interval(wpm: u32) -> std::time::Duration {
     std::time::Duration::from_secs_f64(60.0 / f64::from(wpm))
 }
 
-fn ai_chars_per_second(words_per_minute: f64) -> f64 {
-    words_per_minute * 5.0 / 60.0
-}
-
-fn ai_effective_wpm(
-    base_wpm: f64,
-    is_focused: bool,
-    is_inked: bool,
-    focus_boost_wpm: u32,
-    ink_multiplier_percent: u32,
-) -> f64 {
-    let focused_wpm = if is_focused {
-        base_wpm + f64::from(focus_boost_wpm)
-    } else {
-        base_wpm
-    };
-    if is_inked {
-        focused_wpm * f64::from(ink_multiplier_percent) / 100.0
-    } else {
-        focused_wpm
-    }
-}
-
 fn attack_direction(attacker_word_index: usize, target_word_index: usize) -> AttackDirection {
     match target_word_index.cmp(&attacker_word_index) {
         std::cmp::Ordering::Greater => AttackDirection::Ahead,
@@ -1869,20 +1847,6 @@ fn player_has_active_mushroom(player: &PlayerState) -> bool {
             } if *remaining_words > 0
         )
     })
-}
-
-fn next_ai_key(player: &PlayerState, track: &Track) -> Option<KeyAction> {
-    let target = player
-        .word_override(player.word_index)
-        .or_else(|| track.current_word(player.word_index))?;
-    if player.input == target {
-        return Some(KeyAction::Space);
-    }
-
-    target
-        .chars()
-        .nth(player.input.chars().count())
-        .map(KeyAction::Char)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

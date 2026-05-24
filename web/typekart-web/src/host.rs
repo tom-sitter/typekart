@@ -10,18 +10,21 @@ use gloo_timers::future::{IntervalStream, TimeoutFuture};
 use leptos::prelude::*;
 use rand::thread_rng;
 use typekart::game::{
+    ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
     bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
     item_effects::{
         AttackDirection, RaceImpactCueKind, RaceItemCueKind, RaceItemCuePlacement,
         RaceItemEffectState, activate_item_pickup, advance_mushrooms,
         player_has_active_mushroom_effect, player_is_stunned,
     },
+    input_rules::player_input_is_paused,
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
     player::PlayerState,
     race::{
-        PlayerColorId, RaceLifecycleStatus, RaceParticipant, RacePlayer, RacePlayerId, RaceState,
+        PlayerColorId, RaceParticipant, RacePlayer, RacePlayerId, RaceState,
         RaceRuntimeState, build_race_result_rows as build_shared_race_result_rows,
     },
+    race_flow::{race_flow_is_finished, update_race_flow},
     track::{Track, WordList},
     typing::{KeyAction, first_typo_index},
 };
@@ -162,7 +165,7 @@ struct BrowserHostLobby {
     active_results: Option<ResultsFrame>,
     core_race: Option<RaceState>,
     runtime: RaceRuntimeState<PlayerId, BrowserBonusAttempt>,
-    ai_char_budget: HashMap<PlayerId, f64>,
+    ai_char_budget: HashMap<PlayerId, AiDriverState>,
     ai_last_tick_ms: Option<f64>,
     events: Vec<String>,
     mod_config: ModConfigSnapshot,
@@ -797,15 +800,14 @@ fn browser_player_input_is_paused(
     player_id: PlayerId,
     now: Instant,
 ) -> bool {
-    if player_is_stunned(&state.runtime.player_effects, RacePlayerId(player_id.0), now) {
-        return true;
-    }
-
-    state
-        .core_race
-        .as_ref()
-        .and_then(|race| race.player(RacePlayerId(player_id.0)))
-        .is_some_and(|player| player_has_active_mushroom_effect(player, now))
+    state.core_race.as_ref().is_some_and(|race| {
+        player_input_is_paused(
+            race,
+            &state.runtime.player_effects,
+            RacePlayerId(player_id.0),
+            now,
+        )
+    })
 }
 
 fn set_browser_race_input_event(
@@ -1062,7 +1064,9 @@ fn activate_browser_item_pickup(
         state.runtime.bonus_attempts.remove(&PlayerId(interrupted.0));
     }
     for ai_id in report.reset_ai_players {
-        state.ai_char_budget.insert(PlayerId(ai_id.0), 0.0);
+        state
+            .ai_char_budget
+            .insert(PlayerId(ai_id.0), AiDriverState::default());
     }
     for event in report.events {
         state.push_event(event);
@@ -1168,20 +1172,6 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
         }
     }
 
-    let ai_wpm_by_id: HashMap<PlayerId, u32> = state
-        .players
-        .iter()
-        .filter(|player| player.kind == PlayerKind::Bot)
-        .map(|player| {
-            (
-                player.id,
-                player
-                    .ai_wpm
-                    .unwrap_or_else(|| browser_ai_wpm(AiDifficultySnapshot::Easy)),
-            )
-        })
-        .collect();
-
     {
         let Some(snapshot) = &mut state.active_race else {
             return false;
@@ -1196,39 +1186,50 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
             player.state.expire_effects(Instant::now());
         }
 
-        for player in core_race
+        let ai_configs = state
             .players
-            .iter_mut()
-            .filter(|player| {
-                state
-                    .players
-                    .iter()
-                    .find(|lobby_player| lobby_player.id == PlayerId(player.id.0))
-                    .is_some_and(|lobby_player| lobby_player.kind == PlayerKind::Bot)
+            .iter()
+            .filter(|player| player.kind == PlayerKind::Bot)
+            .map(|player| {
+                let base_wpm = player
+                    .ai_wpm
+                    .unwrap_or_else(|| browser_ai_wpm(AiDifficultySnapshot::Easy));
+                (
+                    player.id,
+                    AiDriverConfig {
+                        base_wpm: f64::from(base_wpm),
+                        focus_boost_wpm: state.item_registry.focus_effect().ai_wpm_boost,
+                        ink_multiplier_percent: state
+                            .item_registry
+                            .squid_ink_effect()
+                            .ai_wpm_multiplier_percent,
+                    },
+                )
             })
-        {
-            if player.state.is_finished()
-                || player_is_stunned(&state.runtime.player_effects, player.id, Instant::now())
-                || player_has_active_mushroom_effect(player, Instant::now())
-            {
+            .collect::<Vec<_>>();
+
+        for (player_id, config) in ai_configs {
+            let race_player_id = RacePlayerId(player_id.0);
+            if player_is_stunned(&state.runtime.player_effects, race_player_id, Instant::now()) {
                 continue;
             }
-            let base_wpm = ai_wpm_by_id
-                .get(&PlayerId(player.id.0))
-                .copied()
-                .unwrap_or_else(|| browser_ai_wpm(AiDifficultySnapshot::Easy));
-            let wpm = browser_effective_ai_wpm(base_wpm, player, &state.item_registry);
-            let budget = state.ai_char_budget.entry(PlayerId(player.id.0)).or_default();
-            *budget += browser_ai_chars_for_elapsed_ms(wpm, elapsed_ms);
-
-            while *budget >= 1.0 && !player.state.is_finished() {
-                *budget -= 1.0;
-                changed |= advance_browser_host_ai_char(player, &core_race.track);
+            let driver = state.ai_char_budget.entry(player_id).or_default();
+            let advance = advance_ai_driver(
+                core_race,
+                race_player_id,
+                driver,
+                config,
+                Instant::now(),
+                Duration::from_secs_f64(elapsed_ms / 1000.0),
+            );
+            if advance.changed() {
+                changed = true;
             }
         }
 
         if changed {
-            state.runtime.lifecycle.update(
+            update_race_flow(
+                &mut state.runtime.lifecycle,
                 core_race,
                 Instant::now(),
                 BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
@@ -1257,11 +1258,14 @@ fn browser_update_race_status(state: &mut BrowserHostLobby, now: Instant) -> boo
         return false;
     };
 
-    let update = state.runtime
-        .lifecycle
-        .update(core_race, now, BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT);
+    let update = update_race_flow(
+        &mut state.runtime.lifecycle,
+        core_race,
+        now,
+        BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
+    );
 
-    if !matches!(update.status, RaceLifecycleStatus::Finished { .. }) {
+    if !race_flow_is_finished(&update) {
         return false;
     }
 
@@ -1330,54 +1334,6 @@ fn browser_host_ai_elapsed_ms(state: &mut BrowserHostLobby, tick_ms: u32) -> f64
 
     state.ai_last_tick_ms = Some(now_ms);
     elapsed_ms.min(1000.0)
-}
-
-fn browser_ai_chars_for_elapsed_ms(wpm: u32, elapsed_ms: f64) -> f64 {
-    f64::from(wpm) * 5.0 * elapsed_ms / 60_000.0
-}
-
-fn browser_effective_ai_wpm(
-    base_wpm: u32,
-    player: &RacePlayer,
-    item_registry: &ItemRegistry,
-) -> u32 {
-    let now = Instant::now();
-    let focused_wpm = if player.state.has_active_focus(now) {
-        base_wpm.saturating_add(item_registry.focus_effect().ai_wpm_boost)
-    } else {
-        base_wpm
-    };
-    if player.state.is_inked_at(now) {
-        (u64::from(focused_wpm)
-            * u64::from(item_registry.squid_ink_effect().ai_wpm_multiplier_percent)
-            / 100) as u32
-    } else {
-        focused_wpm
-    }
-}
-
-fn advance_browser_host_ai_char(
-    player: &mut typekart::game::race::RacePlayer,
-    track: &Track,
-) -> bool {
-    let Some(key) = browser_host_next_ai_key(&player.state, track) else {
-        return false;
-    };
-    typekart::game::typing::apply_key(&mut player.state, track, key, Instant::now());
-    true
-}
-
-fn browser_host_next_ai_key(player: &PlayerState, track: &Track) -> Option<KeyAction> {
-    if player.is_finished() {
-        return None;
-    }
-    let target = track.current_word(player.word_index)?;
-    let input_len = player.input.chars().count();
-    target
-        .chars()
-        .nth(input_len)
-        .map(KeyAction::Char)
-        .or(Some(KeyAction::Space))
 }
 
 fn browser_sync_snapshot_from_core(

@@ -8,9 +8,16 @@
 use std::time::Instant;
 
 use super::{
+    ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
     race::{PlayerColorId, RacePlayerId, RaceState},
+    race_flow::update_race_flow,
     track::Track,
     typing::{KeyAction, TypingEvent},
+};
+
+pub use super::{
+    ai_driver::{AiDriverAdvance, ai_effective_wpm, next_ai_key},
+    race_flow::{race_flow_is_finished, reset_race_runtime},
 };
 
 #[derive(Debug, Clone)]
@@ -103,6 +110,26 @@ impl CoreHost {
         }
 
         events
+    }
+
+    pub fn advance_ai(
+        &mut self,
+        player_id: RacePlayerId,
+        driver: &mut AiDriverState,
+        config: AiDriverConfig,
+        now: Instant,
+        elapsed: std::time::Duration,
+    ) -> super::ai_driver::AiDriverAdvance {
+        advance_ai_driver(&mut self.race, player_id, driver, config, now, elapsed)
+    }
+
+    pub fn update_lifecycle(
+        &self,
+        lifecycle: &mut super::race::RaceLifecycleState,
+        now: Instant,
+        post_first_finish_timeout: std::time::Duration,
+    ) -> super::race::RaceLifecycleUpdate {
+        update_race_flow(lifecycle, &self.race, now, post_first_finish_timeout)
     }
 }
 

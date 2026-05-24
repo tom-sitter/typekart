@@ -4,14 +4,17 @@
 //! Keeping it pure makes the core behavior easy to unit test.
 
 pub mod ai;
+pub mod ai_driver;
 pub mod bonus;
 pub mod effects;
 pub mod engine;
+pub mod input_rules;
 pub mod item_effects;
 pub mod items;
 pub mod mods;
 pub mod player;
 pub mod race;
+pub mod race_flow;
 pub mod stats;
 pub mod track;
 pub mod typing;

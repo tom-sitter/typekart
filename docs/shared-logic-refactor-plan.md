@@ -76,12 +76,24 @@ Notes:
   has been extracted to `web/typekart-web/src/setup.rs`, and session tests now
   live beside `web/typekart-web/src/session.rs`.
 
-### 2. Shared Race Host Facade
+### 2. Shared Race Rule Modules And Host Facade
 
-Goal: grow `src/game/engine.rs` from the current small `CoreHost` into the
-single browser-safe authority for race ticking.
+Goal: extract duplicated authoritative race rules into small browser-safe game
+modules first, then grow `src/game/engine.rs` into a thin coordinator facade.
+`engine.rs` should not become a large bucket of unrelated rules.
 
-Responsibilities to move behind the facade:
+Intermediate module targets:
+
+- `src/game/ai_driver.rs`: AI WPM adjustment, character budgets, next-key
+  selection, pause checks, and AI typing events.
+- `src/game/race_flow.rs`: lifecycle update helpers, finish timeout handling,
+  result readiness, and runtime reset/rematch helpers.
+- `src/game/input_rules.rs`: shared input pause policy, including stun and
+  mushroom lockout rules.
+- Keep future `bonus_flow.rs`, `snapshot.rs`, and `lobby.rs` as later slices
+  unless the current extraction needs them.
+
+Responsibilities to move behind the final facade:
 
 - Apply human key input.
 - Advance AI racers from WPM budget.
@@ -98,11 +110,34 @@ Keep outside the facade:
 - Relay room management.
 - Wall-clock scheduling primitives. Callers should pass `Instant`/elapsed time.
 
+Implementation sequence:
+
+1. Extract `ai_driver.rs` and use it from browser-hosted races first.
+2. Wire the same AI driver into the terminal network host.
+3. Extract `race_flow.rs` for lifecycle/result-ready behavior.
+4. Keep `engine.rs` as the orchestration layer that calls these rule modules.
+
+Progress:
+
+- `src/game/ai_driver.rs` now owns shared AI WPM adjustment, character budgets,
+  next-key selection, and AI typing advancement.
+- `src/game/input_rules.rs` now owns shared input pause checks for stun and
+  mushroom lockout.
+- `src/game/race_flow.rs` now wraps shared lifecycle update and runtime reset
+  helpers.
+- Browser-hosted races and terminal network-hosted races both use the shared AI
+  driver path.
+- Local terminal AI racers use the shared AI WPM math and next-key selection.
+- Browser and network race status updates now call `race_flow`.
+- `src/game/engine.rs` remains a thin coordinator and delegates AI/lifecycle
+  helpers instead of absorbing the rule implementations.
+
 Validation:
 
 - Existing network host tests should still pass while using the facade.
 - Browser-hosted tests should use the same facade.
-- Add focused engine tests that do not instantiate terminal or browser code.
+- Add focused rule-module tests that do not instantiate terminal or browser
+  code.
 
 ### 3. Shared Bonus Attempt Flow
 

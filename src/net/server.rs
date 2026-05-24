@@ -18,7 +18,11 @@ use rand::{Rng, thread_rng};
 
 use crate::game::{
     ai::AiDifficulty,
+    ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
     bonus::{BonusChoiceStatus, BonusState, claim_bonus_choice},
+    input_rules::{
+        player_input_is_paused as shared_player_input_is_paused, player_input_is_paused_or_finished,
+    },
     item_effects::{
         AttackDirection, RaceImpactCue, RaceImpactCueKind, RaceItemCue, RaceItemCueKind,
         RaceItemCuePlacement, activate_item_pickup, advance_mushrooms,
@@ -30,8 +34,9 @@ use crate::game::{
         PlayerColorId, RaceLifecycleStatus, RaceParticipant, RacePlayerId, RaceRuntimeState,
         RaceState, build_race_result_rows as build_shared_race_result_rows,
     },
+    race_flow::update_race_flow,
     track::{Track, WordList},
-    typing::{KeyAction, TypingEvent, first_typo_index},
+    typing::{KeyAction, first_typo_index},
 };
 
 use super::log::{SharedNetworkLog, push_network_log};
@@ -1280,21 +1285,6 @@ fn apply_network_key_input(
         .is_some()
 }
 
-fn apply_network_track_key_input(
-    state: &mut HostState,
-    player_id: PlayerId,
-    action: KeyAction,
-    now: Instant,
-) -> Option<Vec<TypingEvent>> {
-    if player_input_is_paused(state, player_id, now) {
-        return Some(Vec::new());
-    }
-
-    state
-        .race
-        .apply_key_input(RacePlayerId(player_id.0), action, now)
-}
-
 fn apply_network_bonus_typing_action(
     state: &mut HostState,
     player_id: PlayerId,
@@ -1598,20 +1588,12 @@ fn network_position_band(state: &HostState, player_id: PlayerId) -> RacePosition
 }
 
 fn player_input_is_paused(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
-    if state
-        .runtime
-        .player_effects
-        .get(&RacePlayerId(player_id.0))
-        .and_then(|effects| effects.stunned_until)
-        .is_some_and(|until| until > now)
-    {
-        return true;
-    }
-
-    state
-        .race
-        .player(RacePlayerId(player_id.0))
-        .is_some_and(|player| player_has_active_mushroom_effect(player, now))
+    shared_player_input_is_paused(
+        &state.race,
+        &state.runtime.player_effects,
+        RacePlayerId(player_id.0),
+        now,
+    )
 }
 
 fn activate_network_pickup(
@@ -1740,89 +1722,58 @@ fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: I
 }
 
 fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let paused = state
-        .race
-        .player(RacePlayerId(player_id.0))
-        .is_none_or(|player| player.state.is_finished())
-        || player_input_is_paused(state, player_id, now);
-    let is_inked = state
-        .race
-        .player(RacePlayerId(player_id.0))
-        .is_some_and(|player| player.state.is_inked_at(now));
-    let is_focused = state
-        .race
-        .player(RacePlayerId(player_id.0))
-        .is_some_and(|player| player.state.has_active_focus(now));
-    let focus_boost_wpm = state.item_registry.focus_effect().ai_wpm_boost;
-    let ink_multiplier_percent = state
-        .item_registry
-        .squid_ink_effect()
-        .ai_wpm_multiplier_percent;
-
-    let Some(ai) = state.ai_racers.get_mut(&player_id) else {
+    let race_player_id = RacePlayerId(player_id.0);
+    let Some(ai) = state.ai_racers.get(&player_id) else {
         return;
     };
+    let words_per_minute = ai.words_per_minute;
+    let char_budget = ai.char_budget;
+    let last_update = ai.last_update;
     let elapsed = now.saturating_duration_since(ai.last_update);
-    ai.last_update = now;
+    let mut driver = AiDriverState {
+        char_budget,
+        last_update: Some(last_update),
+    };
+    if let Some(ai) = state.ai_racers.get_mut(&player_id) {
+        ai.last_update = now;
+    }
 
-    if paused {
+    if player_input_is_paused_or_finished(
+        &state.race,
+        &state.runtime.player_effects,
+        race_player_id,
+        now,
+    ) {
         return;
     }
 
-    let effective_wpm = ai_effective_wpm(
-        ai.words_per_minute,
-        is_focused,
-        is_inked,
-        focus_boost_wpm,
-        ink_multiplier_percent,
+    let config = AiDriverConfig {
+        base_wpm: words_per_minute,
+        focus_boost_wpm: state.item_registry.focus_effect().ai_wpm_boost,
+        ink_multiplier_percent: state
+            .item_registry
+            .squid_ink_effect()
+            .ai_wpm_multiplier_percent,
+    };
+    let advance = advance_ai_driver(
+        &mut state.race,
+        race_player_id,
+        &mut driver,
+        config,
+        now,
+        elapsed,
     );
-    ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(effective_wpm);
 
-    while state
-        .ai_racers
-        .get(&player_id)
-        .is_some_and(|ai| ai.char_budget >= 1.0)
-    {
-        let Some(action) = next_network_ai_key(state, player_id) else {
-            break;
-        };
-        let events =
-            apply_network_track_key_input(state, player_id, action, now).unwrap_or_default();
-        if let Some(ai) = state.ai_racers.get_mut(&player_id) {
-            ai.char_budget -= 1.0;
-        }
-
-        if events
-            .iter()
-            .any(|event| matches!(event, TypingEvent::RaceFinished))
-        {
-            push_event(
-                state,
-                format!("{} finished", player_label(state, player_id)),
-            );
-            break;
-        }
-    }
-}
-
-fn next_network_ai_key(state: &HostState, player_id: PlayerId) -> Option<KeyAction> {
-    let player = state.race.player(RacePlayerId(player_id.0))?;
-    let target = player
-        .state
-        .word_override(player.state.word_index)
-        .or_else(|| state.race.track.current_word(player.state.word_index))?;
-    if player.state.input == target {
-        return Some(KeyAction::Space);
+    if let Some(ai) = state.ai_racers.get_mut(&player_id) {
+        ai.char_budget = driver.char_budget;
     }
 
-    target
-        .chars()
-        .nth(player.state.input.chars().count())
-        .map(KeyAction::Char)
-}
-
-fn ai_chars_per_second(words_per_minute: f64) -> f64 {
-    words_per_minute * 5.0 / 60.0
+    if advance.finished() {
+        push_event(
+            state,
+            format!("{} finished", player_label(state, player_id)),
+        );
+    }
 }
 
 fn player_is_stunned(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
@@ -1831,25 +1782,6 @@ fn player_is_stunned(state: &HostState, player_id: PlayerId, now: Instant) -> bo
         RacePlayerId(player_id.0),
         now,
     )
-}
-
-fn ai_effective_wpm(
-    base_wpm: f64,
-    is_focused: bool,
-    is_inked: bool,
-    focus_boost_wpm: u32,
-    ink_multiplier_percent: u32,
-) -> f64 {
-    let focused_wpm = if is_focused {
-        base_wpm + f64::from(focus_boost_wpm)
-    } else {
-        base_wpm
-    };
-    if is_inked {
-        focused_wpm * f64::from(ink_multiplier_percent) / 100.0
-    } else {
-        focused_wpm
-    }
 }
 
 fn item_pickup_name(item: ItemPickup) -> &'static str {
@@ -2201,10 +2133,12 @@ fn update_race_status(state: &mut HostState, now: Instant) {
         return;
     }
 
-    let update = state
-        .runtime
-        .lifecycle
-        .update(&state.race, now, POST_FIRST_FINISH_TIMEOUT);
+    let update = update_race_flow(
+        &mut state.runtime.lifecycle,
+        &state.race,
+        now,
+        POST_FIRST_FINISH_TIMEOUT,
+    );
 
     for id in update.newly_finished {
         let placement = state
@@ -3597,8 +3531,14 @@ mod tests {
 
     #[test]
     fn network_focused_ai_racer_gets_small_wpm_boost() {
-        assert_eq!(super::ai_effective_wpm(60.0, true, false, 10, 70), 70.0);
-        assert_eq!(super::ai_effective_wpm(60.0, false, false, 10, 70), 60.0);
+        assert_eq!(
+            crate::game::ai_driver::ai_effective_wpm(60.0, true, false, 10, 70),
+            70.0
+        );
+        assert_eq!(
+            crate::game::ai_driver::ai_effective_wpm(60.0, false, false, 10, 70),
+            60.0
+        );
     }
 
     #[test]
