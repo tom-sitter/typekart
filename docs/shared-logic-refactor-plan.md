@@ -365,6 +365,9 @@ Candidate extractions:
 - `src/net/server/host_lobby.rs`: TCP-specific lobby side effects around
   shared lobby policy, including client kicks, rename side effects, and waiting
   roster cleanup.
+- `src/net/server/host_snapshots.rs`: network-specific snapshot sequencing,
+  bonus cooldown refresh, player-kind mapping, and snapshot broadcast logging
+  around shared snapshot projection.
 - `src/net/server/host_ai.rs`: network-specific AI timing map and debug
   logging around shared `ai_driver` and shared lobby AI policy.
 - `src/net/server/host_bonus.rs`: network-specific event/log handling around
@@ -396,6 +399,9 @@ Progress:
   around shared `lobby`: player removal, rename propagation into the mirrored
   race roster, kicked-client socket closure, runtime cleanup for removed
   players, and disconnected waiting-roster cleanup.
+- `src/net/server/host_snapshots.rs` now owns network-host snapshot adaptation
+  around shared `snapshot`: sequence increments, cooldown expiry before
+  projection, player-kind lookup, and snapshot/delta broadcast log messages.
 
 ## Suggested Order
 

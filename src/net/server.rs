@@ -27,11 +27,6 @@ use crate::game::{
     mods::ActiveModConfig,
     race::{PlayerColorId, RacePlayerId, RaceRuntimeState, RaceState},
     race_flow::advance_race_flow,
-    snapshot::{
-        RaceDeltaSnapshotInput, RaceSnapshotInput,
-        build_race_delta_snapshot as build_shared_race_delta_snapshot,
-        build_race_snapshot as build_shared_race_snapshot,
-    },
     track::{Track, WordList},
     typing::KeyAction,
 };
@@ -47,7 +42,7 @@ use super::log::{SharedNetworkLog, push_network_log};
 use super::protocol::RaceResultRow;
 use super::protocol::{
     AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, ProtocolKey,
-    RaceDeltaSnapshot, RaceSnapshot, ServerMessage, version_mismatch_message,
+    ServerMessage, version_mismatch_message,
 };
 use super::transport::{read_client_message, write_server_message as write_framed_server_message};
 
@@ -55,6 +50,7 @@ mod host_ai;
 mod host_bonus;
 mod host_items;
 mod host_lobby;
+mod host_snapshots;
 use host_ai::NetworkAiRacer;
 #[cfg(test)]
 use host_ai::set_lobby_ai_difficulty;
@@ -66,6 +62,8 @@ use host_bonus::apply_network_key_input;
 use host_items::activate_network_pickup;
 #[cfg(test)]
 use host_lobby::{cleanup_disconnected_waiting_players, remove_lobby_player, rename_lobby_player};
+#[cfg(test)]
+use host_snapshots::build_race_snapshot;
 
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(100);
@@ -1063,14 +1061,14 @@ fn expire_bonus_cooldowns(state: &mut HostState, now: Instant) -> usize {
 }
 
 fn broadcast_race_snapshot(state: &mut HostState) -> Result<()> {
-    let snapshot = ServerMessage::RaceSnapshot(build_race_snapshot(state));
-    log_race_snapshot(state);
+    let snapshot = ServerMessage::RaceSnapshot(host_snapshots::build_race_snapshot(state));
+    host_snapshots::log_race_snapshot(state);
     broadcast_server_message_to_clients(state, &snapshot)
 }
 
 fn broadcast_race_delta(state: &mut HostState) -> Result<()> {
-    let delta = ServerMessage::RaceDelta(build_race_delta_snapshot(state));
-    log_race_delta(state);
+    let delta = ServerMessage::RaceDelta(host_snapshots::build_race_delta_snapshot(state));
+    host_snapshots::log_race_delta(state);
     broadcast_server_message_to_clients(state, &delta)
 }
 
@@ -1093,53 +1091,6 @@ fn broadcast_server_message_to_clients(
         .clients
         .retain(|client| !failed_clients.contains(&client.player_id));
     Ok(())
-}
-
-fn log_race_snapshot(state: &HostState) {
-    match state.phase {
-        NetworkRacePhase::Countdown { remaining_seconds } => push_network_log(
-            &state.debug_log,
-            format!(
-                "broadcast snapshot seq={} phase=countdown remaining={remaining_seconds}",
-                state.snapshot_sequence
-            ),
-        ),
-        NetworkRacePhase::Racing if state.snapshot_sequence.is_multiple_of(20) => push_network_log(
-            &state.debug_log,
-            format!(
-                "broadcast snapshot seq={} phase=racing",
-                state.snapshot_sequence
-            ),
-        ),
-        NetworkRacePhase::Finished => push_network_log(
-            &state.debug_log,
-            format!(
-                "broadcast snapshot seq={} phase=finished",
-                state.snapshot_sequence
-            ),
-        ),
-        _ => {}
-    }
-}
-
-fn log_race_delta(state: &HostState) {
-    match state.phase {
-        NetworkRacePhase::Racing if state.snapshot_sequence.is_multiple_of(20) => push_network_log(
-            &state.debug_log,
-            format!(
-                "broadcast delta seq={} phase=racing",
-                state.snapshot_sequence
-            ),
-        ),
-        NetworkRacePhase::Finished => push_network_log(
-            &state.debug_log,
-            format!(
-                "broadcast delta seq={} phase=finished",
-                state.snapshot_sequence
-            ),
-        ),
-        _ => {}
-    }
 }
 
 fn broadcast_race_results(state: &mut HostState) -> Result<()> {
@@ -1219,54 +1170,6 @@ fn update_race_status(state: &mut HostState, now: Instant) {
         push_event(state, "Race finished".to_string());
         push_network_log(&state.debug_log, finish_summary_log(&summary));
     }
-}
-
-fn build_race_snapshot(state: &mut HostState) -> RaceSnapshot {
-    let now = Instant::now();
-    expire_bonus_cooldowns(state, now);
-
-    state.snapshot_sequence += 1;
-    build_shared_race_snapshot(
-        RaceSnapshotInput {
-            sequence: state.snapshot_sequence,
-            phase: state.phase,
-            mod_config: (&state.active_mod_config).into(),
-            race: &state.race,
-            bonuses: &state.bonuses,
-            player_effects: &state.runtime.player_effects,
-            events: state.events.clone(),
-            now,
-        },
-        |player_id| player_kind(state, player_id),
-    )
-}
-
-fn build_race_delta_snapshot(state: &mut HostState) -> RaceDeltaSnapshot {
-    let now = Instant::now();
-    expire_bonus_cooldowns(state, now);
-
-    state.snapshot_sequence += 1;
-    build_shared_race_delta_snapshot(
-        RaceDeltaSnapshotInput {
-            sequence: state.snapshot_sequence,
-            phase: state.phase,
-            race: &state.race,
-            bonuses: &state.bonuses,
-            player_effects: &state.runtime.player_effects,
-            events: state.events.clone(),
-            now,
-        },
-        |player_id| player_kind(state, player_id),
-    )
-}
-
-fn player_kind(state: &HostState, player_id: PlayerId) -> PlayerKind {
-    state
-        .players
-        .iter()
-        .find(|player| player.id == player_id)
-        .map(|player| player.kind)
-        .unwrap_or(PlayerKind::Human)
 }
 
 fn protocol_key_to_action(key: ProtocolKey) -> KeyAction {
