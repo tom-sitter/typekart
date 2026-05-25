@@ -48,6 +48,12 @@ pub enum ReturnToLobbyDecision {
     ReturnFromResults,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReturnToLobbyOutcome {
+    pub decision: ReturnToLobbyDecision,
+    pub event: &'static str,
+}
+
 impl PreparedHostRace {
     pub fn participant_count(&self) -> usize {
         self.participants.len()
@@ -161,6 +167,20 @@ pub fn return_to_lobby_decision(phase: NetworkRacePhase) -> ReturnToLobbyDecisio
     }
 }
 
+pub fn return_to_lobby_outcome(phase: NetworkRacePhase) -> Option<ReturnToLobbyOutcome> {
+    match return_to_lobby_decision(phase) {
+        ReturnToLobbyDecision::Ignore => None,
+        ReturnToLobbyDecision::CancelRace => Some(ReturnToLobbyOutcome {
+            decision: ReturnToLobbyDecision::CancelRace,
+            event: "Race cancelled",
+        }),
+        ReturnToLobbyDecision::ReturnFromResults => Some(ReturnToLobbyOutcome {
+            decision: ReturnToLobbyDecision::ReturnFromResults,
+            event: "Returned to lobby",
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
@@ -175,6 +195,7 @@ mod tests {
         ReturnToLobbyDecision, advance_countdown_to_racing, begin_countdown_phase,
         connected_racer_count, countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
         has_connected_active_racer, prepare_race_from_lobby, return_to_lobby_decision,
+        return_to_lobby_outcome,
     };
     use crate::game::track::{Track, WordList};
 
@@ -347,6 +368,11 @@ mod tests {
             return_to_lobby_decision(NetworkRacePhase::Lobby),
             ReturnToLobbyDecision::Ignore
         );
+        assert_eq!(
+            return_to_lobby_outcome(NetworkRacePhase::Racing).map(|outcome| outcome.event),
+            Some("Race cancelled")
+        );
+        assert_eq!(return_to_lobby_outcome(NetworkRacePhase::Lobby), None);
     }
 
     #[test]

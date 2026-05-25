@@ -14,9 +14,9 @@ use anyhow::Result;
 
 use crate::game::host_session::{
     CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-    ReturnToLobbyDecision, advance_countdown_to_racing, begin_countdown_phase,
-    countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
-    has_connected_active_racer, return_to_lobby_decision,
+    advance_countdown_to_racing, begin_countdown_phase, countdown_should_cancel,
+    countdown_start_plan, countdown_tick_phase, has_connected_active_racer,
+    return_to_lobby_outcome,
 };
 use crate::net::{log::push_network_log, protocol::NetworkRacePhase};
 
@@ -87,14 +87,12 @@ pub(super) fn start_countdown(state: Arc<Mutex<HostState>>) {
 }
 
 pub(super) fn return_to_lobby(state: &mut HostState) -> Result<()> {
-    let event = match return_to_lobby_decision(state.phase) {
-        ReturnToLobbyDecision::CancelRace => "Race cancelled",
-        ReturnToLobbyDecision::ReturnFromResults => "Returned to lobby",
-        ReturnToLobbyDecision::Ignore => return Ok(()),
+    let Some(outcome) = return_to_lobby_outcome(state.phase) else {
+        return Ok(());
     };
     host_race::reset_race_from_lobby(state)?;
-    push_event(state, event.to_string());
-    push_network_log(&state.debug_log, event.to_ascii_lowercase());
+    push_event(state, outcome.event.to_string());
+    push_network_log(&state.debug_log, outcome.event.to_ascii_lowercase());
     if let Err(error) = broadcast_race_snapshot(state) {
         push_network_log(
             &state.debug_log,

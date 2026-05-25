@@ -545,6 +545,9 @@ Progress:
   return-to-lobby decisions.
 - Network-hosted and browser-hosted countdown starts now use the shared phase
   policy while keeping their own timers, broadcasts, and UI updates.
+- `src/game/host_session.rs` now returns shared return-to-lobby outcomes with
+  semantic event text, so network and browser adapters use the same lifecycle
+  meaning while retaining adapter-specific cleanup and broadcasts.
 
 ### 11. Browser Host Authority Convergence
 

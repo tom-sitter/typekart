@@ -17,6 +17,7 @@ use typekart::game::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
         PreparedHostRace, advance_countdown_to_racing, begin_countdown_phase,
         countdown_start_plan, countdown_tick_phase, prepare_race_from_selected_lobby_players,
+        return_to_lobby_outcome,
     },
     item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
@@ -466,13 +467,16 @@ fn process_browser_host_client_message(
 }
 
 fn browser_return_host_to_lobby(state: &mut BrowserHostLobby) {
+    let Some(outcome) = return_to_lobby_outcome(state.phase()) else {
+        return;
+    };
     state.active_race = None;
     state.active_results = None;
     state.core_race = None;
     state.runtime.reset();
     state.ai_char_budget.clear();
     state.ai_last_tick_ms = None;
-    state.push_event("returned to lobby");
+    state.push_event(outcome.event);
 }
 
 async fn publish_browser_host_state(
@@ -1754,7 +1758,7 @@ fn browser_host_restart_command_returns_results_to_lobby() {
     assert!(lobby.active_race.is_none());
     assert!(lobby.core_race.is_none());
     assert!(lobby.runtime.lifecycle.placements.is_empty());
-    assert!(lobby.events.iter().any(|event| event == "returned to lobby"));
+    assert!(lobby.events.iter().any(|event| event == "Returned to lobby"));
 }
 
 #[test]
