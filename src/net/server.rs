@@ -1,14 +1,12 @@
 //! Authoritative TCP host for multiplayer races.
 
 use std::{
-    collections::HashMap,
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
-    thread,
     time::{Duration, Instant},
 };
 
@@ -16,14 +14,12 @@ use std::{
 use crate::game::lobby::{
     connected_player_count, first_available_color, new_human_lobby_player, unique_lobby_name,
 };
+#[cfg(test)]
+use crate::game::race::{RacePlayerId, RaceState};
 use crate::game::{
     ai::AiDifficulty,
-    bonus::BonusState,
-    bonus_flow::BonusAttempt,
     items::ItemRegistry,
-    lobby::LOBBY_COLOR_ROTATION,
     mods::ActiveModConfig,
-    race::{PlayerColorId, RacePlayerId, RaceRuntimeState, RaceState},
     track::{Track, WordList},
 };
 use anyhow::{Context, Result};
@@ -35,9 +31,12 @@ use super::log::{SharedNetworkLog, push_network_log};
 use super::protocol::AssignedColor;
 #[cfg(test)]
 use super::protocol::RaceResultRow;
-use super::protocol::{LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, ServerMessage};
+use super::protocol::ServerMessage;
+#[cfg(test)]
+use super::protocol::{NetworkRacePhase, PlayerId};
 use super::transport::write_server_message as write_framed_server_message;
 
+mod host_accept;
 mod host_ai;
 mod host_bonus;
 mod host_broadcast;
@@ -52,7 +51,9 @@ mod host_lobby;
 mod host_phase;
 mod host_race;
 mod host_snapshots;
+mod host_state;
 mod host_util;
+#[cfg(test)]
 use host_ai::NetworkAiRacer;
 #[cfg(test)]
 use host_ai::set_lobby_ai_difficulty;
@@ -83,6 +84,7 @@ use host_phase::{reconcile_phase_after_disconnect, return_to_lobby};
 use host_race::{reset_race_from_lobby, update_race_status};
 #[cfg(test)]
 use host_snapshots::build_race_snapshot;
+use host_state::{ConnectedClient, HostState, build_initial_host_state};
 use host_util::{print_lobby_snapshot, validate_host_capacity};
 
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -93,14 +95,6 @@ macro_rules! server_println {
     ($($arg:tt)*) => {
         if SERVER_CONSOLE_LOGGING.load(std::sync::atomic::Ordering::Relaxed) {
             println!($($arg)*);
-        }
-    };
-}
-
-macro_rules! server_eprintln {
-    ($($arg:tt)*) => {
-        if SERVER_CONSOLE_LOGGING.load(std::sync::atomic::Ordering::Relaxed) {
-            eprintln!($($arg)*);
         }
     };
 }
@@ -125,31 +119,7 @@ pub struct HostConfig {
     pub debug_log: Option<SharedNetworkLog>,
 }
 
-struct ConnectedClient {
-    player_id: PlayerId,
-    stream: TcpStream,
-}
-
-struct HostState {
-    players: Vec<LobbyPlayer>,
-    clients: Vec<ConnectedClient>,
-    race: RaceState,
-    ai_racers: HashMap<PlayerId, NetworkAiRacer>,
-    word_list: WordList,
-    bonuses: BonusState,
-    item_registry: ItemRegistry,
-    active_mod_config: ActiveModConfig,
-    max_players: usize,
-    ai_difficulty: AiDifficulty,
-    runtime: RaceRuntimeState<PlayerId, BonusAttempt>,
-    phase: NetworkRacePhase,
-    snapshot_sequence: u64,
-    events: Vec<String>,
-    debug_log: Option<SharedNetworkLog>,
-    race_results_sent: bool,
-}
-
-pub fn run_host(config: HostConfig) -> Result<()> {
+pub fn run_host(mut config: HostConfig) -> Result<()> {
     SERVER_CONSOLE_LOGGING.store(config.console_logging, Ordering::Relaxed);
 
     validate_host_capacity(config.max_players, config.ai_racer_count)?;
@@ -159,7 +129,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
     let local_addr = listener
         .local_addr()
         .context("failed to read host address")?;
-    if let Some(ready_signal) = config.ready_signal {
+    if let Some(ready_signal) = config.ready_signal.take() {
         let _ = ready_signal.send(local_addr);
     }
     push_network_log(
@@ -174,55 +144,8 @@ pub fn run_host(config: HostConfig) -> Result<()> {
     );
     push_network_log(&config.debug_log, config.active_mod_config.log_summary());
 
-    let bonuses = BonusState::generate(&config.track, &config.word_list);
-    let mut race = RaceState::new(config.track.clone());
-    let mut players = Vec::new();
-    let mut next_player_id = 1;
-    if let Some(host_name) = config.host_name {
-        race.add_player(
-            RacePlayerId(1),
-            host_name.clone(),
-            PlayerColorId::Cyan,
-            std::time::Instant::now(),
-        );
-        players.push(LobbyPlayer {
-            id: PlayerId(1),
-            name: host_name,
-            kind: PlayerKind::Human,
-            color: LOBBY_COLOR_ROTATION[0],
-            ready: true,
-            connected: true,
-            ai_difficulty: None,
-            ai_wpm: None,
-        });
-        next_player_id = 2;
-    }
-    let ai_racers = host_ai::add_network_ai_racers(
-        &mut race,
-        &mut players,
-        config.ai_racer_count,
-        config.ai_difficulty,
-        std::time::Instant::now(),
-    );
-
-    let state = Arc::new(Mutex::new(HostState {
-        players,
-        clients: Vec::new(),
-        race,
-        ai_racers,
-        word_list: config.word_list,
-        bonuses,
-        item_registry: config.item_registry,
-        active_mod_config: config.active_mod_config,
-        max_players: config.max_players,
-        ai_difficulty: config.ai_difficulty,
-        runtime: RaceRuntimeState::new(),
-        phase: NetworkRacePhase::WaitingForHost,
-        snapshot_sequence: 0,
-        events: Vec::new(),
-        debug_log: config.debug_log,
-        race_results_sent: false,
-    }));
+    let initial_state = build_initial_host_state(config);
+    let state = Arc::new(Mutex::new(initial_state.state));
 
     server_println!("TypeKart host listening on {local_addr}");
     if has_embedded_host_player(&state) {
@@ -231,48 +154,7 @@ pub fn run_host(config: HostConfig) -> Result<()> {
     }
     server_println!("Waiting for joiners. Press Ctrl-C to stop.");
 
-    for stream in listener.incoming() {
-        let stream = stream.context("failed to accept client connection")?;
-        let peer = stream.peer_addr().ok();
-
-        let join_hello = match host_handshake::read_join_hello(&stream) {
-            Ok(join_hello) => join_hello,
-            Err(error) => {
-                server_eprintln!("Rejected connection: {error:#}");
-                continue;
-            }
-        };
-        let (player_id, assigned_color, player_name) = {
-            let mut state = state.lock().expect("host state poisoned");
-            let Some(accepted_join) =
-                host_join::admit_joiner(&mut state, &stream, join_hello, next_player_id)?
-            else {
-                continue;
-            };
-            broadcast_lobby_snapshot(&mut state)?;
-
-            (
-                accepted_join.player_id,
-                accepted_join.assigned_color,
-                accepted_join.player_name,
-            )
-        };
-
-        server_println!(
-            "{} joined as player {} ({assigned_color:?}){}",
-            player_name,
-            player_id.0,
-            peer.map(|addr| format!(" from {addr}")).unwrap_or_default()
-        );
-
-        let state_for_client = Arc::clone(&state);
-        thread::spawn(move || {
-            host_client::handle_client_messages(player_id, stream, state_for_client)
-        });
-        next_player_id = next_player_id.max(player_id.0 + 1);
-    }
-
-    Ok(())
+    host_accept::run_accept_loop(listener, state, initial_state.next_player_id)
 }
 
 fn push_event(state: &mut HostState, event: String) {

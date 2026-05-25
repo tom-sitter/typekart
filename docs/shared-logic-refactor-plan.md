@@ -383,6 +383,11 @@ Candidate extractions:
   and lobby/race roster mutation.
 - `src/net/server/host_util.rs`: small host utilities such as capacity
   validation, lobby console printing, and protocol/UI color conversions.
+- `src/net/server/host_state.rs`: central network-host state container and
+  initial state construction from `HostConfig`.
+- `src/net/server/host_accept.rs`: TCP accept-loop shell after startup,
+  including handshakes, join admission, accepted-client logging, and per-client
+  thread spawning.
 - `src/net/server/host_race.rs`: network-specific race lifecycle state
   mutations around shared `race_flow`, including rematch preparation and finish
   status updates.
@@ -449,6 +454,12 @@ Progress:
 - `src/net/server/host_util.rs` now owns small host utility concerns: capacity
   validation, lobby console output, and `AssignedColor`/`PlayerColorId`
   conversions.
+- `src/net/server/host_state.rs` now owns `HostState`, `ConnectedClient`, and
+  initial host-state construction, including embedded host setup, AI racer
+  creation, bonus generation, runtime initialization, and next-player-id setup.
+- `src/net/server/host_accept.rs` now owns the post-startup TCP accept loop:
+  accepting streams, reading handshakes, delegating join admission, broadcasting
+  lobby updates, logging accepted joiners, and spawning per-client handlers.
 - `src/net/server/host_race.rs` now owns network-host race lifecycle mutation
   around shared `race_flow`: connected-racer counts, rematch/race reset from
   lobby participants, runtime reset, race-finish status updates, and
