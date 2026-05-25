@@ -565,6 +565,9 @@ Progress:
   preparing a waiting race and entering an active race. Network and browser
   hosts use these outcomes while applying their own concrete runtime, results,
   event, and AI timing fields.
+- `src/game/host_session.rs` now includes shared race-finished event text in
+  the host lifecycle outcome, so network and browser hosts use the same finish
+  event while keeping result snapshots and logs adapter-owned.
 
 ### 11. Browser Host Authority Convergence
 

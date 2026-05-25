@@ -76,7 +76,9 @@ pub(super) fn update_race_status(state: &mut HostState, now: Instant) {
     }
 
     if let Some(summary) = outcome.flow.finished {
-        push_event(state, "Race finished".to_string());
+        if let Some(event) = outcome.finish_event {
+            push_event(state, event.to_string());
+        }
         push_network_log(&state.debug_log, finish_summary_log(&summary));
     }
 }

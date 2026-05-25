@@ -73,6 +73,7 @@ pub struct HostRaceTickOutcome {
 pub struct HostRaceLifecycleOutcome {
     pub phase: NetworkRacePhase,
     pub flow: RaceFlowOutcome,
+    pub finish_event: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,17 +304,22 @@ pub fn advance_host_race_lifecycle(
                 newly_finished: Vec::new(),
                 finished: None,
             },
+            finish_event: None,
         };
     }
 
     let flow = advance_race_flow(lifecycle, race, now, post_first_finish_timeout);
-    let phase = if flow.finished.is_some() {
-        NetworkRacePhase::Finished
+    let (phase, finish_event) = if flow.finished.is_some() {
+        (NetworkRacePhase::Finished, Some("Race finished"))
     } else {
-        NetworkRacePhase::Racing
+        (NetworkRacePhase::Racing, None)
     };
 
-    HostRaceLifecycleOutcome { phase, flow }
+    HostRaceLifecycleOutcome {
+        phase,
+        flow,
+        finish_event,
+    }
 }
 
 #[cfg(test)]
@@ -630,5 +636,6 @@ mod tests {
         assert_eq!(racing.phase, NetworkRacePhase::Finished);
         assert_eq!(racing.flow.newly_finished[0].player_id, RacePlayerId(1));
         assert!(racing.flow.finished.is_some());
+        assert_eq!(racing.finish_event, Some("Race finished"));
     }
 }

@@ -1179,15 +1179,15 @@ fn browser_update_race_status(state: &mut BrowserHostLobby, now: Instant) -> boo
         BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
     );
 
-    if outcome.flow.finished.is_none() {
+    let Some(finish_event) = outcome.finish_event else {
         return false;
-    }
+    };
 
-    browser_finish_race(state);
+    browser_finish_race(state, finish_event);
     true
 }
 
-fn browser_finish_race(state: &mut BrowserHostLobby) {
+fn browser_finish_race(state: &mut BrowserHostLobby, finish_event: &str) {
     let Some(core_race) = &state.core_race else {
         return;
     };
@@ -1198,12 +1198,12 @@ fn browser_finish_race(state: &mut BrowserHostLobby) {
     );
     if let Some(snapshot) = &mut state.active_race {
         snapshot.phase = NetworkRacePhase::Finished;
-        snapshot.events = vec!["Race finished".to_string()];
+        snapshot.events = vec![finish_event.to_string()];
     }
     state.active_results = Some(ResultsFrame {
         placements: build_shared_placement_snapshots(&state.runtime.lifecycle.placements),
         rows,
-        events: vec!["Race finished".to_string()],
+        events: vec![finish_event.to_string()],
     });
     state.active_race = None;
     state.ai_char_budget.clear();
