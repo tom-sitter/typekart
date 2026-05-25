@@ -2,8 +2,8 @@
 
 use std::{
     collections::HashMap,
-    io::{self, BufRead, BufReader},
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
+    io::BufReader,
+    net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -43,10 +43,13 @@ use super::transport::{read_client_message, write_server_message as write_framed
 mod host_ai;
 mod host_bonus;
 mod host_broadcast;
+mod host_commands;
+mod host_disconnect;
 mod host_handshake;
 mod host_input;
 mod host_items;
 mod host_lobby;
+mod host_phase;
 mod host_race;
 mod host_snapshots;
 use host_ai::NetworkAiRacer;
@@ -61,12 +64,19 @@ use host_broadcast::{
     broadcast_race_snapshot,
 };
 #[cfg(test)]
+use host_commands::update_host_ready;
+use host_commands::{has_embedded_host_player, spawn_host_command_loop};
+#[cfg(test)]
+use host_disconnect::handle_player_disconnect;
+#[cfg(test)]
 use host_handshake::{read_join_hello, welcome_joiner};
 use host_input::NetworkInputOutcome;
 #[cfg(test)]
 use host_items::activate_network_pickup;
 #[cfg(test)]
 use host_lobby::{cleanup_disconnected_waiting_players, remove_lobby_player, rename_lobby_player};
+#[cfg(test)]
+use host_phase::{reconcile_phase_after_disconnect, return_to_lobby};
 #[cfg(test)]
 use host_race::{reset_race_from_lobby, update_race_status};
 #[cfg(test)]
@@ -90,6 +100,10 @@ macro_rules! server_eprintln {
             eprintln!($($arg)*);
         }
     };
+}
+
+fn print_server_line(message: impl AsRef<str>) {
+    server_println!("{}", message.as_ref());
 }
 
 #[derive(Debug, Clone)]
@@ -355,59 +369,6 @@ fn validate_host_capacity(max_players: usize, ai_racer_count: usize) -> Result<(
     Ok(())
 }
 
-fn spawn_host_command_loop(state: Arc<Mutex<HostState>>) {
-    thread::spawn(move || {
-        for line in io::stdin().lock().lines() {
-            let Ok(command) = line else {
-                break;
-            };
-
-            match command.trim() {
-                "ready" => update_host_ready(&state, true),
-                "unready" => update_host_ready(&state, false),
-                "lobby" => {
-                    let state = state.lock().expect("host state poisoned");
-                    print_lobby_snapshot(&state.players);
-                }
-                "start" => start_countdown(Arc::clone(&state)),
-                "" if command == " " => start_countdown(Arc::clone(&state)),
-                "" => {}
-                other => {
-                    if current_phase(&state) == NetworkRacePhase::Racing {
-                        apply_line_input(&state, PlayerId(1), other);
-                    } else {
-                        server_println!("Unknown host command: {other}");
-                    }
-                }
-            }
-        }
-    });
-}
-
-fn has_embedded_host_player(state: &Arc<Mutex<HostState>>) -> bool {
-    state
-        .lock()
-        .expect("host state poisoned")
-        .players
-        .iter()
-        .any(|player| player.id == PlayerId(1))
-}
-
-fn update_host_ready(state: &Arc<Mutex<HostState>>, ready: bool) {
-    let mut state = state.lock().expect("host state poisoned");
-    if let Ok(outcome) = shared_set_lobby_ready(&mut state.players, PlayerId(1), ready) {
-        server_println!(
-            "{} is {}",
-            outcome.name,
-            if outcome.ready { "ready" } else { "not ready" }
-        );
-    }
-    print_lobby_snapshot(&state.players);
-    if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-        server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-    }
-}
-
 fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mutex<HostState>>) {
     let mut reader = BufReader::new(stream);
     loop {
@@ -463,7 +424,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
                         let state = state.lock().expect("host state poisoned");
                         push_network_log(&state.debug_log, "host requested countdown");
                     }
-                    start_countdown(Arc::clone(&state));
+                    host_phase::start_countdown(Arc::clone(&state));
                 } else {
                     server_println!(
                         "Ignoring start request from non-host player {}",
@@ -509,7 +470,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
             ClientMessage::RestartRace => {
                 if player_id == PlayerId(1) {
                     let mut state = state.lock().expect("host state poisoned");
-                    if let Err(error) = return_to_lobby(&mut state) {
+                    if let Err(error) = host_phase::return_to_lobby(&mut state) {
                         server_eprintln!("Failed to return to lobby: {error:#}");
                         push_network_log(
                             &state.debug_log,
@@ -554,7 +515,7 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         state.phase,
         NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing | NetworkRacePhase::Finished
     );
-    if handle_player_disconnect(&mut state, player_id, std::time::Instant::now()) {
+    if host_disconnect::handle_player_disconnect(&mut state, player_id, std::time::Instant::now()) {
         return;
     }
     print_lobby_snapshot(&state.players);
@@ -568,74 +529,6 @@ fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mut
         && let Err(error) = broadcast_race_results_once(&mut state)
     {
         server_eprintln!("Failed to broadcast race results: {error:#}");
-    }
-}
-
-fn handle_player_disconnect(state: &mut HostState, player_id: PlayerId, now: Instant) -> bool {
-    if let Some(player) = state
-        .players
-        .iter_mut()
-        .find(|player| player.id == player_id)
-    {
-        let name = player.name.clone();
-        player.connected = false;
-        player.ready = false;
-        server_println!("{name} disconnected");
-        push_event(state, format!("{name} disconnected"));
-        push_network_log(&state.debug_log, format!("{name} disconnected"));
-    }
-    if let Some(player) = state
-        .race
-        .players
-        .iter_mut()
-        .find(|player| player.id == RacePlayerId(player_id.0))
-    {
-        player.connected = false;
-    }
-    state.runtime.bonus_attempts.remove(&player_id);
-    state.runtime.spent_bonus_gaps.remove(&player_id);
-    state
-        .runtime
-        .player_effects
-        .remove(&RacePlayerId(player_id.0));
-    state.clients.retain(|client| client.player_id != player_id);
-
-    if player_id == PlayerId(1) {
-        close_game_for_joiners(state, "Game closed: host left");
-        return true;
-    }
-
-    reconcile_phase_after_disconnect(state, now);
-    host_lobby::cleanup_disconnected_waiting_players(state);
-    false
-}
-
-fn close_game_for_joiners(state: &mut HostState, message: &str) {
-    push_event(state, message.to_string());
-    push_network_log(&state.debug_log, message);
-
-    let message = ServerMessage::Error {
-        message: message.to_string(),
-    };
-    for client in &mut state.clients {
-        if let Err(error) = write_server_message(&mut client.stream, &message) {
-            server_eprintln!(
-                "Failed to send close message to player {}: {error:#}",
-                client.player_id.0
-            );
-        }
-        let _ = client.stream.shutdown(Shutdown::Both);
-    }
-    state.clients.clear();
-
-    for player in &mut state.players {
-        if player.kind == PlayerKind::Human {
-            player.connected = false;
-            player.ready = false;
-        }
-    }
-    for player in &mut state.race.players {
-        player.connected = false;
     }
 }
 
@@ -660,223 +553,6 @@ fn print_lobby_snapshot(players: &[LobbyPlayer]) {
             }
         );
     }
-}
-
-fn start_countdown(state: Arc<Mutex<HostState>>) {
-    let should_start = {
-        let mut state = state.lock().expect("host state poisoned");
-        match state.phase {
-            NetworkRacePhase::WaitingForHost
-            | NetworkRacePhase::Lobby
-            | NetworkRacePhase::Finished => {
-                if let Err(error) = host_race::reset_race_from_lobby(&mut state) {
-                    server_eprintln!("Failed to prepare race: {error:#}");
-                    push_network_log(
-                        &state.debug_log,
-                        format!("failed to prepare race: {error:#}"),
-                    );
-                    return;
-                }
-            }
-            NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => {
-                server_println!("Race has already started");
-                return;
-            }
-        }
-
-        if host_race::current_race_connected_player_count(&state) < 1 {
-            server_println!("Cannot start: at least one ready connected racer is required");
-            return;
-        }
-
-        state.phase = NetworkRacePhase::Countdown {
-            remaining_seconds: 3,
-        };
-        push_event(&mut state, "Countdown started".to_string());
-        push_network_log(&state.debug_log, "countdown started remaining=3");
-        server_println!("Countdown: 3");
-        if let Err(error) = broadcast_race_snapshot(&mut state) {
-            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-        }
-        true
-    };
-
-    if should_start {
-        thread::spawn(move || run_countdown(state));
-    }
-}
-
-fn return_to_lobby(state: &mut HostState) -> Result<()> {
-    let event = match state.phase {
-        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => "Race cancelled",
-        NetworkRacePhase::Finished => "Returned to lobby",
-        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => return Ok(()),
-    };
-    host_race::reset_race_from_lobby(state)?;
-    push_event(state, event.to_string());
-    push_network_log(&state.debug_log, event.to_ascii_lowercase());
-    if let Err(error) = broadcast_race_snapshot(state) {
-        server_eprintln!("Failed to broadcast lobby race snapshot: {error:#}");
-    }
-    if let Err(error) = broadcast_lobby_snapshot(state) {
-        server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-    }
-
-    Ok(())
-}
-
-fn current_phase(state: &Arc<Mutex<HostState>>) -> NetworkRacePhase {
-    state.lock().expect("host state poisoned").phase
-}
-
-fn apply_line_input(state: &Arc<Mutex<HostState>>, player_id: PlayerId, line: &str) {
-    let now = std::time::Instant::now();
-    let mut state = state.lock().expect("host state poisoned");
-    match host_input::apply_line_input_to_race(&mut state, player_id, line, now) {
-        NetworkInputOutcome::Ignored => {}
-        NetworkInputOutcome::Updated => {
-            if let Err(error) = broadcast_race_delta(&mut state) {
-                server_eprintln!("Failed to broadcast race delta: {error:#}");
-            }
-        }
-        NetworkInputOutcome::Finished => {
-            if let Err(error) = broadcast_race_snapshot(&mut state) {
-                server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-            }
-            server_println!("Race finished");
-            push_network_log(&state.debug_log, "race finished after host line input");
-            if let Err(error) = broadcast_race_results_once(&mut state) {
-                server_eprintln!("Failed to broadcast race results: {error:#}");
-            }
-        }
-    }
-}
-
-fn run_countdown(state: Arc<Mutex<HostState>>) {
-    for remaining_seconds in [2, 1] {
-        thread::sleep(Duration::from_secs(1));
-        let mut guard = state.lock().expect("host state poisoned");
-        if !matches!(guard.phase, NetworkRacePhase::Countdown { .. }) {
-            push_network_log(&guard.debug_log, "countdown stopped before next tick");
-            return;
-        }
-        if !countdown_has_any_connected_racer(&guard) {
-            cancel_countdown(&mut guard);
-            if let Err(error) = broadcast_race_snapshot(&mut guard) {
-                server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-            }
-            if let Err(error) = broadcast_lobby_snapshot(&mut guard) {
-                server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-            }
-            return;
-        }
-
-        guard.phase = NetworkRacePhase::Countdown { remaining_seconds };
-        push_network_log(
-            &guard.debug_log,
-            format!("countdown tick remaining={remaining_seconds}"),
-        );
-        server_println!("Countdown: {remaining_seconds}");
-        if let Err(error) = broadcast_race_snapshot(&mut guard) {
-            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-        }
-    }
-
-    thread::sleep(Duration::from_secs(1));
-    let mut guard = state.lock().expect("host state poisoned");
-    if !matches!(guard.phase, NetworkRacePhase::Countdown { .. }) {
-        push_network_log(&guard.debug_log, "countdown stopped before race start");
-        return;
-    }
-    if !countdown_has_any_connected_racer(&guard) {
-        cancel_countdown(&mut guard);
-        if let Err(error) = broadcast_race_snapshot(&mut guard) {
-            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-        }
-        if let Err(error) = broadcast_lobby_snapshot(&mut guard) {
-            server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-        }
-        return;
-    }
-
-    guard.phase = NetworkRacePhase::Racing;
-    host_ai::reset_network_ai_timing(&mut guard, Instant::now());
-    push_event(&mut guard, "Race started".to_string());
-    push_network_log(&guard.debug_log, "race started");
-    server_println!("Race started");
-    if let Err(error) = broadcast_race_snapshot(&mut guard) {
-        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-    }
-    drop(guard);
-    spawn_race_snapshot_loop(state);
-}
-
-fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
-    thread::spawn(move || {
-        loop {
-            thread::sleep(RACE_SNAPSHOT_INTERVAL);
-            let mut state = state.lock().expect("host state poisoned");
-            if state.phase != NetworkRacePhase::Racing {
-                break;
-            }
-
-            let now = Instant::now();
-            host_items::advance_network_mushrooms(&mut state, now);
-            host_ai::advance_network_ai_racers(&mut state, now);
-            host_race::update_race_status(&mut state, now);
-            let expired_choices = expire_bonus_cooldowns(&mut state, now);
-            if expired_choices > 0 {
-                push_network_log(
-                    &state.debug_log,
-                    format!("bonus refreshed choices={expired_choices}"),
-                );
-            }
-
-            if state.phase == NetworkRacePhase::Finished {
-                if let Err(error) = broadcast_race_snapshot(&mut state) {
-                    server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-                }
-                server_println!("Race finished");
-                push_network_log(&state.debug_log, "race finished on snapshot tick");
-                if let Err(error) = broadcast_race_results_once(&mut state) {
-                    server_eprintln!("Failed to broadcast race results: {error:#}");
-                }
-                break;
-            } else if let Err(error) = broadcast_race_delta(&mut state) {
-                server_eprintln!("Failed to broadcast race delta: {error:#}");
-            }
-        }
-    });
-}
-
-fn reconcile_phase_after_disconnect(state: &mut HostState, now: Instant) {
-    match state.phase {
-        NetworkRacePhase::Countdown { .. } => {
-            if !countdown_has_any_connected_racer(state) {
-                cancel_countdown(state);
-            }
-        }
-        NetworkRacePhase::Racing => host_race::update_race_status(state, now),
-        NetworkRacePhase::Finished => {}
-        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {}
-    }
-}
-
-fn countdown_has_any_connected_racer(state: &HostState) -> bool {
-    state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.connected && !player.state.is_finished())
-        .count()
-        >= 1
-}
-
-fn cancel_countdown(state: &mut HostState) {
-    state.phase = NetworkRacePhase::WaitingForHost;
-    push_event(state, "Countdown cancelled".to_string());
-    push_network_log(&state.debug_log, "countdown cancelled no connected racers");
-    server_println!("Countdown cancelled");
 }
 
 fn push_event(state: &mut HostState, event: String) {

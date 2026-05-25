@@ -370,6 +370,12 @@ Candidate extractions:
   around shared snapshot projection.
 - `src/net/server/host_broadcast.rs`: network-specific client fanout for lobby
   snapshots, race snapshots/deltas, and one-shot race results.
+- `src/net/server/host_disconnect.rs`: network-specific disconnect cleanup,
+  host-left closure, and handoff into phase reconciliation.
+- `src/net/server/host_phase.rs`: network-specific countdown, rematch/cancel
+  phase changes, periodic race ticking, and race-finish broadcast sequencing.
+- `src/net/server/host_commands.rs`: embedded terminal-host command loop,
+  host ready/unready commands, and pasted line input handoff.
 - `src/net/server/host_race.rs`: network-specific race lifecycle state
   mutations around shared `race_flow`, including rematch preparation and finish
   status updates.
@@ -415,6 +421,16 @@ Progress:
   building lobby/race/result protocol messages, writing them to connected TCP
   clients, pruning failed client streams, and preserving one-shot result
   broadcast semantics.
+- `src/net/server/host_disconnect.rs` now owns network-host disconnect
+  handling: lobby/race disconnection flags, transient runtime cleanup, host-left
+  game closure, client stream shutdown, and waiting-roster cleanup.
+- `src/net/server/host_phase.rs` now owns network-host phase progression:
+  preparing countdowns/rematches, returning to lobby, countdown ticks, active
+  race snapshot ticks, item/AI periodic advancement, and phase reconciliation
+  after disconnects.
+- `src/net/server/host_commands.rs` now owns embedded terminal-host commands:
+  ready/unready, lobby printing, race start, pasted host typing, and command
+  feedback while delegating gameplay rules to shared adapters.
 - `src/net/server/host_race.rs` now owns network-host race lifecycle mutation
   around shared `race_flow`: connected-racer counts, rematch/race reset from
   lobby participants, runtime reset, race-finish status updates, and
