@@ -15,9 +15,10 @@ use typekart::game::{
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        HostRaceTickAction, PreparedHostRace, advance_countdown_to_racing, begin_countdown_phase,
-        advance_host_race_lifecycle, countdown_start_plan, countdown_tick_phase,
-        host_race_tick_outcome, prepare_race_from_selected_lobby_players, return_to_lobby_outcome,
+        HostRaceTickAction, PreparedHostRace, advance_host_race_lifecycle, begin_countdown_phase,
+        countdown_start_plan, countdown_tick_phase, host_race_tick_outcome,
+        prepare_race_from_selected_lobby_players, return_to_lobby_outcome,
+        start_race_from_countdown,
     },
     item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
@@ -608,9 +609,9 @@ async fn run_browser_host_countdown(
         publish_browser_host_state(state, writer, set_live_frame).await?;
         TimeoutFuture::new(1000).await;
     }
-    let racing_phase = match advance_countdown_to_racing(countdown_tick_phase(1), !racers.is_empty())
+    let start_outcome = match start_race_from_countdown(countdown_tick_phase(1), !racers.is_empty())
     {
-        Ok(phase) => phase,
+        Ok(outcome) => outcome,
         Err(CountdownAdvanceRejection::NoConnectedRacers) => {
             state.push_event("countdown cancelled");
             publish_browser_host_lobby(state, writer, set_live_frame).await?;
@@ -623,12 +624,12 @@ async fn run_browser_host_countdown(
 
     state.active_race = Some(browser_host_race_snapshot_with_track(
         state.next_race_sequence(),
-        racing_phase,
+        start_outcome.phase,
         &state.mod_config,
         &racers,
         &race_track_words,
         &state.bonuses,
-        vec!["browser-hosted race started".to_string()],
+        vec![start_outcome.event.to_string()],
     ));
     state.active_results = None;
     state.core_race = Some(prepared_race.race);

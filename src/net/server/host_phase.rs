@@ -14,9 +14,9 @@ use anyhow::Result;
 
 use crate::game::host_session::{
     CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-    HostRaceTickAction, advance_countdown_to_racing, begin_countdown_phase,
-    countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
-    has_connected_active_racer, host_race_tick_outcome, return_to_lobby_outcome,
+    HostRaceTickAction, begin_countdown_phase, countdown_should_cancel, countdown_start_plan,
+    countdown_tick_phase, has_connected_active_racer, host_race_tick_outcome,
+    return_to_lobby_outcome, start_race_from_countdown,
 };
 use crate::net::{log::push_network_log, protocol::NetworkRacePhase};
 
@@ -171,22 +171,24 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
         push_network_log(&guard.debug_log, "countdown stopped before race start");
         return;
     }
-    match advance_countdown_to_racing(guard.phase, has_connected_active_racer(&guard.race)) {
-        Ok(phase) => guard.phase = phase,
-        Err(CountdownAdvanceRejection::NoConnectedRacers) => {
-            cancel_countdown(&mut guard);
-            broadcast_countdown_cancel(&mut guard);
-            return;
-        }
-        Err(CountdownAdvanceRejection::NotCountingDown) => {
-            push_network_log(&guard.debug_log, "countdown stopped before race start");
-            return;
-        }
-    }
+    let start_outcome =
+        match start_race_from_countdown(guard.phase, has_connected_active_racer(&guard.race)) {
+            Ok(outcome) => outcome,
+            Err(CountdownAdvanceRejection::NoConnectedRacers) => {
+                cancel_countdown(&mut guard);
+                broadcast_countdown_cancel(&mut guard);
+                return;
+            }
+            Err(CountdownAdvanceRejection::NotCountingDown) => {
+                push_network_log(&guard.debug_log, "countdown stopped before race start");
+                return;
+            }
+        };
+    guard.phase = start_outcome.phase;
     host_ai::reset_network_ai_timing(&mut guard, Instant::now());
-    push_event(&mut guard, "Race started".to_string());
-    push_network_log(&guard.debug_log, "race started");
-    print_server_line("Race started");
+    push_event(&mut guard, start_outcome.event.to_string());
+    push_network_log(&guard.debug_log, start_outcome.event.to_ascii_lowercase());
+    print_server_line(start_outcome.event);
     if let Err(error) = broadcast_race_snapshot(&mut guard) {
         push_network_log(
             &guard.debug_log,

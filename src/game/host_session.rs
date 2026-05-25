@@ -75,6 +75,12 @@ pub struct HostRaceLifecycleOutcome {
     pub flow: RaceFlowOutcome,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartRaceOutcome {
+    pub phase: NetworkRacePhase,
+    pub event: &'static str,
+}
+
 impl PreparedHostRace {
     pub fn participant_count(&self) -> usize {
         self.participants.len()
@@ -178,6 +184,17 @@ pub fn advance_countdown_to_racing(
     Ok(NetworkRacePhase::Racing)
 }
 
+pub fn start_race_from_countdown(
+    phase: NetworkRacePhase,
+    has_connected_active_racer: bool,
+) -> Result<StartRaceOutcome, CountdownAdvanceRejection> {
+    let phase = advance_countdown_to_racing(phase, has_connected_active_racer)?;
+    Ok(StartRaceOutcome {
+        phase,
+        event: "Race started",
+    })
+}
+
 pub fn return_to_lobby_decision(phase: NetworkRacePhase) -> ReturnToLobbyDecision {
     match phase {
         NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => {
@@ -267,7 +284,7 @@ mod tests {
         advance_host_race_lifecycle, begin_countdown_phase, connected_racer_count,
         countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
         has_connected_active_racer, host_race_tick_outcome, prepare_race_from_lobby,
-        return_to_lobby_decision, return_to_lobby_outcome,
+        return_to_lobby_decision, return_to_lobby_outcome, start_race_from_countdown,
     };
     use crate::game::{
         race::{RaceLifecycleState, RacePlayerId},
@@ -426,6 +443,18 @@ mod tests {
                 true,
             ),
             Ok(NetworkRacePhase::Racing)
+        );
+        assert_eq!(
+            start_race_from_countdown(
+                NetworkRacePhase::Countdown {
+                    remaining_seconds: 1
+                },
+                true,
+            ),
+            Ok(super::StartRaceOutcome {
+                phase: NetworkRacePhase::Racing,
+                event: "Race started"
+            })
         );
     }
 

@@ -555,6 +555,9 @@ Progress:
   host sessions, including the "only while racing" guard and the transition to
   the finished phase. Network and browser hosts both use this helper while
   keeping event feed, result snapshots, and broadcasts adapter-owned.
+- `src/game/host_session.rs` now returns a shared start-race outcome from the
+  countdown-to-racing transition, including the `Racing` phase and common race
+  started event text used by network and browser hosts.
 
 ### 11. Browser Host Authority Convergence
 
