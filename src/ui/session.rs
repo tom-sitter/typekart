@@ -15,6 +15,11 @@ use crate::game::{
     ai_driver::{ai_chars_per_second, ai_effective_wpm, next_ai_key_for_player},
     bonus::{BonusState, claim_bonus_choice},
     effects::{ActiveEffect, AttackWarning, PendingAttack},
+    host_session::{
+        advance_host_race_lifecycle, begin_countdown_phase, connected_racer_count,
+        countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+        return_to_lobby_outcome, start_race_from_countdown,
+    },
     item_effects::{
         AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
         activate_item_pickup,
@@ -26,10 +31,10 @@ use crate::game::{
     mods::ActiveModConfig,
     player::PlayerState,
     race::{PlayerColorId, RaceLifecycleState, RacePlayer, RacePlayerId, RaceState},
-    race_flow::advance_race_flow,
     track::{Track, WordList},
     typing::{KeyAction, TypingEvent, apply_key, first_typo_index},
 };
+use typekart_protocol::NetworkRacePhase;
 
 const PLAYER_ATTACK_WARNING: Duration = Duration::from_millis(900);
 const MAX_AI_RACERS: usize = 6;
@@ -48,9 +53,10 @@ pub struct LocalSession {
     pub player_impact_cue: Option<ImpactCue>,
     pub player_item_cue: Option<ItemCue>,
     pub race_status: RaceStatus,
-    pub race_phase: RacePhase,
+    pub race_phase: NetworkRacePhase,
     pub events: EventLog,
     pub run_log: RunLog,
+    countdown_ends_at: Option<Instant>,
     // Restart needs the same source word list and race length that created the
     // first track. Keeping them here lets the terminal loop reset in place.
     word_list: WordList,
@@ -59,29 +65,6 @@ pub struct LocalSession {
     ai_difficulty: AiDifficulty,
     item_registry: ItemRegistry,
     selected_ai_index: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RacePhase {
-    WaitingForHost,
-    Countdown { starts_at: Instant },
-    Racing,
-}
-
-impl RacePhase {
-    pub fn countdown_label(self, now: Instant) -> Option<String> {
-        let Self::Countdown { starts_at } = self else {
-            return None;
-        };
-
-        let remaining = starts_at.saturating_duration_since(now);
-        let seconds = remaining.as_secs_f64().ceil().clamp(1.0, 3.0) as u8;
-        Some(seconds.to_string())
-    }
-
-    pub fn is_racing(self) -> bool {
-        self == Self::Racing
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -331,9 +314,10 @@ impl LocalSession {
             player_impact_cue: None,
             player_item_cue: None,
             race_status: RaceStatus::default(),
-            race_phase: RacePhase::WaitingForHost,
+            race_phase: NetworkRacePhase::WaitingForHost,
             events,
             run_log,
+            countdown_ends_at: None,
             word_list,
             word_count,
             ai_racer_count,
@@ -376,9 +360,10 @@ impl LocalSession {
             player_impact_cue: None,
             player_item_cue: None,
             race_status: RaceStatus::default(),
-            race_phase: RacePhase::Racing,
+            race_phase: NetworkRacePhase::Racing,
             events,
             run_log,
+            countdown_ends_at: None,
             word_list,
             word_count,
             ai_racer_count: 0,
@@ -397,7 +382,7 @@ impl LocalSession {
             return;
         }
 
-        if !self.race_phase.is_racing() && action != LocalAction::Restart {
+        if self.race_phase != NetworkRacePhase::Racing && action != LocalAction::Restart {
             return;
         }
 
@@ -421,56 +406,80 @@ impl LocalSession {
                 self.restart(now);
                 true
             }
-            (RacePhase::WaitingForHost, LocalAction::Typing(KeyAction::Space)) => {
+            (NetworkRacePhase::WaitingForHost, LocalAction::Typing(KeyAction::Space)) => {
                 self.start_countdown(now);
                 true
             }
-            (RacePhase::WaitingForHost, LocalAction::SelectPreviousRacer) => {
+            (NetworkRacePhase::WaitingForHost, LocalAction::SelectPreviousRacer) => {
                 self.select_previous_ai();
                 true
             }
-            (RacePhase::WaitingForHost, LocalAction::SelectNextRacer) => {
+            (NetworkRacePhase::WaitingForHost, LocalAction::SelectNextRacer) => {
                 self.select_next_ai();
                 true
             }
-            (RacePhase::WaitingForHost, LocalAction::AddAi) => {
+            (NetworkRacePhase::WaitingForHost, LocalAction::AddAi) => {
                 self.add_ai_racer(now);
                 true
             }
-            (RacePhase::WaitingForHost, LocalAction::RemoveSelectedRacer) => {
+            (NetworkRacePhase::WaitingForHost, LocalAction::RemoveSelectedRacer) => {
                 self.remove_selected_ai(now);
                 true
             }
-            (RacePhase::WaitingForHost, LocalAction::SetSelectedAiDifficulty(difficulty)) => {
+            (
+                NetworkRacePhase::WaitingForHost,
+                LocalAction::SetSelectedAiDifficulty(difficulty),
+            ) => {
                 self.set_selected_ai_difficulty(difficulty, now);
                 true
             }
-            (RacePhase::WaitingForHost | RacePhase::Countdown { .. }, _) => true,
-            (RacePhase::Racing, _) => false,
+            (NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost, _) => true,
+            (NetworkRacePhase::Countdown { .. }, _) => true,
+            (NetworkRacePhase::Racing | NetworkRacePhase::Finished, _) => false,
         }
     }
 
     fn start_countdown(&mut self, now: Instant) {
-        self.race_phase = RacePhase::Countdown {
-            starts_at: now + RACE_COUNTDOWN,
-        };
+        if countdown_start_plan(self.race_phase).is_err() {
+            return;
+        }
+        let race = self.shared_race_state();
+        if begin_countdown_phase(connected_racer_count(&race)).is_err() {
+            self.events.push("No racers ready");
+            return;
+        }
+
+        self.race_phase = countdown_tick_phase(3);
+        self.countdown_ends_at = Some(now + RACE_COUNTDOWN);
         self.events.push("Race starts in 3");
         self.run_log.push(now, "host started countdown");
     }
 
     fn start_race(&mut self, now: Instant) {
-        self.race_phase = RacePhase::Racing;
+        let race = self.shared_race_state();
+        let Ok(outcome) =
+            start_race_from_countdown(self.race_phase, !countdown_should_cancel(&race))
+        else {
+            return;
+        };
+
+        self.race_phase = outcome.phase;
+        self.countdown_ends_at = None;
         self.player.started_at = now;
         for ai in &mut self.ai_racers {
             ai.player.started_at = now;
             ai.last_update = now;
             ai.char_budget = 0.0;
         }
-        self.events.push("Go");
+        self.events.push(outcome.event);
         self.run_log.push(now, "race started");
     }
 
     pub fn restart(&mut self, now: Instant) {
+        if let Some(outcome) = return_to_lobby_outcome(self.race_phase) {
+            self.run_log.push(now, outcome.event);
+        }
+
         let Ok(track) = Track::generate(&self.word_list, self.word_count) else {
             self.events.push("Restart failed");
             self.run_log.push(now, "restart failed: track generation");
@@ -493,7 +502,8 @@ impl LocalSession {
         self.player_impact_cue = None;
         self.player_item_cue = None;
         self.race_status = RaceStatus::default();
-        self.race_phase = RacePhase::WaitingForHost;
+        self.race_phase = NetworkRacePhase::WaitingForHost;
+        self.countdown_ends_at = None;
         self.events = EventLog::new(8);
         self.events.push("Press Space to start");
         self.run_log.push(
@@ -595,13 +605,26 @@ impl LocalSession {
             return;
         }
 
-        if let RacePhase::Countdown { starts_at } = self.race_phase
-            && now >= starts_at
+        if let Some(countdown_ends_at) = self.countdown_ends_at
+            && matches!(self.race_phase, NetworkRacePhase::Countdown { .. })
         {
-            self.start_race(starts_at);
+            if now >= countdown_ends_at {
+                if countdown_should_cancel(&self.shared_race_state()) {
+                    self.restart(now);
+                    return;
+                }
+                self.start_race(countdown_ends_at);
+            } else {
+                let remaining_seconds = countdown_ends_at
+                    .saturating_duration_since(now)
+                    .as_secs_f64()
+                    .ceil()
+                    .clamp(1.0, 3.0) as u8;
+                self.race_phase = countdown_tick_phase(remaining_seconds);
+            }
         }
 
-        if !self.race_phase.is_racing() {
+        if self.race_phase != NetworkRacePhase::Racing {
             return;
         }
 
@@ -682,12 +705,21 @@ impl LocalSession {
             placements: Vec::new(),
             first_finished_at: self.race_status.first_finished_at,
         };
-        let outcome = advance_race_flow(&mut lifecycle, &race, now, POST_FIRST_FINISH_TIMEOUT);
+        let outcome = advance_host_race_lifecycle(
+            &mut lifecycle,
+            &race,
+            self.race_phase,
+            now,
+            POST_FIRST_FINISH_TIMEOUT,
+        );
         self.race_status.first_finished_at = lifecycle.first_finished_at;
+        self.race_phase = outcome.phase;
 
-        if outcome.finished.is_some() {
+        if outcome.flow.finished.is_some() {
             self.race_status.ended_at = Some(now);
-            self.events.push("Race ended");
+            if let Some(event) = outcome.finish_event {
+                self.events.push(event);
+            }
         }
     }
 
@@ -1984,9 +2016,10 @@ mod tests {
         },
         ui::session::{
             AiRacer, AttackDirection, EventLog, ImpactCueKind, ItemCue, ItemCueKind, LocalAction,
-            LocalSession, RacePhase,
+            LocalSession,
         },
     };
+    use typekart_protocol::NetworkRacePhase;
 
     fn track(words: &[&str]) -> Track {
         Track::new(words.iter().map(|word| word.to_string()).collect())
@@ -2080,7 +2113,7 @@ mod tests {
 
         session.apply_action(LocalAction::Typing(KeyAction::Char('o')), now);
 
-        assert_eq!(session.race_phase, RacePhase::WaitingForHost);
+        assert_eq!(session.race_phase, NetworkRacePhase::WaitingForHost);
         assert!(session.player.input.is_empty());
     }
 
@@ -2104,7 +2137,10 @@ mod tests {
         );
         session.tick(now + std::time::Duration::from_secs(1));
 
-        assert!(matches!(session.race_phase, RacePhase::Countdown { .. }));
+        assert!(matches!(
+            session.race_phase,
+            NetworkRacePhase::Countdown { .. }
+        ));
         assert!(session.player.input.is_empty());
         assert!(session.ai_racers[0].player.input.is_empty());
 
@@ -2115,10 +2151,16 @@ mod tests {
         );
 
         let started_at = now + std::time::Duration::from_secs(3);
-        assert_eq!(session.race_phase, RacePhase::Racing);
+        assert_eq!(session.race_phase, NetworkRacePhase::Racing);
         assert_eq!(session.player.started_at, started_at);
         assert_eq!(session.ai_racers[0].player.started_at, started_at);
         assert_eq!(session.player.input, "o");
+        assert!(
+            session
+                .events
+                .entries()
+                .any(|entry| entry == "Race started")
+        );
     }
 
     #[test]
@@ -2134,6 +2176,57 @@ mod tests {
 
         assert!(session.player.is_finished());
         assert!(session.race_status.is_ended());
+        assert!(
+            session
+                .events
+                .entries()
+                .any(|entry| entry == "Race finished")
+        );
+    }
+
+    #[test]
+    fn restart_uses_shared_return_to_lobby_outcome() {
+        let now = Instant::now();
+        let mut session = LocalSession::new(
+            track(&["one", "two"]),
+            PlayerState::new(now),
+            word_list(),
+            0,
+            AiDifficulty::Easy,
+            ItemRegistry::builtin(),
+            test_active_mod_config(),
+        );
+
+        session.apply_action(LocalAction::Typing(KeyAction::Space), now);
+        session.tick(now + std::time::Duration::from_secs(3));
+        session.apply_action(
+            LocalAction::Restart,
+            now + std::time::Duration::from_secs(4),
+        );
+
+        assert_eq!(session.race_phase, NetworkRacePhase::WaitingForHost);
+        assert!(session.player.input.is_empty());
+        assert!(
+            session
+                .run_log
+                .entries()
+                .any(|entry| entry.ends_with("Race cancelled"))
+        );
+
+        session.player.finished_at = Some(now + std::time::Duration::from_secs(5));
+        session.race_status.ended_at = Some(now + std::time::Duration::from_secs(5));
+        session.race_phase = NetworkRacePhase::Finished;
+        session.apply_action(
+            LocalAction::Restart,
+            now + std::time::Duration::from_secs(6),
+        );
+
+        assert!(
+            session
+                .run_log
+                .entries()
+                .any(|entry| entry.ends_with("Returned to lobby"))
+        );
     }
 
     #[test]
@@ -2599,7 +2692,7 @@ mod tests {
         assert!(session.player.active_effects.is_empty());
         assert!(session.bonus_attempt.is_none());
         assert!(session.attack_warning.is_none());
-        assert_eq!(session.race_phase, RacePhase::WaitingForHost);
+        assert_eq!(session.race_phase, NetworkRacePhase::WaitingForHost);
         assert_eq!(
             session.events.entries().collect::<Vec<_>>(),
             vec!["Press Space to start"]

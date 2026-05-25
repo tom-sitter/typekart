@@ -348,6 +348,14 @@ Progress:
 - Local race-end status now builds a temporary shared `RaceState` and advances
   lifecycle through `src/game/race_flow.rs`, so local play uses the same
   all-finished and post-first-finish timeout policy as network/browser races.
+- Local countdown start, countdown-to-racing transition, race-finish event, and
+  restart return/cancel intent now use shared `src/game/host_session.rs`
+  outcomes while preserving local-only track regeneration and terminal UI
+  behavior.
+- Local terminal session, gallery, and renderer now carry shared
+  `NetworkRacePhase` directly instead of a local-only `RacePhase` enum. Local
+  countdown timing keeps a private deadline, but display and lifecycle decisions
+  use the shared phase shape.
 
 Validation:
 

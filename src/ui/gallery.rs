@@ -37,10 +37,11 @@ use crate::{
         render::{IconMode, TypingScreen, render},
         session::{
             AiRacer, AttackDirection, EventLog, ImpactCue, ImpactCueKind, ItemCue, ItemCueKind,
-            RacePhase, RaceStatus,
+            RaceStatus,
         },
     },
 };
+use typekart_protocol::NetworkRacePhase;
 
 type GalleryTerminal = Terminal<CrosstermBackend<Stdout>>;
 
@@ -170,7 +171,7 @@ impl GalleryState {
             player_impact_cue: self.player_impact_cue,
             player_item_cue: self.player_item_cue.clone(),
             race_status: RaceStatus::default(),
-            race_phase: RacePhase::Racing,
+            race_phase: NetworkRacePhase::Racing,
             icon_mode,
             ai_racers: &self.ai_racers,
             selected_ai_index: None,

@@ -20,9 +20,10 @@ use crate::{
     },
     ui::session::{
         AiRacer, AttackDirection, BonusAttempt, EventLog, ImpactCue, ImpactCueKind, ItemCue,
-        ItemCueKind, RacePhase, RaceStatus,
+        ItemCueKind, RaceStatus,
     },
 };
+use typekart_protocol::NetworkRacePhase;
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 90;
 const LOCAL_RACER_MARKER: &str = "███";
@@ -44,7 +45,7 @@ pub struct TypingScreen<'a> {
     pub player_impact_cue: Option<ImpactCue>,
     pub player_item_cue: Option<ItemCue>,
     pub race_status: RaceStatus,
-    pub race_phase: RacePhase,
+    pub race_phase: NetworkRacePhase,
     pub icon_mode: IconMode,
     pub ai_racers: &'a [AiRacer],
     pub selected_ai_index: Option<usize>,
@@ -371,7 +372,7 @@ fn render_track(
     ai_racers: &[AiRacer],
     player_impact_cue: Option<ImpactCue>,
     player_item_cue: Option<ItemCue>,
-    race_phase: RacePhase,
+    race_phase: NetworkRacePhase,
     icon_mode: IconMode,
     now: std::time::Instant,
 ) {
@@ -405,7 +406,7 @@ fn track_view<'a>(
     ai_racers: &[AiRacer],
     player_impact_cue: Option<ImpactCue>,
     player_item_cue: Option<ItemCue>,
-    race_phase: RacePhase,
+    race_phase: NetworkRacePhase,
     icon_mode: IconMode,
     now: std::time::Instant,
 ) -> Paragraph<'a> {
@@ -485,7 +486,7 @@ fn racer_lines(
     ai_racers: &[AiRacer],
     player_impact_cue: Option<ImpactCue>,
     player_item_cue: Option<ItemCue>,
-    race_phase: RacePhase,
+    race_phase: NetworkRacePhase,
     icon_mode: IconMode,
     now: std::time::Instant,
 ) -> Vec<Line<'static>> {
@@ -519,13 +520,11 @@ fn racer_lines(
     lines
 }
 
-fn local_prerace_label(race_phase: RacePhase, now: std::time::Instant) -> Option<String> {
+fn local_prerace_label(race_phase: NetworkRacePhase, _now: std::time::Instant) -> Option<String> {
     match race_phase {
-        RacePhase::WaitingForHost => Some(" Space".to_string()),
-        RacePhase::Countdown { .. } => race_phase
-            .countdown_label(now)
-            .map(|label| format!(" {label}")),
-        RacePhase::Racing => None,
+        NetworkRacePhase::WaitingForHost => Some(" Space".to_string()),
+        NetworkRacePhase::Countdown { remaining_seconds } => Some(format!(" {remaining_seconds}")),
+        NetworkRacePhase::Lobby | NetworkRacePhase::Racing | NetworkRacePhase::Finished => None,
     }
 }
 
@@ -1122,7 +1121,7 @@ impl Default for TrackCell {
 fn track_word_line(
     window: &TrackWindow<'_>,
     player: &PlayerState,
-    race_phase: RacePhase,
+    race_phase: NetworkRacePhase,
     now: std::time::Instant,
 ) -> Line<'static> {
     let mut cells = vec![TrackCell::default(); window.width];
@@ -1140,7 +1139,7 @@ fn track_word_line(
         }
     }
 
-    if race_phase.is_racing() {
+    if race_phase == NetworkRacePhase::Racing {
         overlay_player_input(&mut cells, window, player);
     }
 
@@ -1168,10 +1167,10 @@ fn visible_word_char(
 fn base_word_style(
     state: WordRenderState,
     player: &PlayerState,
-    race_phase: RacePhase,
+    race_phase: NetworkRacePhase,
     now: std::time::Instant,
 ) -> Style {
-    if !race_phase.is_racing() {
+    if race_phase != NetworkRacePhase::Racing {
         return Style::default().fg(Color::DarkGray);
     }
 
@@ -1469,23 +1468,28 @@ impl RaceResultRow {
     }
 }
 
-fn footer_view<'a>(race_phase: RacePhase, show_help: bool) -> Paragraph<'a> {
+fn footer_view<'a>(race_phase: NetworkRacePhase, show_help: bool) -> Paragraph<'a> {
     let text = if show_help {
         "? hide help | Esc quit"
     } else {
         match race_phase {
-            RacePhase::WaitingForHost => "Space start | ? help | Esc quit",
-            RacePhase::Countdown { .. } => "Countdown active | ? help | Esc quit",
-            RacePhase::Racing => "Type words | Backspace fixes | ? help | Esc quit",
+            NetworkRacePhase::Lobby => "Space start | ? help | Esc quit",
+            NetworkRacePhase::WaitingForHost => "Space start | ? help | Esc quit",
+            NetworkRacePhase::Countdown { .. } => "Countdown active | ? help | Esc quit",
+            NetworkRacePhase::Racing => "Type words | Backspace fixes | ? help | Esc quit",
+            NetworkRacePhase::Finished => "? help | Esc quit",
         }
     };
     Paragraph::new(text).block(Block::default().borders(Borders::TOP))
 }
 
-fn render_local_help_overlay(frame: &mut Frame<'_>, area: Rect, race_phase: RacePhase) {
+fn render_local_help_overlay(frame: &mut Frame<'_>, area: Rect, race_phase: NetworkRacePhase) {
     let overlay = centered_rect(area, 72, 12);
     let lines = match race_phase {
-        RacePhase::WaitingForHost | RacePhase::Countdown { .. } => vec![
+        NetworkRacePhase::Lobby
+        | NetworkRacePhase::WaitingForHost
+        | NetworkRacePhase::Countdown { .. }
+        | NetworkRacePhase::Finished => vec![
             Line::from(vec![
                 Span::styled("Key", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw("          "),
@@ -1499,7 +1503,7 @@ fn render_local_help_overlay(frame: &mut Frame<'_>, area: Rect, race_phase: Race
             Line::from("?            Hide this help"),
             Line::from("Esc          Quit"),
         ],
-        RacePhase::Racing => vec![
+        NetworkRacePhase::Racing => vec![
             Line::from(vec![
                 Span::styled("Key", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw("          "),
@@ -1552,10 +1556,10 @@ mod tests {
             track_panel_height, track_word_line, visible_bonus_point, visible_word_char,
         },
         ui::session::{
-            AiRacer, AttackDirection, ImpactCue, ImpactCueKind, ItemCue, ItemCueKind, RacePhase,
-            RaceStatus,
+            AiRacer, AttackDirection, ImpactCue, ImpactCueKind, ItemCue, ItemCueKind, RaceStatus,
         },
     };
+    use typekart_protocol::NetworkRacePhase;
 
     fn track(words: &[&str]) -> Track {
         Track::new(words.iter().map(|word| word.to_string()).collect())
@@ -1643,7 +1647,7 @@ mod tests {
             &[ai],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             Instant::now(),
         );
@@ -1662,8 +1666,8 @@ mod tests {
         let window = build_track_window(&track, 1, 40);
         let mut player = PlayerState::new(now);
         player.word_index = 1;
-        let phase = RacePhase::Countdown {
-            starts_at: now + std::time::Duration::from_secs(3),
+        let phase = NetworkRacePhase::Countdown {
+            remaining_seconds: 3,
         };
 
         let lines = racer_lines(
@@ -1769,7 +1773,7 @@ mod tests {
             &ai_racers,
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             now,
         );
@@ -1791,7 +1795,7 @@ mod tests {
             &[ai],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             Instant::now(),
         );
@@ -1814,7 +1818,7 @@ mod tests {
             &[ai],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             Instant::now(),
         );
@@ -1839,7 +1843,7 @@ mod tests {
             &[ai],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             now,
         );
@@ -1868,7 +1872,7 @@ mod tests {
             &[ai],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             now,
         );
@@ -1899,7 +1903,7 @@ mod tests {
             &[ai],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             now,
         );
@@ -1927,7 +1931,7 @@ mod tests {
             &[],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             now,
         );
@@ -1958,7 +1962,7 @@ mod tests {
             &[],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Unicode,
             now,
         );
@@ -1985,7 +1989,7 @@ mod tests {
             &[],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Unicode,
             now,
         );
@@ -2011,7 +2015,7 @@ mod tests {
             &[],
             None,
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Unicode,
             now,
         );
@@ -2040,7 +2044,7 @@ mod tests {
             &[],
             None,
             Some(cue),
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Unicode,
             now,
         );
@@ -2070,7 +2074,7 @@ mod tests {
             &[],
             None,
             Some(cue),
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Unicode,
             now,
         );
@@ -2101,7 +2105,7 @@ mod tests {
             &[],
             None,
             Some(cue),
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             now,
         );
@@ -2133,7 +2137,7 @@ mod tests {
             &[],
             None,
             Some(cue),
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Unicode,
             now,
         );
@@ -2160,7 +2164,7 @@ mod tests {
                 until: now + std::time::Duration::from_millis(300),
             }),
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             now,
         );
@@ -2187,7 +2191,7 @@ mod tests {
                 until: now + std::time::Duration::from_millis(300),
             }),
             None,
-            RacePhase::Racing,
+            NetworkRacePhase::Racing,
             IconMode::Ascii,
             now,
         );
@@ -2264,7 +2268,7 @@ mod tests {
         let mut player = PlayerState::new(now);
         player.input = "fo".to_string();
 
-        let line = track_word_line(&window, &player, RacePhase::Racing, now);
+        let line = track_word_line(&window, &player, NetworkRacePhase::Racing, now);
         let spans = line.spans;
 
         assert_eq!(spans[0].content.as_ref(), "f");
@@ -2283,7 +2287,7 @@ mod tests {
         let mut player = PlayerState::new(now);
         player.input = "fo".to_string();
 
-        let line = track_word_line(&window, &player, RacePhase::WaitingForHost, now);
+        let line = track_word_line(&window, &player, NetworkRacePhase::WaitingForHost, now);
         let spans = line.spans;
 
         assert_eq!(spans[0].content.as_ref(), "f");
@@ -2305,7 +2309,7 @@ mod tests {
             until: now + Duration::from_secs(5),
         });
 
-        let line = track_word_line(&window, &player, RacePhase::Racing, now);
+        let line = track_word_line(&window, &player, NetworkRacePhase::Racing, now);
         let spans = line.spans;
 
         assert_eq!(spans[0].style.fg, Some(Color::Black));
@@ -2323,7 +2327,7 @@ mod tests {
         player.input = "fa".to_string();
         player.typo_index = Some(1);
 
-        let line = track_word_line(&window, &player, RacePhase::Racing, now);
+        let line = track_word_line(&window, &player, NetworkRacePhase::Racing, now);
         let spans = line.spans;
 
         assert_eq!(spans[0].content.as_ref(), "f");
@@ -2357,7 +2361,7 @@ mod tests {
         player.input = "fa road".to_string();
         player.typo_index = Some(1);
 
-        let line = track_word_line(&window, &player, RacePhase::Racing, now);
+        let line = track_word_line(&window, &player, NetworkRacePhase::Racing, now);
         let spans = line.spans;
 
         assert_eq!(spans[1].content.as_ref(), "a");

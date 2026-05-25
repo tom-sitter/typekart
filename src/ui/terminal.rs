@@ -143,7 +143,7 @@ fn run_loop(
             continue;
         }
 
-        if !session.race_phase.is_racing()
+        if session.race_phase != typekart_protocol::NetworkRacePhase::Racing
             && let Some(action) = local_lobby_action(key_event)
         {
             session.apply_action(action, Instant::now());
