@@ -16,7 +16,7 @@ use crate::game::host_session::{
     CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
     HostRaceTickAction, begin_countdown_phase, cancel_countdown_outcome, countdown_should_cancel,
     countdown_start_plan, countdown_tick_phase, has_connected_active_racer, host_race_tick_outcome,
-    return_to_lobby_outcome, start_race_from_countdown,
+    return_to_lobby_outcome, start_active_race_runtime_outcome, start_race_from_countdown,
 };
 use crate::net::{log::push_network_log, protocol::NetworkRacePhase};
 
@@ -186,7 +186,10 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
             }
         };
     guard.phase = start_outcome.phase;
-    host_ai::reset_network_ai_timing(&mut guard, Instant::now());
+    let runtime_outcome = start_active_race_runtime_outcome();
+    if runtime_outcome.set_ai_timing_now {
+        host_ai::reset_network_ai_timing(&mut guard, Instant::now());
+    }
     push_event(&mut guard, start_outcome.event.to_string());
     push_network_log(&guard.debug_log, start_outcome.event.to_ascii_lowercase());
     print_server_line(start_outcome.event);

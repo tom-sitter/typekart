@@ -561,6 +561,10 @@ Progress:
 - `src/game/host_session.rs` now returns a shared countdown-cancel outcome,
   including the `WaitingForHost` phase and common cancellation event text used
   by network and browser hosts.
+- `src/game/host_session.rs` now returns shared host runtime reset outcomes for
+  preparing a waiting race and entering an active race. Network and browser
+  hosts use these outcomes while applying their own concrete runtime, results,
+  event, and AI timing fields.
 
 ### 11. Browser Host Authority Convergence
 

@@ -9,13 +9,15 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 
 use crate::game::{
-    host_session::{advance_host_race_lifecycle, connected_racer_count, prepare_race_from_lobby},
+    host_session::{
+        advance_host_race_lifecycle, connected_racer_count, prepare_race_from_lobby,
+        prepare_waiting_race_outcome,
+    },
     track::Track,
 };
 use crate::net::{
     host_lifecycle::{finish_summary_log, finished_player_message},
     log::push_network_log,
-    protocol::NetworkRacePhase,
 };
 
 use super::{HostState, POST_FIRST_FINISH_TIMEOUT, host_ai, host_lobby, push_event};
@@ -32,14 +34,23 @@ pub(super) fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
         .context("failed to generate rematch track")?;
     let now = Instant::now();
     let prepared = prepare_race_from_lobby(&state.players, track, &state.word_list, now);
+    let reset = prepare_waiting_race_outcome();
     state.race = prepared.race;
-    host_ai::reset_network_ai_timing(state, now);
+    if reset.reset_ai_timing {
+        host_ai::reset_network_ai_timing(state, now);
+    }
 
     state.bonuses = prepared.bonuses;
-    state.runtime.reset();
-    state.race_results_sent = false;
-    state.events.clear();
-    state.phase = NetworkRacePhase::WaitingForHost;
+    if reset.reset_runtime {
+        state.runtime.reset();
+    }
+    if reset.clear_results {
+        state.race_results_sent = false;
+    }
+    if reset.clear_events {
+        state.events.clear();
+    }
+    state.phase = reset.phase;
     push_network_log(
         &state.debug_log,
         format!("prepared rematch racers={}", state.race.players.len()),

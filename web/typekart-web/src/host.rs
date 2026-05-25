@@ -17,8 +17,8 @@ use typekart::game::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
         HostRaceTickAction, PreparedHostRace, advance_host_race_lifecycle, begin_countdown_phase,
         cancel_countdown_outcome, countdown_start_plan, countdown_tick_phase, host_race_tick_outcome,
-        prepare_race_from_selected_lobby_players, return_to_lobby_outcome,
-        start_race_from_countdown,
+        prepare_race_from_selected_lobby_players, prepare_waiting_race_outcome,
+        return_to_lobby_outcome, start_active_race_runtime_outcome, start_race_from_countdown,
     },
     item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
@@ -573,22 +573,29 @@ async fn run_browser_host_countdown(
     });
     let race_track_words = state.next_track_words.clone();
     let prepared_race = browser_prepare_race_from_lobby(&racers, race_track_words.clone());
+    let waiting_reset = prepare_waiting_race_outcome();
     state.bonuses = prepared_race.bonuses.clone();
 
     state.active_race = Some(browser_host_race_snapshot_with_track(
         state.next_race_sequence(),
-        NetworkRacePhase::WaitingForHost,
+        waiting_reset.phase,
         &state.mod_config,
         &racers,
         &race_track_words,
         &state.bonuses,
         vec!["browser host preparing race".to_string()],
     ));
-    state.active_results = None;
+    if waiting_reset.clear_results {
+        state.active_results = None;
+    }
     state.core_race = None;
-    state.runtime.reset();
-    state.ai_char_budget.clear();
-    state.ai_last_tick_ms = None;
+    if waiting_reset.reset_runtime {
+        state.runtime.reset();
+    }
+    if waiting_reset.reset_ai_timing {
+        state.ai_char_budget.clear();
+        state.ai_last_tick_ms = None;
+    }
     publish_browser_host_state(state, writer, set_live_frame).await?;
 
     for remaining_seconds in [3, 2, 1] {
@@ -632,10 +639,13 @@ async fn run_browser_host_countdown(
         &state.bonuses,
         vec![start_outcome.event.to_string()],
     ));
+    let active_reset = start_active_race_runtime_outcome();
     state.active_results = None;
     state.core_race = Some(prepared_race.race);
     state.next_track_words = browser_generate_track_words();
-    state.runtime.reset();
+    if active_reset.reset_runtime {
+        state.runtime.reset();
+    }
     if let (Some(snapshot), Some(core_race)) = (&mut state.active_race, &state.core_race) {
         browser_sync_snapshot_from_core(
             snapshot,
@@ -644,8 +654,12 @@ async fn run_browser_host_countdown(
             &state.runtime.player_effects,
         );
     }
-    state.ai_char_budget.clear();
-    state.ai_last_tick_ms = Some(browser_now_ms());
+    if active_reset.clear_ai_timing {
+        state.ai_char_budget.clear();
+    }
+    if active_reset.set_ai_timing_now {
+        state.ai_last_tick_ms = Some(browser_now_ms());
+    }
     publish_browser_host_state(state, writer, set_live_frame).await
 }
 

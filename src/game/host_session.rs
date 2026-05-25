@@ -87,6 +87,22 @@ pub struct CountdownCancelOutcome {
     pub event: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrepareWaitingRaceOutcome {
+    pub phase: NetworkRacePhase,
+    pub reset_runtime: bool,
+    pub clear_results: bool,
+    pub clear_events: bool,
+    pub reset_ai_timing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartActiveRaceRuntimeOutcome {
+    pub reset_runtime: bool,
+    pub clear_ai_timing: bool,
+    pub set_ai_timing_now: bool,
+}
+
 impl PreparedHostRace {
     pub fn participant_count(&self) -> usize {
         self.participants.len()
@@ -126,6 +142,24 @@ pub fn prepare_race_from_participants(
         race,
         bonuses,
         participants,
+    }
+}
+
+pub fn prepare_waiting_race_outcome() -> PrepareWaitingRaceOutcome {
+    PrepareWaitingRaceOutcome {
+        phase: NetworkRacePhase::WaitingForHost,
+        reset_runtime: true,
+        clear_results: true,
+        clear_events: true,
+        reset_ai_timing: true,
+    }
+}
+
+pub fn start_active_race_runtime_outcome() -> StartActiveRaceRuntimeOutcome {
+    StartActiveRaceRuntimeOutcome {
+        reset_runtime: true,
+        clear_ai_timing: true,
+        set_ai_timing_now: true,
     }
 }
 
@@ -297,7 +331,8 @@ mod tests {
         advance_host_race_lifecycle, begin_countdown_phase, cancel_countdown_outcome,
         connected_racer_count, countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
         has_connected_active_racer, host_race_tick_outcome, prepare_race_from_lobby,
-        return_to_lobby_decision, return_to_lobby_outcome, start_race_from_countdown,
+        prepare_waiting_race_outcome, return_to_lobby_decision, return_to_lobby_outcome,
+        start_active_race_runtime_outcome, start_race_from_countdown,
     };
     use crate::game::{
         race::{RaceLifecycleState, RacePlayerId},
@@ -354,6 +389,28 @@ mod tests {
             ["host", "ai-1"]
         );
         assert_eq!(prepared.bonuses.points.len(), 0);
+    }
+
+    #[test]
+    fn host_runtime_reset_outcomes_describe_adapter_work() {
+        assert_eq!(
+            prepare_waiting_race_outcome(),
+            super::PrepareWaitingRaceOutcome {
+                phase: NetworkRacePhase::WaitingForHost,
+                reset_runtime: true,
+                clear_results: true,
+                clear_events: true,
+                reset_ai_timing: true,
+            }
+        );
+        assert_eq!(
+            start_active_race_runtime_outcome(),
+            super::StartActiveRaceRuntimeOutcome {
+                reset_runtime: true,
+                clear_ai_timing: true,
+                set_ai_timing_now: true,
+            }
+        );
     }
 
     #[test]
