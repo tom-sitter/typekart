@@ -14,9 +14,9 @@ use anyhow::Result;
 
 use crate::game::host_session::{
     CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-    advance_countdown_to_racing, begin_countdown_phase, countdown_should_cancel,
-    countdown_start_plan, countdown_tick_phase, has_connected_active_racer,
-    return_to_lobby_outcome,
+    HostRaceTickAction, advance_countdown_to_racing, begin_countdown_phase,
+    countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+    has_connected_active_racer, host_race_tick_outcome, return_to_lobby_outcome,
 };
 use crate::net::{log::push_network_log, protocol::NetworkRacePhase};
 
@@ -211,6 +211,7 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
             host_ai::advance_network_ai_racers(&mut state, now);
             host_race::update_race_status(&mut state, now);
             let expired_choices = expire_bonus_cooldowns(&mut state, now);
+            let tick_outcome = host_race_tick_outcome(state.phase, true, expired_choices);
             if expired_choices > 0 {
                 push_network_log(
                     &state.debug_log,
@@ -218,27 +219,33 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
                 );
             }
 
-            if state.phase == NetworkRacePhase::Finished {
-                if let Err(error) = broadcast_race_snapshot(&mut state) {
-                    push_network_log(
-                        &state.debug_log,
-                        format!("failed to broadcast race snapshot: {error:#}"),
-                    );
+            match tick_outcome.action {
+                HostRaceTickAction::BroadcastResults => {
+                    if let Err(error) = broadcast_race_snapshot(&mut state) {
+                        push_network_log(
+                            &state.debug_log,
+                            format!("failed to broadcast race snapshot: {error:#}"),
+                        );
+                    }
+                    push_network_log(&state.debug_log, "race finished on snapshot tick");
+                    print_server_line("Race finished");
+                    if let Err(error) = broadcast_race_results_once(&mut state) {
+                        push_network_log(
+                            &state.debug_log,
+                            format!("failed to broadcast race results: {error:#}"),
+                        );
+                    }
+                    break;
                 }
-                push_network_log(&state.debug_log, "race finished on snapshot tick");
-                print_server_line("Race finished");
-                if let Err(error) = broadcast_race_results_once(&mut state) {
-                    push_network_log(
-                        &state.debug_log,
-                        format!("failed to broadcast race results: {error:#}"),
-                    );
+                HostRaceTickAction::BroadcastDelta => {
+                    if let Err(error) = broadcast_race_delta(&mut state) {
+                        push_network_log(
+                            &state.debug_log,
+                            format!("failed to broadcast race delta: {error:#}"),
+                        );
+                    }
                 }
-                break;
-            } else if let Err(error) = broadcast_race_delta(&mut state) {
-                push_network_log(
-                    &state.debug_log,
-                    format!("failed to broadcast race delta: {error:#}"),
-                );
+                HostRaceTickAction::Ignore => {}
             }
         }
     });

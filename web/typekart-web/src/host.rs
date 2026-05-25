@@ -15,9 +15,9 @@ use typekart::game::{
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        PreparedHostRace, advance_countdown_to_racing, begin_countdown_phase,
-        countdown_start_plan, countdown_tick_phase, prepare_race_from_selected_lobby_players,
-        return_to_lobby_outcome,
+        HostRaceTickAction, PreparedHostRace, advance_countdown_to_racing, begin_countdown_phase,
+        countdown_start_plan, countdown_tick_phase, host_race_tick_outcome,
+        prepare_race_from_selected_lobby_players, return_to_lobby_outcome,
     },
     item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
@@ -1128,7 +1128,22 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
     }
 
     let race_status_changed = browser_update_race_status(state, Instant::now());
-    changed || race_status_changed
+    let phase = state
+        .active_race
+        .as_ref()
+        .map(|snapshot| snapshot.phase)
+        .unwrap_or_else(|| {
+            if state.active_results.is_some() {
+                NetworkRacePhase::Finished
+            } else {
+                state.phase()
+            }
+        });
+    let tick_outcome = host_race_tick_outcome(phase, changed || race_status_changed, 0);
+    matches!(
+        tick_outcome.action,
+        HostRaceTickAction::BroadcastDelta | HostRaceTickAction::BroadcastResults
+    )
 }
 
 fn browser_update_race_status(state: &mut BrowserHostLobby, now: Instant) -> bool {

@@ -548,6 +548,9 @@ Progress:
 - `src/game/host_session.rs` now returns shared return-to-lobby outcomes with
   semantic event text, so network and browser adapters use the same lifecycle
   meaning while retaining adapter-specific cleanup and broadcasts.
+- `src/game/host_session.rs` now owns a shared active-race tick outcome shape
+  for choosing whether an adapter should ignore a tick, broadcast a delta, or
+  publish final results after its local AI/item/lifecycle work.
 
 ### 11. Browser Host Authority Convergence
 

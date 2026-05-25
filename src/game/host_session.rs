@@ -54,6 +54,20 @@ pub struct ReturnToLobbyOutcome {
     pub event: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostRaceTickAction {
+    Ignore,
+    BroadcastDelta,
+    BroadcastResults,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostRaceTickOutcome {
+    pub action: HostRaceTickAction,
+    pub race_changed: bool,
+    pub bonus_choices_refreshed: usize,
+}
+
 impl PreparedHostRace {
     pub fn participant_count(&self) -> usize {
         self.participants.len()
@@ -181,6 +195,29 @@ pub fn return_to_lobby_outcome(phase: NetworkRacePhase) -> Option<ReturnToLobbyO
     }
 }
 
+pub fn host_race_tick_outcome(
+    phase_after_tick: NetworkRacePhase,
+    race_changed: bool,
+    bonus_choices_refreshed: usize,
+) -> HostRaceTickOutcome {
+    let action = match phase_after_tick {
+        NetworkRacePhase::Finished => HostRaceTickAction::BroadcastResults,
+        NetworkRacePhase::Racing if race_changed || bonus_choices_refreshed > 0 => {
+            HostRaceTickAction::BroadcastDelta
+        }
+        NetworkRacePhase::Racing => HostRaceTickAction::Ignore,
+        NetworkRacePhase::Lobby
+        | NetworkRacePhase::WaitingForHost
+        | NetworkRacePhase::Countdown { .. } => HostRaceTickAction::Ignore,
+    };
+
+    HostRaceTickOutcome {
+        action,
+        race_changed,
+        bonus_choices_refreshed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
@@ -192,9 +229,10 @@ mod tests {
     use super::prepare_race_from_selected_lobby_players;
     use super::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        ReturnToLobbyDecision, advance_countdown_to_racing, begin_countdown_phase,
-        connected_racer_count, countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
-        has_connected_active_racer, prepare_race_from_lobby, return_to_lobby_decision,
+        HostRaceTickAction, ReturnToLobbyDecision, advance_countdown_to_racing,
+        begin_countdown_phase, connected_racer_count, countdown_should_cancel,
+        countdown_start_plan, countdown_tick_phase, has_connected_active_racer,
+        host_race_tick_outcome, prepare_race_from_lobby, return_to_lobby_decision,
         return_to_lobby_outcome,
     };
     use crate::game::track::{Track, WordList};
@@ -391,5 +429,25 @@ mod tests {
         prepared.race.players[0].connected = false;
 
         assert!(countdown_should_cancel(&prepared.race));
+    }
+
+    #[test]
+    fn race_tick_policy_selects_adapter_action() {
+        assert_eq!(
+            host_race_tick_outcome(NetworkRacePhase::Racing, false, 0).action,
+            HostRaceTickAction::Ignore
+        );
+        assert_eq!(
+            host_race_tick_outcome(NetworkRacePhase::Racing, true, 0).action,
+            HostRaceTickAction::BroadcastDelta
+        );
+        assert_eq!(
+            host_race_tick_outcome(NetworkRacePhase::Racing, false, 2).action,
+            HostRaceTickAction::BroadcastDelta
+        );
+        assert_eq!(
+            host_race_tick_outcome(NetworkRacePhase::Finished, false, 0).action,
+            HostRaceTickAction::BroadcastResults
+        );
     }
 }
