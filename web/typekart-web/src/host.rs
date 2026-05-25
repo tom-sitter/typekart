@@ -16,8 +16,8 @@ use typekart::game::{
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
         HostRaceTickAction, PreparedHostRace, advance_countdown_to_racing, begin_countdown_phase,
-        countdown_start_plan, countdown_tick_phase, host_race_tick_outcome,
-        prepare_race_from_selected_lobby_players, return_to_lobby_outcome,
+        advance_host_race_lifecycle, countdown_start_plan, countdown_tick_phase,
+        host_race_tick_outcome, prepare_race_from_selected_lobby_players, return_to_lobby_outcome,
     },
     item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
@@ -32,7 +32,7 @@ use typekart::game::{
     },
     player::PlayerState,
     race::{PlayerColorId, RacePlayer, RacePlayerId, RaceState, RaceRuntimeState},
-    race_flow::{advance_race_flow, update_race_flow},
+    race_flow::update_race_flow,
     snapshot::{
         RaceSnapshotInput, build_bonus_snapshots,
         build_placement_snapshots as build_shared_placement_snapshots, build_player_snapshots,
@@ -1153,15 +1153,17 @@ fn browser_update_race_status(state: &mut BrowserHostLobby, now: Instant) -> boo
     let Some(core_race) = &state.core_race else {
         return false;
     };
+    let phase = state.phase();
 
-    let outcome = advance_race_flow(
+    let outcome = advance_host_race_lifecycle(
         &mut state.runtime.lifecycle,
         core_race,
+        phase,
         now,
         BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
     );
 
-    if outcome.finished.is_none() {
+    if outcome.flow.finished.is_none() {
         return false;
     }
 

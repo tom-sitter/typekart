@@ -551,6 +551,10 @@ Progress:
 - `src/game/host_session.rs` now owns a shared active-race tick outcome shape
   for choosing whether an adapter should ignore a tick, broadcast a delta, or
   publish final results after its local AI/item/lifecycle work.
+- `src/game/host_session.rs` now owns active-race lifecycle advancement for
+  host sessions, including the "only while racing" guard and the transition to
+  the finished phase. Network and browser hosts both use this helper while
+  keeping event feed, result snapshots, and broadcasts adapter-owned.
 
 ### 11. Browser Host Authority Convergence
 

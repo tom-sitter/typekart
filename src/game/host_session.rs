@@ -5,14 +5,15 @@
 //! This module contains browser-safe pieces of that authority and leaves
 //! sockets, rendering, timers, and UI side effects to the adapters.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use typekart_protocol::{LobbyPlayer, NetworkRacePhase};
 
 use super::{
     bonus::BonusState,
     lobby::{lobby_players_to_participants, ready_connected_participants},
-    race::{RaceParticipant, RaceState},
+    race::{RaceLifecycleState, RaceParticipant, RaceState},
+    race_flow::{RaceFlowOutcome, advance_race_flow},
     track::{Track, WordList},
 };
 
@@ -66,6 +67,12 @@ pub struct HostRaceTickOutcome {
     pub action: HostRaceTickAction,
     pub race_changed: bool,
     pub bonus_choices_refreshed: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRaceLifecycleOutcome {
+    pub phase: NetworkRacePhase,
+    pub flow: RaceFlowOutcome,
 }
 
 impl PreparedHostRace {
@@ -218,9 +225,36 @@ pub fn host_race_tick_outcome(
     }
 }
 
+pub fn advance_host_race_lifecycle(
+    lifecycle: &mut RaceLifecycleState,
+    race: &RaceState,
+    phase: NetworkRacePhase,
+    now: Instant,
+    post_first_finish_timeout: Duration,
+) -> HostRaceLifecycleOutcome {
+    if phase != NetworkRacePhase::Racing {
+        return HostRaceLifecycleOutcome {
+            phase,
+            flow: RaceFlowOutcome {
+                newly_finished: Vec::new(),
+                finished: None,
+            },
+        };
+    }
+
+    let flow = advance_race_flow(lifecycle, race, now, post_first_finish_timeout);
+    let phase = if flow.finished.is_some() {
+        NetworkRacePhase::Finished
+    } else {
+        NetworkRacePhase::Racing
+    };
+
+    HostRaceLifecycleOutcome { phase, flow }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use typekart_protocol::{
         AiDifficultySnapshot, AssignedColor, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind,
@@ -230,12 +264,15 @@ mod tests {
     use super::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
         HostRaceTickAction, ReturnToLobbyDecision, advance_countdown_to_racing,
-        begin_countdown_phase, connected_racer_count, countdown_should_cancel,
-        countdown_start_plan, countdown_tick_phase, has_connected_active_racer,
-        host_race_tick_outcome, prepare_race_from_lobby, return_to_lobby_decision,
-        return_to_lobby_outcome,
+        advance_host_race_lifecycle, begin_countdown_phase, connected_racer_count,
+        countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+        has_connected_active_racer, host_race_tick_outcome, prepare_race_from_lobby,
+        return_to_lobby_decision, return_to_lobby_outcome,
     };
-    use crate::game::track::{Track, WordList};
+    use crate::game::{
+        race::{RaceLifecycleState, RacePlayerId},
+        track::{Track, WordList},
+    };
 
     fn lobby_player(
         id: u64,
@@ -449,5 +486,43 @@ mod tests {
             host_race_tick_outcome(NetworkRacePhase::Finished, false, 0).action,
             HostRaceTickAction::BroadcastResults
         );
+    }
+
+    #[test]
+    fn host_race_lifecycle_advances_only_while_racing() {
+        let now = Instant::now();
+        let players = vec![lobby_player(1, "host", true, true, PlayerKind::Human)];
+        let mut prepared = prepare_race_from_lobby(
+            &players,
+            Track::new(vec!["go".to_string()]),
+            &WordList::from_static("go\nbonus\nword"),
+            now,
+        );
+        prepared.race.players[0].state.finished_at = Some(now);
+        let mut lifecycle = RaceLifecycleState::new();
+
+        let waiting = advance_host_race_lifecycle(
+            &mut lifecycle,
+            &prepared.race,
+            NetworkRacePhase::WaitingForHost,
+            now,
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(waiting.phase, NetworkRacePhase::WaitingForHost);
+        assert!(waiting.flow.finished.is_none());
+        assert!(lifecycle.placements.is_empty());
+
+        let racing = advance_host_race_lifecycle(
+            &mut lifecycle,
+            &prepared.race,
+            NetworkRacePhase::Racing,
+            now,
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(racing.phase, NetworkRacePhase::Finished);
+        assert_eq!(racing.flow.newly_finished[0].player_id, RacePlayerId(1));
+        assert!(racing.flow.finished.is_some());
     }
 }

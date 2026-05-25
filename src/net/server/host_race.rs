@@ -9,8 +9,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 
 use crate::game::{
-    host_session::{connected_racer_count, prepare_race_from_lobby},
-    race_flow::advance_race_flow,
+    host_session::{advance_host_race_lifecycle, connected_racer_count, prepare_race_from_lobby},
     track::Track,
 };
 use crate::net::{
@@ -50,25 +49,22 @@ pub(super) fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
 }
 
 pub(super) fn update_race_status(state: &mut HostState, now: Instant) {
-    if state.phase != NetworkRacePhase::Racing {
-        return;
-    }
-
-    let outcome = advance_race_flow(
+    let outcome = advance_host_race_lifecycle(
         &mut state.runtime.lifecycle,
         &state.race,
+        state.phase,
         now,
         POST_FIRST_FINISH_TIMEOUT,
     );
+    state.phase = outcome.phase;
 
-    for finished in outcome.newly_finished {
+    for finished in outcome.flow.newly_finished {
         let message = finished_player_message(&finished);
         push_event(state, message.clone());
         push_network_log(&state.debug_log, message);
     }
 
-    if let Some(summary) = outcome.finished {
-        state.phase = NetworkRacePhase::Finished;
+    if let Some(summary) = outcome.flow.finished {
         push_event(state, "Race finished".to_string());
         push_network_log(&state.debug_log, finish_summary_log(&summary));
     }
