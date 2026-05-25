@@ -472,6 +472,173 @@ Progress:
   shared bonus/typing flow, applying race-status updates, and reporting whether
   the server should broadcast a delta or final results.
 
+### 10. Shared Host Session Core
+
+Goal: make terminal single-player, LAN-hosted, and browser-hosted races adapters
+over one authoritative session core instead of three independently orchestrated
+game loops.
+
+Current issue:
+
+- Network-hosted races now use many shared rule modules, but the network host,
+  browser host, and local session still each coordinate race phases, ticking,
+  input, lobby-to-race setup, item side effects, and snapshots in their own
+  adapter code.
+- This makes browser and single-player paths vulnerable to regressions for
+  behavior already fixed in terminal multiplayer.
+
+Shared session responsibilities:
+
+- Build race participants from selected lobby players.
+- Start countdowns and transition into active races.
+- Apply human key input through shared typing, bonus, item, and race-flow
+  helpers.
+- Advance AI racers, mushroom boosts, item expiries, bonus cooldowns, and race
+  lifecycle during periodic ticks.
+- Cancel active races and return participants to the lobby.
+- Produce semantic outcomes for adapters to render, log, or broadcast.
+
+Keep outside the shared core:
+
+- TCP sockets, relay room management, browser WebSocket wrappers, and terminal
+  input loops.
+- Ratatui rendering, Leptos signals, DOM updates, and CSS.
+- Wall-clock scheduling primitives. Adapters should pass `Instant`/elapsed time
+  into shared methods such as `start_countdown`, `apply_input`, and `tick`.
+
+Suggested API shape:
+
+- Add a browser-compatible `src/game/host_session.rs` or extend the existing
+  `src/game/engine.rs` facade only if it can remain a small coordinator.
+- Expose methods such as `prepare_race_from_lobby`, `start_countdown`,
+  `apply_player_key`, `tick`, `cancel_race`, `return_to_lobby`, and
+  `build_results`.
+- Return structured outcomes rather than writing to UI, logs, sockets, or
+  Leptos signals directly.
+
+Migration sequence:
+
+1. Extract one narrow shared session operation from the network host, where the
+   behavior is already most mature and best covered.
+2. Adopt that operation in the browser host.
+3. Adopt the same operation in local single-player.
+4. Repeat for the next operation instead of attempting a single large rewrite.
+
+Validation:
+
+- Each migrated operation should have shared `src/game` tests.
+- Existing LAN, browser-host, and local session tests should continue to pass.
+- Manual validation should compare the same scenario across local, LAN, and
+  browser-hosted races.
+
+Progress:
+
+- `src/game/host_session.rs` now owns shared lobby-to-race preparation for
+  host sessions, including ready/connected participant selection, `RaceState`
+  construction, and bonus generation.
+- Network-hosted rematches and browser-hosted countdown starts now both prepare
+  races through the shared helper.
+- Network countdown-connected-racer checks now use the shared host-session
+  active-racer helper.
+- `src/game/host_session.rs` now owns shared countdown phase policy for start
+  eligibility, no-racer rejection, countdown ticks, transition into racing, and
+  return-to-lobby decisions.
+- Network-hosted and browser-hosted countdown starts now use the shared phase
+  policy while keeping their own timers, broadcasts, and UI updates.
+
+### 11. Browser Host Authority Convergence
+
+Goal: reduce browser-host-specific gameplay authority in
+`web/typekart-web/src/host.rs` by moving rule decisions into shared game code.
+
+Current issue:
+
+- Browser host code still owns significant orchestration around lobby state,
+  AI ticking, bonus state generation, race snapshot synchronization, and race
+  lifecycle glue.
+- Some browser state is legitimate adapter code, but browser-hosted races
+  should not decide gameplay behavior differently from terminal-hosted races.
+
+Targets:
+
+- Replace browser-specific race setup and tick orchestration with calls into
+  the shared host session core.
+- Replace browser-specific lobby mutation paths with shared lobby/session
+  outcomes where possible.
+- Keep relay id mapping, browser signals, and DOM state updates in the browser
+  adapter.
+
+Validation:
+
+- Browser host with browser joiner.
+- Browser host with terminal joiner.
+- AI countdown, item effects, bonus availability, cancel/rematch, and results
+  parity against terminal multiplayer.
+
+### 12. Local Single-Player Session Convergence
+
+Goal: make local terminal play a local adapter around the same authoritative
+session logic used by LAN and browser hosts.
+
+Current issue:
+
+- `src/ui/session.rs` still owns bespoke local versions of gameplay behavior,
+  even though some lifecycle and AI helpers have already moved into shared
+  modules.
+- Local play should not be a special rule implementation. It should be a host
+  session with one human, optional AIs, and no transport.
+
+Targets:
+
+- Route local race setup, input, AI advancement, item effects, bonus flow,
+  lifecycle, and result construction through shared session operations.
+- Preserve terminal-only rendering, local command handling, and gallery/debug
+  helpers in `src/ui`.
+
+Validation:
+
+- Existing `ui::session` tests.
+- Local single-player manual race with AIs, bonus pickup, each item effect,
+  race cancel/restart, and result display.
+
+### 13. Shared Host Events And Snapshot Frames
+
+Goal: give adapters structured state changes from shared gameplay code instead
+of duplicating event strings and snapshot timing logic.
+
+Targets:
+
+- Emit structured host events such as item pickup, player hit, shield block,
+  bonus claim, countdown start, race start, finish, cancel, and return-to-lobby.
+- Keep adapter-specific wording, debug logs, event-feed truncation, and network
+  broadcasts outside shared gameplay code.
+- Expand shared snapshot/frame helpers so terminal, LAN, and browser adapters
+  project the same authoritative state into race, lobby, and result views.
+
+Validation:
+
+- Shared event tests should assert semantic event data, not UI strings.
+- Existing terminal and browser event-feed tests should cover adapter wording.
+
+### 14. Clock And Tick Boundary
+
+Goal: keep shared gameplay deterministic and browser-compatible while allowing
+terminal, LAN, and browser adapters to schedule work differently.
+
+Rules:
+
+- Shared game modules may accept `Instant`, elapsed milliseconds, or tick
+  context, but should not sleep, spawn threads, block, or own timers.
+- Terminal/LAN code may use native threads and blocking socket loops.
+- Browser code may use browser timers and async WebSocket callbacks.
+- Local terminal code may use its event loop cadence.
+
+Validation:
+
+- Shared tick tests should advance fake times deterministically.
+- Adapter tests should verify that each interface calls the shared tick methods
+  at the expected phase boundaries.
+
 ## Suggested Order
 
 1. Split `web/typekart-web/src/main.rs` into smaller modules.
@@ -484,6 +651,16 @@ Progress:
 8. Migrate local terminal session rules to shared gameplay modules.
 9. Split network host adapter modules after shared ownership boundaries are
    clear.
+10. Define and migrate toward the shared host session core one operation at a
+    time.
+11. Converge browser host authority onto shared session operations.
+12. Converge local single-player onto shared session operations.
+13. Replace duplicated host event strings and frame projection with structured
+    shared events/snapshots.
+14. Keep clock/tick scheduling adapter-owned while testing shared tick behavior
+    with deterministic fake times.
+15. Split large inline tests into focused sibling or integration test modules
+    after the shared-logic boundaries settle.
 
 ## Deferred Cleanup
 

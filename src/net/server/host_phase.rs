@@ -12,6 +12,12 @@ use std::{
 
 use anyhow::Result;
 
+use crate::game::host_session::{
+    CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
+    ReturnToLobbyDecision, advance_countdown_to_racing, begin_countdown_phase,
+    countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+    has_connected_active_racer, return_to_lobby_decision,
+};
 use crate::net::{log::push_network_log, protocol::NetworkRacePhase};
 
 use super::{
@@ -23,8 +29,8 @@ use super::{
 pub(super) fn start_countdown(state: Arc<Mutex<HostState>>) {
     let should_start = {
         let mut state = state.lock().expect("host state poisoned");
-        match state.phase {
-            NetworkRacePhase::Lobby => {
+        match countdown_start_plan(state.phase) {
+            Ok(CountdownRacePreparation::PrepareRace) => {
                 if let Err(error) = host_race::reset_race_from_lobby(&mut state) {
                     push_network_log(
                         &state.debug_log,
@@ -33,35 +39,36 @@ pub(super) fn start_countdown(state: Arc<Mutex<HostState>>) {
                     return;
                 }
             }
-            NetworkRacePhase::WaitingForHost => {}
-            NetworkRacePhase::Finished => {
-                if let Err(error) = host_race::reset_race_from_lobby(&mut state) {
-                    push_network_log(
-                        &state.debug_log,
-                        format!("failed to prepare rematch: {error:#}"),
-                    );
-                    return;
-                }
-            }
-            NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => {
+            Ok(CountdownRacePreparation::UseCurrentRace) => {}
+            Err(CountdownStartRejection::RaceAlreadyActive) => {
                 push_network_log(&state.debug_log, "start ignored race already active");
                 print_server_line("Race has already started");
                 return;
             }
+            Err(CountdownStartRejection::NoConnectedRacers) => {
+                unreachable!("countdown phase planning does not inspect racer count")
+            }
         }
 
-        if host_race::current_race_connected_player_count(&state) < 1 {
-            push_network_log(
-                &state.debug_log,
-                "start ignored no ready connected racers available",
-            );
-            print_server_line("Cannot start: at least one ready connected racer is required");
-            return;
-        }
+        let phase =
+            match begin_countdown_phase(host_race::current_race_connected_player_count(&state)) {
+                Ok(phase) => phase,
+                Err(CountdownStartRejection::NoConnectedRacers) => {
+                    push_network_log(
+                        &state.debug_log,
+                        "start ignored no ready connected racers available",
+                    );
+                    print_server_line(
+                        "Cannot start: at least one ready connected racer is required",
+                    );
+                    return;
+                }
+                Err(CountdownStartRejection::RaceAlreadyActive) => {
+                    unreachable!("countdown begin only validates connected racer availability")
+                }
+            };
 
-        state.phase = NetworkRacePhase::Countdown {
-            remaining_seconds: 3,
-        };
+        state.phase = phase;
         push_event(&mut state, "Countdown started".to_string());
         push_network_log(&state.debug_log, "countdown started remaining=3");
         print_server_line("Countdown: 3");
@@ -80,10 +87,10 @@ pub(super) fn start_countdown(state: Arc<Mutex<HostState>>) {
 }
 
 pub(super) fn return_to_lobby(state: &mut HostState) -> Result<()> {
-    let event = match state.phase {
-        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing => "Race cancelled",
-        NetworkRacePhase::Finished => "Returned to lobby",
-        NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => return Ok(()),
+    let event = match return_to_lobby_decision(state.phase) {
+        ReturnToLobbyDecision::CancelRace => "Race cancelled",
+        ReturnToLobbyDecision::ReturnFromResults => "Returned to lobby",
+        ReturnToLobbyDecision::Ignore => return Ok(()),
     };
     host_race::reset_race_from_lobby(state)?;
     push_event(state, event.to_string());
@@ -122,13 +129,7 @@ pub(super) fn reconcile_phase_after_disconnect(state: &mut HostState, now: Insta
 }
 
 pub(super) fn countdown_has_any_connected_racer(state: &HostState) -> bool {
-    state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.connected && !player.state.is_finished())
-        .count()
-        >= 1
+    has_connected_active_racer(&state.race)
 }
 
 pub(super) fn cancel_countdown(state: &mut HostState) {
@@ -146,13 +147,13 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
             push_network_log(&guard.debug_log, "countdown stopped before next tick");
             return;
         }
-        if !countdown_has_any_connected_racer(&guard) {
+        if countdown_should_cancel(&guard.race) {
             cancel_countdown(&mut guard);
             broadcast_countdown_cancel(&mut guard);
             return;
         }
 
-        guard.phase = NetworkRacePhase::Countdown { remaining_seconds };
+        guard.phase = countdown_tick_phase(remaining_seconds);
         push_network_log(
             &guard.debug_log,
             format!("countdown tick remaining={remaining_seconds}"),
@@ -172,13 +173,18 @@ fn run_countdown(state: Arc<Mutex<HostState>>) {
         push_network_log(&guard.debug_log, "countdown stopped before race start");
         return;
     }
-    if !countdown_has_any_connected_racer(&guard) {
-        cancel_countdown(&mut guard);
-        broadcast_countdown_cancel(&mut guard);
-        return;
+    match advance_countdown_to_racing(guard.phase, has_connected_active_racer(&guard.race)) {
+        Ok(phase) => guard.phase = phase,
+        Err(CountdownAdvanceRejection::NoConnectedRacers) => {
+            cancel_countdown(&mut guard);
+            broadcast_countdown_cancel(&mut guard);
+            return;
+        }
+        Err(CountdownAdvanceRejection::NotCountingDown) => {
+            push_network_log(&guard.debug_log, "countdown stopped before race start");
+            return;
+        }
     }
-
-    guard.phase = NetworkRacePhase::Racing;
     host_ai::reset_network_ai_timing(&mut guard, Instant::now());
     push_event(&mut guard, "Race started".to_string());
     push_network_log(&guard.debug_log, "race started");

@@ -13,13 +13,18 @@ use typekart::game::{
     ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
     bonus::BonusState,
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
+    host_session::{
+        CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
+        PreparedHostRace, advance_countdown_to_racing, begin_countdown_phase,
+        countdown_start_plan, countdown_tick_phase, prepare_race_from_selected_lobby_players,
+    },
     item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
     lobby::{
         add_ai_lobby_player as shared_add_ai_lobby_player, color_for_lobby_slot,
-        first_available_player_id, lobby_name_or_default, lobby_players_to_participants,
-        new_human_lobby_player, remove_lobby_player as shared_remove_lobby_player,
+        first_available_player_id, lobby_name_or_default, new_human_lobby_player,
+        remove_lobby_player as shared_remove_lobby_player,
         rename_lobby_player as shared_rename_lobby_player,
         set_lobby_ai_difficulty as shared_set_lobby_ai_difficulty,
         set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
@@ -523,10 +528,16 @@ async fn run_browser_host_countdown(
     set_connection: WriteSignal<ConnectionState>,
     set_live_frame: WriteSignal<Option<GalleryFrame>>,
 ) -> Result<(), String> {
-    if state.active_race.is_some() {
-        state.push_event("race already started");
-        publish_browser_host_state(state, writer, set_live_frame).await?;
-        return Ok(());
+    match countdown_start_plan(state.phase()) {
+        Ok(CountdownRacePreparation::PrepareRace | CountdownRacePreparation::UseCurrentRace) => {}
+        Err(CountdownStartRejection::RaceAlreadyActive) => {
+            state.push_event("race already started");
+            publish_browser_host_state(state, writer, set_live_frame).await?;
+            return Ok(());
+        }
+        Err(CountdownStartRejection::NoConnectedRacers) => unreachable!(
+            "countdown phase planning does not inspect racer count"
+        ),
     }
 
     let racers = state
@@ -540,12 +551,24 @@ async fn run_browser_host_countdown(
         publish_browser_host_lobby(state, writer, set_live_frame).await?;
         return Ok(());
     }
+    let countdown_phase = match begin_countdown_phase(racers.len()) {
+        Ok(phase) => phase,
+        Err(CountdownStartRejection::NoConnectedRacers) => {
+            state.push_event("cannot start without ready racers");
+            publish_browser_host_lobby(state, writer, set_live_frame).await?;
+            return Ok(());
+        }
+        Err(CountdownStartRejection::RaceAlreadyActive) => unreachable!(
+            "countdown begin only validates connected racer availability"
+        ),
+    };
 
     set_connection.set(ConnectionState::Connected {
         message: "Starting browser-hosted race shell".to_string(),
     });
     let race_track_words = state.next_track_words.clone();
-    state.bonuses = browser_generate_bonus_state(&race_track_words);
+    let prepared_race = browser_prepare_race_from_lobby(&racers, race_track_words.clone());
+    state.bonuses = prepared_race.bonuses.clone();
 
     state.active_race = Some(browser_host_race_snapshot_with_track(
         state.next_race_sequence(),
@@ -564,9 +587,14 @@ async fn run_browser_host_countdown(
     publish_browser_host_state(state, writer, set_live_frame).await?;
 
     for remaining_seconds in [3, 2, 1] {
+        let phase = if remaining_seconds == 3 {
+            countdown_phase
+        } else {
+            countdown_tick_phase(remaining_seconds)
+        };
         state.active_race = Some(browser_host_race_snapshot_with_track(
             state.next_race_sequence(),
-            NetworkRacePhase::Countdown { remaining_seconds },
+            phase,
             &state.mod_config,
             &racers,
             &race_track_words,
@@ -576,10 +604,22 @@ async fn run_browser_host_countdown(
         publish_browser_host_state(state, writer, set_live_frame).await?;
         TimeoutFuture::new(1000).await;
     }
+    let racing_phase = match advance_countdown_to_racing(countdown_tick_phase(1), !racers.is_empty())
+    {
+        Ok(phase) => phase,
+        Err(CountdownAdvanceRejection::NoConnectedRacers) => {
+            state.push_event("countdown cancelled");
+            publish_browser_host_lobby(state, writer, set_live_frame).await?;
+            return Ok(());
+        }
+        Err(CountdownAdvanceRejection::NotCountingDown) => unreachable!(
+            "browser countdown loop advances from countdown phase"
+        ),
+    };
 
     state.active_race = Some(browser_host_race_snapshot_with_track(
         state.next_race_sequence(),
-        NetworkRacePhase::Racing,
+        racing_phase,
         &state.mod_config,
         &racers,
         &race_track_words,
@@ -587,7 +627,7 @@ async fn run_browser_host_countdown(
         vec!["browser-hosted race started".to_string()],
     ));
     state.active_results = None;
-    state.core_race = Some(browser_host_core_race(&racers, race_track_words));
+    state.core_race = Some(prepared_race.race);
     state.next_track_words = browser_generate_track_words();
     state.runtime.reset();
     if let (Some(snapshot), Some(core_race)) = (&mut state.active_race, &state.core_race) {
@@ -631,7 +671,7 @@ fn browser_host_race_snapshot_with_track(
     bonuses: &BonusState,
     events: Vec<String>,
 ) -> RaceSnapshot {
-    let race = browser_host_core_race(racers, track_words.to_vec());
+    let race = browser_prepare_race_from_lobby(racers, track_words.to_vec()).race;
     let player_effects = HashMap::new();
     build_race_snapshot(
         RaceSnapshotInput {
@@ -654,10 +694,21 @@ fn browser_host_race_snapshot_with_track(
     )
 }
 
+#[cfg(test)]
 fn browser_host_core_race(racers: &[LobbyPlayer], track_words: Vec<String>) -> RaceState {
-    let now = Instant::now();
-    let participants = lobby_players_to_participants(racers);
-    RaceState::from_participants(Track::new(track_words), participants, now)
+    browser_prepare_race_from_lobby(racers, track_words).race
+}
+
+fn browser_prepare_race_from_lobby(
+    racers: &[LobbyPlayer],
+    track_words: Vec<String>,
+) -> PreparedHostRace {
+    prepare_race_from_selected_lobby_players(
+        racers,
+        Track::new(track_words),
+        &WordList::from_static(BROWSER_HOST_WORDS),
+        Instant::now(),
+    )
 }
 
 fn browser_ensure_core_race(state: &mut BrowserHostLobby) {

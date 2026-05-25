@@ -9,6 +9,7 @@ pub mod bonus;
 pub mod bonus_flow;
 pub mod effects;
 pub mod engine;
+pub mod host_session;
 pub mod input_rules;
 pub mod item_effects;
 pub mod items;

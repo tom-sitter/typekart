@@ -9,8 +9,9 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 
 use crate::game::{
-    bonus::BonusState, lobby::ready_connected_participants, race::RaceState,
-    race_flow::advance_race_flow, track::Track,
+    host_session::{connected_racer_count, prepare_race_from_lobby},
+    race_flow::advance_race_flow,
+    track::Track,
 };
 use crate::net::{
     host_lifecycle::{finish_summary_log, finished_player_message},
@@ -21,12 +22,7 @@ use crate::net::{
 use super::{HostState, POST_FIRST_FINISH_TIMEOUT, host_ai, host_lobby, push_event};
 
 pub(super) fn current_race_connected_player_count(state: &HostState) -> usize {
-    state
-        .race
-        .players
-        .iter()
-        .filter(|player| player.connected)
-        .count()
+    connected_racer_count(&state.race)
 }
 
 pub(super) fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
@@ -36,11 +32,11 @@ pub(super) fn reset_race_from_lobby(state: &mut HostState) -> Result<()> {
     let track = Track::generate(&state.word_list, word_count)
         .context("failed to generate rematch track")?;
     let now = Instant::now();
-    let participants = ready_connected_participants(&state.players);
-    state.race = RaceState::from_participants(track, participants, now);
+    let prepared = prepare_race_from_lobby(&state.players, track, &state.word_list, now);
+    state.race = prepared.race;
     host_ai::reset_network_ai_timing(state, now);
 
-    state.bonuses = BonusState::generate(&state.race.track, &state.word_list);
+    state.bonuses = prepared.bonuses;
     state.runtime.reset();
     state.race_results_sent = false;
     state.events.clear();
