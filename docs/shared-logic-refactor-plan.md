@@ -558,6 +558,9 @@ Progress:
 - `src/game/host_session.rs` now returns a shared start-race outcome from the
   countdown-to-racing transition, including the `Racing` phase and common race
   started event text used by network and browser hosts.
+- `src/game/host_session.rs` now returns a shared countdown-cancel outcome,
+  including the `WaitingForHost` phase and common cancellation event text used
+  by network and browser hosts.
 
 ### 11. Browser Host Authority Convergence
 

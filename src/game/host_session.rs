@@ -81,6 +81,12 @@ pub struct StartRaceOutcome {
     pub event: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CountdownCancelOutcome {
+    pub phase: NetworkRacePhase,
+    pub event: &'static str,
+}
+
 impl PreparedHostRace {
     pub fn participant_count(&self) -> usize {
         self.participants.len()
@@ -168,6 +174,13 @@ pub fn countdown_tick_phase(remaining_seconds: u8) -> NetworkRacePhase {
 
 pub fn countdown_should_cancel(race: &RaceState) -> bool {
     !has_connected_active_racer(race)
+}
+
+pub fn cancel_countdown_outcome() -> CountdownCancelOutcome {
+    CountdownCancelOutcome {
+        phase: NetworkRacePhase::WaitingForHost,
+        event: "Countdown cancelled",
+    }
 }
 
 pub fn advance_countdown_to_racing(
@@ -281,8 +294,8 @@ mod tests {
     use super::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
         HostRaceTickAction, ReturnToLobbyDecision, advance_countdown_to_racing,
-        advance_host_race_lifecycle, begin_countdown_phase, connected_racer_count,
-        countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+        advance_host_race_lifecycle, begin_countdown_phase, cancel_countdown_outcome,
+        connected_racer_count, countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
         has_connected_active_racer, host_race_tick_outcome, prepare_race_from_lobby,
         return_to_lobby_decision, return_to_lobby_outcome, start_race_from_countdown,
     };
@@ -495,6 +508,13 @@ mod tests {
         prepared.race.players[0].connected = false;
 
         assert!(countdown_should_cancel(&prepared.race));
+        assert_eq!(
+            cancel_countdown_outcome(),
+            super::CountdownCancelOutcome {
+                phase: NetworkRacePhase::WaitingForHost,
+                event: "Countdown cancelled"
+            }
+        );
     }
 
     #[test]

@@ -14,8 +14,8 @@ use anyhow::Result;
 
 use crate::game::host_session::{
     CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-    HostRaceTickAction, begin_countdown_phase, countdown_should_cancel, countdown_start_plan,
-    countdown_tick_phase, has_connected_active_racer, host_race_tick_outcome,
+    HostRaceTickAction, begin_countdown_phase, cancel_countdown_outcome, countdown_should_cancel,
+    countdown_start_plan, countdown_tick_phase, has_connected_active_racer, host_race_tick_outcome,
     return_to_lobby_outcome, start_race_from_countdown,
 };
 use crate::net::{log::push_network_log, protocol::NetworkRacePhase};
@@ -131,10 +131,11 @@ pub(super) fn countdown_has_any_connected_racer(state: &HostState) -> bool {
 }
 
 pub(super) fn cancel_countdown(state: &mut HostState) {
-    state.phase = NetworkRacePhase::WaitingForHost;
-    push_event(state, "Countdown cancelled".to_string());
-    push_network_log(&state.debug_log, "countdown cancelled no connected racers");
-    print_server_line("Countdown cancelled");
+    let outcome = cancel_countdown_outcome();
+    state.phase = outcome.phase;
+    push_event(state, outcome.event.to_string());
+    push_network_log(&state.debug_log, outcome.event.to_ascii_lowercase());
+    print_server_line(outcome.event);
 }
 
 fn run_countdown(state: Arc<Mutex<HostState>>) {

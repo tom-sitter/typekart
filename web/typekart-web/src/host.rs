@@ -16,7 +16,7 @@ use typekart::game::{
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
         HostRaceTickAction, PreparedHostRace, advance_host_race_lifecycle, begin_countdown_phase,
-        countdown_start_plan, countdown_tick_phase, host_race_tick_outcome,
+        cancel_countdown_outcome, countdown_start_plan, countdown_tick_phase, host_race_tick_outcome,
         prepare_race_from_selected_lobby_players, return_to_lobby_outcome,
         start_race_from_countdown,
     },
@@ -613,7 +613,8 @@ async fn run_browser_host_countdown(
     {
         Ok(outcome) => outcome,
         Err(CountdownAdvanceRejection::NoConnectedRacers) => {
-            state.push_event("countdown cancelled");
+            let outcome = cancel_countdown_outcome();
+            state.push_event(outcome.event);
             publish_browser_host_lobby(state, writer, set_live_frame).await?;
             return Ok(());
         }
