@@ -356,6 +356,14 @@ Progress:
   `NetworkRacePhase` directly instead of a local-only `RacePhase` enum. Local
   countdown timing keeps a private deadline, but display and lifecycle decisions
   use the shared phase shape.
+- Local session creation and restart now prepare local human/AI participants
+  through `prepare_race_from_participants`, so local setup uses shared
+  `RaceState` and `BonusState` construction while retaining local-only AI WPM
+  and terminal session metadata.
+- Local banana and squid-ink activation now use shared `game::item_effects`
+  through the same local bridge as cyclone. The old local-only banana warning,
+  banana targeting, and squid-ink mutation paths were removed, so local and
+  multiplayer item impact/stun/cue behavior are closer to parity.
 
 Validation:
 

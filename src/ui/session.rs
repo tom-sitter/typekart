@@ -14,29 +14,27 @@ use crate::game::{
     ai::AiDifficulty,
     ai_driver::{ai_chars_per_second, ai_effective_wpm, next_ai_key_for_player},
     bonus::{BonusState, claim_bonus_choice},
-    effects::{ActiveEffect, AttackWarning, PendingAttack},
+    effects::ActiveEffect,
     host_session::{
         advance_host_race_lifecycle, begin_countdown_phase, connected_racer_count,
         countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
-        return_to_lobby_outcome, start_race_from_countdown,
+        prepare_race_from_participants, return_to_lobby_outcome, start_race_from_countdown,
     },
     item_effects::{
         AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
-        activate_item_pickup,
+        RaceItemEffectState, activate_item_pickup,
     },
-    items::{
-        HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse, RacePositionBand,
-        RacerPosition, select_nearest_banana_target,
-    },
+    items::{HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse, RacePositionBand},
     mods::ActiveModConfig,
     player::PlayerState,
-    race::{PlayerColorId, RaceLifecycleState, RacePlayer, RacePlayerId, RaceState},
+    race::{
+        PlayerColorId, RaceLifecycleState, RaceParticipant, RacePlayer, RacePlayerId, RaceState,
+    },
     track::{Track, WordList},
     typing::{KeyAction, TypingEvent, apply_key, first_typo_index},
 };
 use typekart_protocol::NetworkRacePhase;
 
-const PLAYER_ATTACK_WARNING: Duration = Duration::from_millis(900);
 const MAX_AI_RACERS: usize = 6;
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(15);
 const RACE_COUNTDOWN: Duration = Duration::from_secs(3);
@@ -48,7 +46,6 @@ pub struct LocalSession {
     pub ai_racers: Vec<AiRacer>,
     pub bonuses: BonusState,
     pub bonus_attempt: Option<BonusAttempt>,
-    pub attack_warning: Option<AttackWarning>,
     player_stunned_until: Option<Instant>,
     pub player_impact_cue: Option<ImpactCue>,
     pub player_item_cue: Option<ItemCue>,
@@ -158,6 +155,7 @@ impl ItemCue {
         }
     }
 
+    #[cfg(test)]
     fn banana(direction: AttackDirection, now: Instant, item_registry: &ItemRegistry) -> Self {
         let effect = item_registry.banana_effect();
         let display = item_registry.banana_display();
@@ -191,6 +189,7 @@ impl ItemCue {
         }
     }
 
+    #[cfg(test)]
     fn squid_ink(now: Instant, item_registry: &ItemRegistry) -> Self {
         let effect = item_registry.squid_ink_effect();
         Self {
@@ -218,12 +217,6 @@ pub enum AttackDirection {
     Ahead,
     Behind,
     Overlap,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BananaResolution {
-    SpunOut,
-    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,6 +268,39 @@ fn local_ai_color(id: usize) -> PlayerColorId {
     }
 }
 
+fn local_race_participants(ai_racers: &[AiRacer]) -> Vec<RaceParticipant> {
+    let mut participants = Vec::with_capacity(ai_racers.len() + 1);
+    participants.push(RaceParticipant {
+        id: RacePlayerId(1),
+        name: "you".to_string(),
+        color: PlayerColorId::Cyan,
+        connected: true,
+    });
+    participants.extend(ai_racers.iter().map(|ai| RaceParticipant {
+        id: RacePlayerId((ai.id + 1) as u64),
+        name: ai.name.clone(),
+        color: local_ai_color(ai.id),
+        connected: true,
+    }));
+    participants
+}
+
+fn apply_prepared_player_states(
+    race: &RaceState,
+    player: &mut PlayerState,
+    ai_racers: &mut [AiRacer],
+) {
+    if let Some(race_player) = race.player(RacePlayerId(1)) {
+        *player = race_player.state.clone();
+    }
+
+    for ai in ai_racers {
+        if let Some(race_player) = race.player(RacePlayerId((ai.id + 1) as u64)) {
+            ai.player = race_player.state.clone();
+        }
+    }
+}
+
 impl LocalSession {
     pub fn new(
         track: Track,
@@ -288,11 +314,18 @@ impl LocalSession {
         let mut events = EventLog::new(8);
         events.push("Press Space to start");
 
-        let bonuses = BonusState::generate(&track, &word_list);
         let word_count = track.len();
         let now = player.started_at;
         let ai_racer_count = ai_racer_count.min(MAX_AI_RACERS);
-        let ai_racers = build_ai_racers(ai_racer_count, ai_difficulty, now);
+        let mut ai_racers = build_ai_racers(ai_racer_count, ai_difficulty, now);
+        let prepared = prepare_race_from_participants(
+            local_race_participants(&ai_racers),
+            track,
+            &word_list,
+            now,
+        );
+        let mut player = player;
+        apply_prepared_player_states(&prepared.race, &mut player, &mut ai_racers);
         let mut run_log = RunLog::new(now, 500);
         run_log.push(now, active_mod_config.log_summary());
         run_log.push(
@@ -304,12 +337,11 @@ impl LocalSession {
         );
 
         Self {
-            track,
+            track: prepared.race.track,
             player,
             ai_racers,
-            bonuses,
+            bonuses: prepared.bonuses,
             bonus_attempt: None,
-            attack_warning: None,
             player_stunned_until: None,
             player_impact_cue: None,
             player_item_cue: None,
@@ -355,7 +387,6 @@ impl LocalSession {
             ai_racers: Vec::new(),
             bonuses,
             bonus_attempt: None,
-            attack_warning: None,
             player_stunned_until: None,
             player_impact_cue: None,
             player_item_cue: None,
@@ -485,19 +516,24 @@ impl LocalSession {
             self.run_log.push(now, "restart failed: track generation");
             return;
         };
-        let player = PlayerState::new(now);
-        let bonuses = BonusState::generate(&track, &self.word_list);
-        let ai_racers = build_ai_racers(self.ai_racer_count, self.ai_difficulty, now);
+        let mut player = PlayerState::new(now);
+        let mut ai_racers = build_ai_racers(self.ai_racer_count, self.ai_difficulty, now);
+        let prepared = prepare_race_from_participants(
+            local_race_participants(&ai_racers),
+            track,
+            &self.word_list,
+            now,
+        );
+        apply_prepared_player_states(&prepared.race, &mut player, &mut ai_racers);
 
-        self.track = track;
+        self.track = prepared.race.track;
         self.player = player;
         self.ai_racers = ai_racers;
         self.selected_ai_index = self
             .selected_ai_index
             .min(self.ai_racers.len().saturating_sub(1));
-        self.bonuses = bonuses;
+        self.bonuses = prepared.bonuses;
         self.bonus_attempt = None;
-        self.attack_warning = None;
         self.player_stunned_until = None;
         self.player_impact_cue = None;
         self.player_item_cue = None;
@@ -648,14 +684,6 @@ impl LocalSession {
 
         self.expire_item_cues(now);
 
-        if self
-            .attack_warning
-            .is_some_and(|warning| warning.resolves_at <= now)
-        {
-            self.apply_banana_to_player(now);
-            self.attack_warning = None;
-        }
-
         self.update_race_status(now);
     }
 
@@ -672,27 +700,6 @@ impl LocalSession {
                 ai.item_cue = None;
             }
         }
-    }
-
-    fn apply_banana_to_player(&mut self, now: Instant) {
-        if self.player.has_active_shield(now) {
-            self.player.active_effects.clear();
-            self.player_impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::ShieldBlock,
-                until: now + Duration::from_millis(700),
-            });
-            self.events.push("Attack blocked");
-            return;
-        }
-
-        self.player.input.clear();
-        self.player.typo_index = None;
-        self.bonus_attempt = None;
-        self.player_impact_cue = Some(ImpactCue {
-            kind: ImpactCueKind::Banana,
-            until: now + Duration::from_millis(self.item_registry.banana_effect().impact_blink_ms),
-        });
-        self.events.push("Banana spun you out");
     }
 
     fn update_race_status(&mut self, now: Instant) {
@@ -917,10 +924,20 @@ impl LocalSession {
     fn activate_ai_held_item(&mut self, ai_index: usize, item: HeldItem, now: Instant) {
         match item {
             HeldItem::Mushroom => self.activate_ai_mushroom(ai_index, now),
-            HeldItem::Banana => self.ai_use_banana(ai_index, now),
+            HeldItem::Banana => self.use_banana(
+                self.ai_racers
+                    .get(ai_index)
+                    .map(|ai| RacePlayerId((ai.id + 1) as u64)),
+                now,
+            ),
             HeldItem::Focus => self.activate_ai_focus(ai_index, now),
             HeldItem::Cyclone => self.use_cyclone(Some(ai_index), now),
-            HeldItem::SquidInk => self.use_ai_squid_ink(ai_index, now),
+            HeldItem::SquidInk => self.use_squid_ink(
+                self.ai_racers
+                    .get(ai_index)
+                    .map(|ai| RacePlayerId((ai.id + 1) as u64)),
+                now,
+            ),
         }
     }
 
@@ -933,60 +950,6 @@ impl LocalSession {
         self.activate_ai_held_item(ai_index, item, now);
     }
 
-    fn ai_use_banana(&mut self, ai_index: usize, now: Instant) {
-        let Some(ai) = self.ai_racers.get(ai_index) else {
-            return;
-        };
-        let ai_name = ai.name.clone();
-        let attacker_word_index = ai.player.word_index;
-        let racers = self.racer_positions_excluding_ai(ai_index, now);
-        self.run_log.push(
-            now,
-            format!(
-                "{ai_name} banana fired from word={attacker_word_index}; candidates={}",
-                self.racer_positions_summary(&racers, now)
-            ),
-        );
-        let banana = self.item_registry.banana_effect();
-        let Some(target) =
-            select_nearest_banana_target(ai.player.word_index, &racers, banana.range_words)
-        else {
-            self.events.push(format!("{ai_name} missed Banana"));
-            self.run_log.push(now, format!("{ai_name} banana missed"));
-            return;
-        };
-        let direction = attack_direction(attacker_word_index, target.word_index);
-        let distance = attacker_word_index.abs_diff(target.word_index);
-        self.run_log.push(
-            now,
-            format!(
-                "{ai_name} banana target={} target_word={} direction={direction:?} cue_placement={} distance_words={distance}",
-                racer_name(target.id),
-                target.word_index,
-                banana_cue_placement(direction)
-            ),
-        );
-
-        if target.id == 0 {
-            if let Some(ai) = self.ai_racers.get_mut(ai_index) {
-                ai.item_cue = Some(ItemCue::banana(direction, now, &self.item_registry));
-            }
-            self.attack_warning = Some(AttackWarning {
-                attack: PendingAttack::BananaWordSwap,
-                resolves_at: now + PLAYER_ATTACK_WARNING,
-            });
-            self.events
-                .push(format!("{ai_name} targeted you with Banana"));
-        } else {
-            if let Some(ai) = self.ai_racers.get_mut(ai_index) {
-                ai.item_cue = Some(ItemCue::banana(direction, now, &self.item_registry));
-            }
-            if self.apply_banana_to_ai(target.id, now) == Some(BananaResolution::SpunOut) {
-                self.events.push(format!("{ai_name} hit ai-{}", target.id));
-            }
-        }
-    }
-
     fn activate_ai_focus(&mut self, ai_index: usize, now: Instant) {
         let Some(ai) = self.ai_racers.get_mut(ai_index) else {
             return;
@@ -996,49 +959,26 @@ impl LocalSession {
         });
     }
 
-    fn use_ai_squid_ink(&mut self, ai_index: usize, now: Instant) {
-        let Some(ai) = self.ai_racers.get(ai_index) else {
-            return;
-        };
-        let attacker_name = ai.name.clone();
-        let attacker_word_index = ai.player.word_index;
-        let targets = self.squid_ink_targets_excluding_ai(ai_index, now);
-        if let Some(ai) = self.ai_racers.get_mut(ai_index) {
-            ai.item_cue = Some(ItemCue::squid_ink(now, &self.item_registry));
-        }
-        self.run_log.push(
-            now,
-            format!(
-                "{attacker_name} squid ink fired from word={attacker_word_index}; candidates={}",
-                self.racer_positions_summary(&targets, now)
-            ),
-        );
-
-        let mut hit_count = 0;
-        for target in targets {
-            if target.id == 0 {
-                if self.apply_squid_ink_to_player(now) {
-                    hit_count += 1;
-                    self.events
-                        .push(format!("{attacker_name} inked you with Squid Ink"));
-                }
-            } else if self.apply_squid_ink_to_ai(target.id, now) {
-                hit_count += 1;
-            }
-        }
-
-        if hit_count == 0 {
-            self.events
-                .push(format!("{attacker_name} missed Squid Ink"));
-        }
-    }
-
     fn use_cyclone(&mut self, attacker_ai_index: Option<usize>, now: Instant) {
         let player_id = attacker_ai_index
             .and_then(|index| self.ai_racers.get(index))
             .map(|ai| RacePlayerId((ai.id + 1) as u64))
             .unwrap_or(RacePlayerId(1));
         self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Cyclone), now);
+    }
+
+    fn use_banana(&mut self, player_id: Option<RacePlayerId>, now: Instant) {
+        let Some(player_id) = player_id else {
+            return;
+        };
+        self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Banana), now);
+    }
+
+    fn use_squid_ink(&mut self, player_id: Option<RacePlayerId>, now: Instant) {
+        let Some(player_id) = player_id else {
+            return;
+        };
+        self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::SquidInk), now);
     }
 
     fn activate_shared_item_pickup(
@@ -1053,7 +993,7 @@ impl LocalSession {
             .iter()
             .map(|ai| RacePlayerId((ai.id + 1) as u64))
             .collect::<HashSet<_>>();
-        let mut effects = HashMap::new();
+        let mut effects = self.shared_item_effects();
         let report = activate_item_pickup(
             &mut race,
             &mut effects,
@@ -1077,8 +1017,35 @@ impl LocalSession {
         }
         self.apply_shared_item_effects(effects);
         for event in report.events {
-            self.events.push(local_item_event(event));
+            let event = local_item_event(event);
+            self.run_log.push(now, event.clone());
+            self.events.push(event);
         }
+    }
+
+    fn shared_item_effects(&self) -> HashMap<RacePlayerId, RaceItemEffectState> {
+        let mut effects = HashMap::new();
+        if self.player_stunned_until.is_some() {
+            effects.insert(
+                RacePlayerId(1),
+                RaceItemEffectState {
+                    stunned_until: self.player_stunned_until,
+                    ..RaceItemEffectState::default()
+                },
+            );
+        }
+        for ai in &self.ai_racers {
+            if ai.stunned_until.is_some() {
+                effects.insert(
+                    RacePlayerId((ai.id + 1) as u64),
+                    RaceItemEffectState {
+                        stunned_until: ai.stunned_until,
+                        ..RaceItemEffectState::default()
+                    },
+                );
+            }
+        }
+        effects
     }
 
     fn sync_from_shared_item_race(&mut self, race: RaceState) {
@@ -1097,9 +1064,7 @@ impl LocalSession {
     ) {
         for (player_id, effect) in effects {
             if player_id == RacePlayerId(1) {
-                if let Some(until) = effect.stunned_until {
-                    self.player_stunned_until = Some(until);
-                }
+                self.player_stunned_until = effect.stunned_until;
                 if let Some(cue) = effect.impact_cue {
                     self.player_impact_cue = Some(ImpactCue {
                         kind: impact_cue_kind(cue.kind),
@@ -1110,9 +1075,7 @@ impl LocalSession {
                     self.player_item_cue = Some(item_cue_from_shared(cue));
                 }
             } else if let Some(ai) = self.local_ai_mut(player_id) {
-                if let Some(until) = effect.stunned_until {
-                    ai.stunned_until = Some(until);
-                }
+                ai.stunned_until = effect.stunned_until;
                 if let Some(cue) = effect.impact_cue {
                     ai.impact_cue = Some(ImpactCue {
                         kind: impact_cue_kind(cue.kind),
@@ -1129,114 +1092,6 @@ impl LocalSession {
     fn local_ai_mut(&mut self, player_id: RacePlayerId) -> Option<&mut AiRacer> {
         let ai_id = usize::try_from(player_id.0).ok()?.checked_sub(1)?;
         self.ai_racers.iter_mut().find(|ai| ai.id == ai_id)
-    }
-
-    fn squid_ink_targets_excluding_ai(&self, ai_index: usize, now: Instant) -> Vec<RacerPosition> {
-        let Some(attacker) = self.ai_racers.get(ai_index) else {
-            return Vec::new();
-        };
-        let range_words = self.item_registry.squid_ink_effect().range_words;
-        self.racer_positions_excluding_ai(ai_index, now)
-            .into_iter()
-            .filter(|racer| attacker.player.word_index.abs_diff(racer.word_index) <= range_words)
-            .collect()
-    }
-
-    fn racer_positions_excluding_ai(&self, ai_index: usize, now: Instant) -> Vec<RacerPosition> {
-        let mut racers = Vec::new();
-        if !self.player.is_finished() {
-            racers.push(RacerPosition {
-                id: 0,
-                word_index: self.player.word_index,
-            });
-        }
-        racers.extend(
-            self.ai_racers
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| *index != ai_index)
-                .filter(|(_, ai)| !ai.player.is_finished())
-                .filter(|(_, ai)| !ai.is_stunned(now))
-                .map(|(_, ai)| RacerPosition {
-                    id: ai.id,
-                    word_index: ai.player.word_index,
-                }),
-        );
-        racers
-    }
-
-    fn racer_positions_summary(&self, racers: &[RacerPosition], now: Instant) -> String {
-        if racers.is_empty() {
-            return "none".to_string();
-        }
-
-        racers
-            .iter()
-            .map(|racer| {
-                if racer.id == 0 {
-                    format!(
-                        "player@{} shield={} finished={}",
-                        racer.word_index,
-                        self.player.has_active_shield(now),
-                        self.player.is_finished()
-                    )
-                } else if let Some(ai) = self.ai_racers.iter().find(|ai| ai.id == racer.id) {
-                    format!(
-                        "{}@{} shield={} stunned={} finished={}",
-                        ai.name,
-                        racer.word_index,
-                        ai.player.has_active_shield(now),
-                        ai.is_stunned(now),
-                        ai.player.is_finished()
-                    )
-                } else {
-                    format!("ai-{}@{} missing", racer.id, racer.word_index)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-
-    fn apply_banana_to_ai(&mut self, ai_id: usize, now: Instant) -> Option<BananaResolution> {
-        let Some(ai) = self.ai_racers.iter_mut().find(|ai| ai.id == ai_id) else {
-            self.run_log.push(
-                now,
-                format!("banana target ai-{ai_id} missing from session"),
-            );
-            return None;
-        };
-        let ai_name = ai.name.clone();
-        let word_index = ai.player.word_index;
-
-        if ai.player.has_active_shield(now) {
-            ai.player.active_effects.clear();
-            ai.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::ShieldBlock,
-                until: now + Duration::from_millis(700),
-            });
-            self.events.push(format!("{} blocked Banana", ai_name));
-            self.run_log.push(
-                now,
-                format!("{ai_name} blocked Banana at word={word_index}; shield consumed"),
-            );
-            Some(BananaResolution::Blocked)
-        } else {
-            let banana = self.item_registry.banana_effect();
-            ai.stunned_until = Some(now + Duration::from_millis(banana.stun_ms));
-            ai.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::Banana,
-                until: now + Duration::from_millis(banana.impact_blink_ms),
-            });
-            ai.char_budget = 0.0;
-            self.run_log.push(
-                now,
-                format!(
-                    "{ai_name} spun out at word={word_index}; stun_ms={} impact_blink_ms={}",
-                    banana.stun_ms, banana.impact_blink_ms
-                ),
-            );
-            Some(BananaResolution::SpunOut)
-        }
     }
 
     fn activate_ai_mushroom(&mut self, ai_index: usize, now: Instant) {
@@ -1588,142 +1443,9 @@ impl LocalSession {
             HeldItem::Mushroom => self.activate_mushroom(now),
             HeldItem::Focus => self.activate_focus(now),
             HeldItem::Cyclone => self.use_cyclone(None, now),
-            HeldItem::SquidInk => self.use_squid_ink(now),
-            HeldItem::Banana => {
-                let racers = self
-                    .ai_racers
-                    .iter()
-                    .filter(|ai| !ai.player.is_finished())
-                    .filter(|ai| !ai.is_stunned(now))
-                    .map(|ai| RacerPosition {
-                        id: ai.id,
-                        word_index: ai.player.word_index,
-                    })
-                    .collect::<Vec<_>>();
-                self.run_log.push(
-                    now,
-                    format!(
-                        "player banana fired from word={}; candidates={}",
-                        self.player.word_index,
-                        self.racer_positions_summary(&racers, now)
-                    ),
-                );
-                if let Some(target) = select_nearest_banana_target(
-                    self.player.word_index,
-                    &racers,
-                    self.item_registry.banana_effect().range_words,
-                ) {
-                    let direction = attack_direction(self.player.word_index, target.word_index);
-                    let distance = self.player.word_index.abs_diff(target.word_index);
-                    self.run_log.push(
-                        now,
-                        format!(
-                            "player banana target={} target_word={} direction={direction:?} cue_placement={} distance_words={distance}",
-                            racer_name(target.id),
-                            target.word_index,
-                            banana_cue_placement(direction)
-                        ),
-                    );
-                    self.player_item_cue =
-                        Some(ItemCue::banana(direction, now, &self.item_registry));
-                    if self.apply_banana_to_ai(target.id, now) == Some(BananaResolution::SpunOut) {
-                        self.events.push(format!("Hit ai-{}", target.id));
-                    }
-                } else {
-                    self.events.push("Missed Banana");
-                    self.run_log
-                        .push(now, "player banana missed: no racer in range");
-                }
-            }
+            HeldItem::SquidInk => self.use_squid_ink(Some(RacePlayerId(1)), now),
+            HeldItem::Banana => self.use_banana(Some(RacePlayerId(1)), now),
         }
-    }
-
-    fn use_squid_ink(&mut self, now: Instant) {
-        let range_words = self.item_registry.squid_ink_effect().range_words;
-        let targets = self
-            .ai_racers
-            .iter()
-            .filter(|ai| !ai.player.is_finished())
-            .filter(|ai| self.player.word_index.abs_diff(ai.player.word_index) <= range_words)
-            .map(|ai| RacerPosition {
-                id: ai.id,
-                word_index: ai.player.word_index,
-            })
-            .collect::<Vec<_>>();
-        self.player_item_cue = Some(ItemCue::squid_ink(now, &self.item_registry));
-        self.run_log.push(
-            now,
-            format!(
-                "player squid ink fired from word={}; candidates={}",
-                self.player.word_index,
-                self.racer_positions_summary(&targets, now)
-            ),
-        );
-
-        let mut hit_count = 0;
-        for target in targets {
-            if self.apply_squid_ink_to_ai(target.id, now) {
-                hit_count += 1;
-            }
-        }
-
-        if hit_count == 0 {
-            self.events.push("Missed Squid Ink");
-            self.run_log
-                .push(now, "player squid ink missed: no racer in range");
-        } else {
-            self.events
-                .push(format!("Squid Ink hit {hit_count} racer(s)"));
-        }
-    }
-
-    fn apply_squid_ink_to_player(&mut self, now: Instant) -> bool {
-        if self.player.has_active_shield(now) {
-            self.player
-                .active_effects
-                .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
-            self.player_impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::ShieldBlock,
-                until: now + Duration::from_millis(700),
-            });
-            self.events.push("Blocked Squid Ink");
-            return false;
-        }
-
-        let squid_ink = self.item_registry.squid_ink_effect();
-        self.player.inked_word_index = Some(self.player.word_index);
-        self.player.inked_until = Some(now + Duration::from_millis(squid_ink.duration_ms));
-        self.player_impact_cue = Some(ImpactCue {
-            kind: ImpactCueKind::SquidInk,
-            until: now + Duration::from_millis(squid_ink.impact_blink_ms),
-        });
-        true
-    }
-
-    fn apply_squid_ink_to_ai(&mut self, ai_id: usize, now: Instant) -> bool {
-        let Some(ai) = self.ai_racers.iter_mut().find(|ai| ai.id == ai_id) else {
-            return false;
-        };
-        if ai.player.has_active_shield(now) {
-            ai.player
-                .active_effects
-                .retain(|effect| !matches!(effect, ActiveEffect::Shield { .. }));
-            ai.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::ShieldBlock,
-                until: now + Duration::from_millis(700),
-            });
-            self.events.push(format!("{} blocked Squid Ink", ai.name));
-            return false;
-        }
-
-        let squid_ink = self.item_registry.squid_ink_effect();
-        ai.player.inked_word_index = Some(ai.player.word_index);
-        ai.player.inked_until = Some(now + Duration::from_millis(squid_ink.duration_ms));
-        ai.impact_cue = Some(ImpactCue {
-            kind: ImpactCueKind::SquidInk,
-            until: now + Duration::from_millis(squid_ink.impact_blink_ms),
-        });
-        true
     }
 
     fn activate_focus(&mut self, now: Instant) {
@@ -1807,24 +1529,6 @@ fn mushroom_step_interval(wpm: u32) -> std::time::Duration {
     std::time::Duration::from_secs_f64(60.0 / f64::from(wpm))
 }
 
-fn attack_direction(attacker_word_index: usize, target_word_index: usize) -> AttackDirection {
-    match target_word_index.cmp(&attacker_word_index) {
-        std::cmp::Ordering::Greater => AttackDirection::Ahead,
-        std::cmp::Ordering::Equal => AttackDirection::Overlap,
-        std::cmp::Ordering::Less => AttackDirection::Behind,
-    }
-}
-
-fn banana_cue_placement(direction: AttackDirection) -> &'static str {
-    match direction {
-        AttackDirection::Ahead => "after",
-        AttackDirection::Behind => "before",
-        // Same-word attacks are drawn after the marker, but the distinct
-        // direction keeps logs and future rendering from calling them "ahead".
-        AttackDirection::Overlap => "after-overlap",
-    }
-}
-
 fn racer_position_band(
     word_index: usize,
     other_word_indices: impl IntoIterator<Item = usize>,
@@ -1889,6 +1593,10 @@ fn attack_direction_from_shared(direction: SharedAttackDirection) -> AttackDirec
 fn local_item_event(event: String) -> String {
     if event == "you missed Cyclone" {
         "Missed Cyclone".to_string()
+    } else if event == "you missed Banana" {
+        "Missed Banana".to_string()
+    } else if event == "you missed Squid Ink" {
+        "Missed Squid Ink".to_string()
     } else if event == "you blocked Cyclone" {
         "Blocked Cyclone".to_string()
     } else if let Some(target) = event
@@ -1896,16 +1604,15 @@ fn local_item_event(event: String) -> String {
         .and_then(|suffix| suffix.strip_suffix(" with Cyclone"))
     {
         format!("Hit {target} with Cyclone")
+    } else if let Some(target) = event.strip_prefix("you hit ") {
+        format!("Hit {target}")
+    } else if let Some(count) = event
+        .strip_prefix("you inked ")
+        .and_then(|suffix| suffix.strip_suffix(" racer(s)"))
+    {
+        format!("Squid Ink hit {count} racer(s)")
     } else {
         event
-    }
-}
-
-fn racer_name(id: usize) -> String {
-    if id == 0 {
-        "player".to_string()
-    } else {
-        format!("ai-{id}")
     }
 }
 
@@ -2455,12 +2162,7 @@ mod tests {
 
         assert!(session.ai_racers[0].is_stunned(now));
         assert!(session.ai_racers[1].is_stunned(now));
-        assert!(
-            session
-                .run_log
-                .entries()
-                .any(|entry| entry.contains("player banana target=ai-2"))
-        );
+        assert!(session.events.entries().any(|entry| entry == "Hit ai-2"));
     }
 
     #[test]
@@ -2483,12 +2185,7 @@ mod tests {
                 direction: AttackDirection::Overlap
             }
         );
-        assert!(
-            session
-                .run_log
-                .entries()
-                .any(|entry| entry.contains("direction=Overlap cue_placement=after-overlap"))
-        );
+        assert!(session.ai_racers[0].is_impacted(now));
     }
 
     #[test]
@@ -2522,7 +2219,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_banana_warning_can_clear_player_input() {
+    fn ai_banana_immediately_clears_player_input() {
         let now = Instant::now();
         let mut session =
             LocalSession::with_bonuses(track(&["one", "two"]), PlayerState::new(now), bonuses());
@@ -2533,16 +2230,18 @@ mod tests {
         session.ai_racers.push(ai);
 
         session.tick(now);
-        assert!(session.attack_warning.is_some());
-
-        session.tick(now + std::time::Duration::from_secs(1));
 
         assert!(session.player.input.is_empty());
-        assert!(session.attack_warning.is_none());
         assert!(
             session
                 .player_impact_cue
                 .is_some_and(|cue| cue.kind == ImpactCueKind::Banana && cue.until > now)
+        );
+        assert!(
+            session
+                .events
+                .entries()
+                .any(|entry| entry == "ai-1 hit you")
         );
     }
 
@@ -2565,7 +2264,6 @@ mod tests {
 
         session.tick(now);
 
-        assert!(session.attack_warning.is_none());
         assert!(session.player_impact_cue.is_none_or(|cue| cue.until <= now));
         assert!(session.ai_racers[1].is_stunned(now));
     }
@@ -2596,9 +2294,9 @@ mod tests {
         assert!(session.ai_racers[2].is_stunned(now));
         assert!(
             session
-                .run_log
+                .events
                 .entries()
-                .any(|entry| entry.contains("ai-1 banana target=ai-3"))
+                .any(|entry| entry == "ai-1 hit ai-3")
         );
     }
 
@@ -2691,7 +2389,6 @@ mod tests {
         assert_eq!(session.player.held_item, None);
         assert!(session.player.active_effects.is_empty());
         assert!(session.bonus_attempt.is_none());
-        assert!(session.attack_warning.is_none());
         assert_eq!(session.race_phase, NetworkRacePhase::WaitingForHost);
         assert_eq!(
             session.events.entries().collect::<Vec<_>>(),
