@@ -376,6 +376,13 @@ Candidate extractions:
   phase changes, periodic race ticking, and race-finish broadcast sequencing.
 - `src/net/server/host_commands.rs`: embedded terminal-host command loop,
   host ready/unready commands, and pasted line input handoff.
+- `src/net/server/host_client.rs`: per-client TCP message loop and dispatch
+  into lobby, phase, input, AI, and disconnect adapters.
+- `src/net/server/host_join.rs`: post-handshake join admission policy,
+  including version checks, capacity checks, names, colors, welcome responses,
+  and lobby/race roster mutation.
+- `src/net/server/host_util.rs`: small host utilities such as capacity
+  validation, lobby console printing, and protocol/UI color conversions.
 - `src/net/server/host_race.rs`: network-specific race lifecycle state
   mutations around shared `race_flow`, including rematch preparation and finish
   status updates.
@@ -431,6 +438,17 @@ Progress:
 - `src/net/server/host_commands.rs` now owns embedded terminal-host commands:
   ready/unready, lobby printing, race start, pasted host typing, and command
   feedback while delegating gameplay rules to shared adapters.
+- `src/net/server/host_client.rs` now owns per-client message handling:
+  reading framed client messages, dispatching lobby commands, start/rematch
+  requests, AI controls, key input, leave handling, and post-loop disconnect
+  broadcasts.
+- `src/net/server/host_join.rs` now owns join admission after a valid handshake:
+  version mismatch rejection, lobby-full/no-color rejection, unique name and id
+  assignment, welcome delivery, client writer registration, lobby/race roster
+  updates, and join feed/log events.
+- `src/net/server/host_util.rs` now owns small host utility concerns: capacity
+  validation, lobby console output, and `AssignedColor`/`PlayerColorId`
+  conversions.
 - `src/net/server/host_race.rs` now owns network-host race lifecycle mutation
   around shared `race_flow`: connected-racer counts, rematch/race reset from
   lobby participants, runtime reset, race-finish status updates, and

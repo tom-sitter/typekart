@@ -2,7 +2,6 @@
 
 use std::{
     collections::HashMap,
-    io::BufReader,
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
@@ -13,45 +12,47 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+use crate::game::lobby::{
+    connected_player_count, first_available_color, new_human_lobby_player, unique_lobby_name,
+};
 use crate::game::{
     ai::AiDifficulty,
     bonus::BonusState,
     bonus_flow::BonusAttempt,
     items::ItemRegistry,
-    lobby::{
-        LOBBY_COLOR_ROTATION, connected_player_count, first_available_color,
-        first_available_player_id, new_human_lobby_player,
-        set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
-    },
+    lobby::LOBBY_COLOR_ROTATION,
     mods::ActiveModConfig,
     race::{PlayerColorId, RacePlayerId, RaceRuntimeState, RaceState},
     track::{Track, WordList},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 #[cfg(test)]
 use super::host_lifecycle::build_race_result_rows as build_network_race_result_rows;
 use super::log::{SharedNetworkLog, push_network_log};
 #[cfg(test)]
+use super::protocol::AssignedColor;
+#[cfg(test)]
 use super::protocol::RaceResultRow;
-use super::protocol::{
-    AssignedColor, ClientMessage, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind,
-    ServerMessage, version_mismatch_message,
-};
-use super::transport::{read_client_message, write_server_message as write_framed_server_message};
+use super::protocol::{LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind, ServerMessage};
+use super::transport::write_server_message as write_framed_server_message;
 
 mod host_ai;
 mod host_bonus;
 mod host_broadcast;
+mod host_client;
 mod host_commands;
 mod host_disconnect;
 mod host_handshake;
 mod host_input;
 mod host_items;
+mod host_join;
 mod host_lobby;
 mod host_phase;
 mod host_race;
 mod host_snapshots;
+mod host_util;
 use host_ai::NetworkAiRacer;
 #[cfg(test)]
 use host_ai::set_lobby_ai_difficulty;
@@ -64,13 +65,14 @@ use host_broadcast::{
     broadcast_race_snapshot,
 };
 #[cfg(test)]
+use host_client::handle_client_messages;
+#[cfg(test)]
 use host_commands::update_host_ready;
 use host_commands::{has_embedded_host_player, spawn_host_command_loop};
 #[cfg(test)]
 use host_disconnect::handle_player_disconnect;
 #[cfg(test)]
 use host_handshake::{read_join_hello, welcome_joiner};
-use host_input::NetworkInputOutcome;
 #[cfg(test)]
 use host_items::activate_network_pickup;
 #[cfg(test)]
@@ -81,6 +83,7 @@ use host_phase::{reconcile_phase_after_disconnect, return_to_lobby};
 use host_race::{reset_race_from_lobby, update_race_status};
 #[cfg(test)]
 use host_snapshots::build_race_snapshot;
+use host_util::{print_lobby_snapshot, validate_host_capacity};
 
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(100);
@@ -239,106 +242,20 @@ pub fn run_host(config: HostConfig) -> Result<()> {
                 continue;
             }
         };
-        let requested_player_name = join_hello.name;
-
         let (player_id, assigned_color, player_name) = {
             let mut state = state.lock().expect("host state poisoned");
-            if join_hello.client_version != env!("CARGO_PKG_VERSION") {
-                send_server_message(
-                    stream,
-                    &ServerMessage::Error {
-                        message: version_mismatch_message(
-                            env!("CARGO_PKG_VERSION"),
-                            &join_hello.client_version,
-                        ),
-                    },
-                )?;
-                push_network_log(
-                    &state.debug_log,
-                    format!(
-                        "join rejected: version mismatch name={} host_version={} client_version={}",
-                        requested_player_name,
-                        env!("CARGO_PKG_VERSION"),
-                        join_hello.client_version
-                    ),
-                );
-                continue;
-            }
-
-            let connected_players = connected_player_count(&state.players);
-            if connected_players >= config.max_players {
-                send_server_message(
-                    stream,
-                    &ServerMessage::Error {
-                        message: format!(
-                            "Lobby is full: {connected_players}/{} connected players",
-                            config.max_players
-                        ),
-                    },
-                )?;
-                push_network_log(
-                    &state.debug_log,
-                    format!(
-                        "join rejected: lobby full {connected_players}/{}",
-                        config.max_players
-                    ),
-                );
-                continue;
-            }
-
-            let player_name = unique_lobby_name(state.players.iter(), &requested_player_name);
-            let player_id = first_available_player_id(&state.players, next_player_id);
-            let Some(assigned_color) = first_available_color(&state.players) else {
-                send_server_message(
-                    stream,
-                    &ServerMessage::Error {
-                        message: "Lobby is full: no colors available".to_string(),
-                    },
-                )?;
-                push_network_log(&state.debug_log, "join rejected: no colors available");
+            let Some(accepted_join) =
+                host_join::admit_joiner(&mut state, &stream, join_hello, next_player_id)?
+            else {
                 continue;
             };
-            let write_stream =
-                match host_handshake::welcome_joiner(&stream, player_id, assigned_color) {
-                    Ok(write_stream) => write_stream,
-                    Err(error) => {
-                        server_eprintln!("Rejected connection: {error:#}");
-                        continue;
-                    }
-                };
-
-            state.clients.push(ConnectedClient {
-                player_id,
-                stream: write_stream,
-            });
-            state.players.push(new_human_lobby_player(
-                player_id,
-                player_name.clone(),
-                assigned_color,
-            ));
-            if matches!(
-                state.phase,
-                NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost
-            ) {
-                state.race.add_player(
-                    RacePlayerId(player_id.0),
-                    player_name.clone(),
-                    assigned_color.into(),
-                    std::time::Instant::now(),
-                );
-            }
-            push_event(&mut state, format!("{player_name} joined"));
-            push_network_log(
-                &state.debug_log,
-                format!(
-                    "{player_name} joined player={} color={assigned_color:?}",
-                    player_id.0
-                ),
-            );
-            print_lobby_snapshot(&state.players);
             broadcast_lobby_snapshot(&mut state)?;
 
-            (player_id, assigned_color, player_name)
+            (
+                accepted_join.player_id,
+                accepted_join.assigned_color,
+                accepted_join.player_name,
+            )
         };
 
         server_println!(
@@ -349,210 +266,13 @@ pub fn run_host(config: HostConfig) -> Result<()> {
         );
 
         let state_for_client = Arc::clone(&state);
-        thread::spawn(move || handle_client_messages(player_id, stream, state_for_client));
+        thread::spawn(move || {
+            host_client::handle_client_messages(player_id, stream, state_for_client)
+        });
         next_player_id = next_player_id.max(player_id.0 + 1);
     }
 
     Ok(())
-}
-
-fn validate_host_capacity(max_players: usize, ai_racer_count: usize) -> Result<()> {
-    if max_players == 0 || max_players > LOBBY_COLOR_ROTATION.len() {
-        bail!(
-            "max players must be between 1 and {}",
-            LOBBY_COLOR_ROTATION.len()
-        );
-    }
-    if ai_racer_count >= max_players {
-        bail!("ai racers must be less than max players so the host has a slot");
-    }
-    Ok(())
-}
-
-fn handle_client_messages(player_id: PlayerId, stream: TcpStream, state: Arc<Mutex<HostState>>) {
-    let mut reader = BufReader::new(stream);
-    loop {
-        let message = match read_client_message(&mut reader) {
-            Ok(Some(message)) => message,
-            Ok(None) => break,
-            Err(_) => continue,
-        };
-
-        match message {
-            ClientMessage::Rename { name } => {
-                let mut state = state.lock().expect("host state poisoned");
-                if let Err(error) = host_lobby::rename_lobby_player(&mut state, player_id, &name) {
-                    push_event(&mut state, error.to_string());
-                }
-                print_lobby_snapshot(&state.players);
-                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-                }
-            }
-            ClientMessage::SetReady { ready } => {
-                let mut state = state.lock().expect("host state poisoned");
-                match shared_set_lobby_ready(&mut state.players, player_id, ready) {
-                    Ok(outcome) => {
-                        server_println!(
-                            "{} is {}",
-                            outcome.name,
-                            if outcome.ready { "ready" } else { "not ready" }
-                        );
-                        push_event(
-                            &mut state,
-                            format!(
-                                "{} {}",
-                                outcome.name,
-                                if outcome.ready { "ready" } else { "not ready" }
-                            ),
-                        );
-                        push_network_log(
-                            &state.debug_log,
-                            format!("{} ready={}", outcome.name, outcome.ready),
-                        );
-                    }
-                    Err(error) => push_event(&mut state, error.to_string()),
-                }
-                print_lobby_snapshot(&state.players);
-                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-                }
-            }
-            ClientMessage::StartCountdown => {
-                if player_id == PlayerId(1) {
-                    {
-                        let state = state.lock().expect("host state poisoned");
-                        push_network_log(&state.debug_log, "host requested countdown");
-                    }
-                    host_phase::start_countdown(Arc::clone(&state));
-                } else {
-                    server_println!(
-                        "Ignoring start request from non-host player {}",
-                        player_id.0
-                    );
-                }
-            }
-            ClientMessage::AddAi if player_id == PlayerId(1) => {
-                let mut state = state.lock().expect("host state poisoned");
-                if let Err(error) = host_ai::add_lobby_ai_racer(&mut state) {
-                    push_event(&mut state, error.to_string());
-                }
-                print_lobby_snapshot(&state.players);
-                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-                }
-            }
-            ClientMessage::RemoveLobbyPlayer { player_id: target } if player_id == PlayerId(1) => {
-                let mut state = state.lock().expect("host state poisoned");
-                if let Err(error) = host_lobby::remove_lobby_player(&mut state, target) {
-                    push_event(&mut state, error.to_string());
-                }
-                print_lobby_snapshot(&state.players);
-                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-                }
-            }
-            ClientMessage::SetAiDifficulty {
-                player_id: target,
-                difficulty,
-            } if player_id == PlayerId(1) => {
-                let mut state = state.lock().expect("host state poisoned");
-                if let Err(error) =
-                    host_ai::set_lobby_ai_difficulty(&mut state, target, difficulty.into())
-                {
-                    push_event(&mut state, error.to_string());
-                }
-                print_lobby_snapshot(&state.players);
-                if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-                    server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-                }
-            }
-            ClientMessage::RestartRace => {
-                if player_id == PlayerId(1) {
-                    let mut state = state.lock().expect("host state poisoned");
-                    if let Err(error) = host_phase::return_to_lobby(&mut state) {
-                        server_eprintln!("Failed to return to lobby: {error:#}");
-                        push_network_log(
-                            &state.debug_log,
-                            format!("failed to return to lobby: {error:#}"),
-                        );
-                    }
-                } else {
-                    server_println!(
-                        "Ignoring rematch request from non-host player {}",
-                        player_id.0
-                    );
-                }
-            }
-            ClientMessage::KeyInput { key, .. } => {
-                let now = std::time::Instant::now();
-                let mut state = state.lock().expect("host state poisoned");
-                match host_input::apply_protocol_key_input(&mut state, player_id, key, now) {
-                    NetworkInputOutcome::Ignored => {}
-                    NetworkInputOutcome::Updated => {
-                        if let Err(error) = broadcast_race_delta(&mut state) {
-                            server_eprintln!("Failed to broadcast race delta: {error:#}");
-                        }
-                    }
-                    NetworkInputOutcome::Finished => {
-                        if let Err(error) = broadcast_race_snapshot(&mut state) {
-                            server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-                        }
-                        server_println!("Race finished");
-                        if let Err(error) = broadcast_race_results_once(&mut state) {
-                            server_eprintln!("Failed to broadcast race results: {error:#}");
-                        }
-                    }
-                }
-            }
-            ClientMessage::Leave => break,
-            _ => {}
-        }
-    }
-
-    let mut state = state.lock().expect("host state poisoned");
-    let was_race_screen_phase = matches!(
-        state.phase,
-        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing | NetworkRacePhase::Finished
-    );
-    if host_disconnect::handle_player_disconnect(&mut state, player_id, std::time::Instant::now()) {
-        return;
-    }
-    print_lobby_snapshot(&state.players);
-    if let Err(error) = broadcast_lobby_snapshot(&mut state) {
-        server_eprintln!("Failed to broadcast lobby snapshot: {error:#}");
-    }
-    if was_race_screen_phase && let Err(error) = broadcast_race_snapshot(&mut state) {
-        server_eprintln!("Failed to broadcast race snapshot: {error:#}");
-    }
-    if state.phase == NetworkRacePhase::Finished
-        && let Err(error) = broadcast_race_results_once(&mut state)
-    {
-        server_eprintln!("Failed to broadcast race results: {error:#}");
-    }
-}
-
-fn print_lobby_snapshot(players: &[LobbyPlayer]) {
-    server_println!("Lobby:");
-    for player in players {
-        server_println!(
-            "  {}: {} ({:?}){}{}{}",
-            player.id.0,
-            player.name,
-            player.color,
-            if player.ready { " ready" } else { "" },
-            if player.connected {
-                ""
-            } else {
-                " disconnected"
-            },
-            if player.id == PlayerId(1) {
-                " host"
-            } else {
-                ""
-            }
-        );
-    }
 }
 
 fn push_event(state: &mut HostState, event: String) {
@@ -579,32 +299,6 @@ fn client_is_in_current_race(race: &RaceState, player_id: PlayerId) -> bool {
 #[cfg(test)]
 fn build_race_result_rows(state: &HostState, now: Instant) -> Vec<RaceResultRow> {
     build_network_race_result_rows(&state.race, &state.runtime.lifecycle.placements, now)
-}
-
-impl From<AssignedColor> for PlayerColorId {
-    fn from(value: AssignedColor) -> Self {
-        match value {
-            AssignedColor::Cyan => Self::Cyan,
-            AssignedColor::Red => Self::Red,
-            AssignedColor::Green => Self::Green,
-            AssignedColor::Blue => Self::Blue,
-            AssignedColor::Yellow => Self::Yellow,
-            AssignedColor::Magenta => Self::Magenta,
-        }
-    }
-}
-
-impl From<PlayerColorId> for AssignedColor {
-    fn from(value: PlayerColorId) -> Self {
-        match value {
-            PlayerColorId::Cyan => Self::Cyan,
-            PlayerColorId::Red => Self::Red,
-            PlayerColorId::Green => Self::Green,
-            PlayerColorId::Blue => Self::Blue,
-            PlayerColorId::Yellow => Self::Yellow,
-            PlayerColorId::Magenta => Self::Magenta,
-        }
-    }
 }
 
 fn send_server_message(mut stream: TcpStream, message: &ServerMessage) -> Result<()> {

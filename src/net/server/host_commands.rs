@@ -20,9 +20,10 @@ use crate::{
 };
 
 use super::{
-    HostState, NetworkInputOutcome, broadcast_lobby_snapshot, broadcast_race_delta,
-    broadcast_race_results_once, broadcast_race_snapshot, host_input, host_phase,
-    print_lobby_snapshot, print_server_line, push_event,
+    HostState, broadcast_lobby_snapshot, broadcast_race_delta, broadcast_race_results_once,
+    broadcast_race_snapshot,
+    host_input::{self, NetworkInputOutcome},
+    host_phase, print_lobby_snapshot, print_server_line, push_event,
 };
 
 pub(super) fn spawn_host_command_loop(state: Arc<Mutex<HostState>>) {
