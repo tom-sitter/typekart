@@ -6,12 +6,12 @@
 
 use std::time::Instant;
 
-use rand::{Rng, thread_rng};
+use rand::thread_rng;
 
 use crate::game::{
     bonus_flow::{
-        BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key,
-        claim_active_bonus,
+        BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key,
+        claim_random_available_bonus,
     },
     item_effects::player_has_active_mushroom_effect,
     items::{ItemPickup, ItemRollContext, RacePositionBand},
@@ -90,39 +90,28 @@ pub(super) fn network_ai_try_claim_bonus(state: &mut HostState, player_id: Playe
         return;
     }
 
-    let Some((point_index, point)) = state.bonuses.point_for_gap(player.state.word_index) else {
+    let mut rng = thread_rng();
+    let item_context = network_item_roll_context(state, player_id, 5);
+    let item_registry = state.item_registry.clone();
+    let Some(outcome) = claim_random_available_bonus(
+        &mut BonusFlowState {
+            race: &mut state.race,
+            bonuses: &mut state.bonuses,
+            bonus_attempts: &mut state.runtime.bonus_attempts,
+            spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
+        },
+        player_id,
+        RacePlayerId(player_id.0),
+        now,
+        BonusClaimRoll {
+            item_context,
+            item_registry: &item_registry,
+            rng: &mut rng,
+        },
+    ) else {
         return;
     };
-    if state
-        .runtime
-        .spent_bonus_gaps
-        .get(&player_id)
-        .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
-    {
-        return;
-    }
-
-    let available_choices = point
-        .choices
-        .iter()
-        .enumerate()
-        .filter(|(_, choice)| choice.is_available(now))
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    if available_choices.is_empty() {
-        return;
-    }
-
-    let mut rng = thread_rng();
-    let choice_index = available_choices[rng.gen_range(0..available_choices.len())];
-    state.runtime.bonus_attempts.insert(
-        player_id,
-        BonusAttempt {
-            point_index,
-            choice_index,
-        },
-    );
-    claim_network_bonus(state, player_id, now);
+    handle_network_bonus_claim_outcome(state, player_id, outcome.pickup, now);
 }
 
 fn handle_network_bonus_events(
@@ -166,31 +155,6 @@ fn handle_network_bonus_events(
             BonusFlowEvent::AttemptStarted(_) | BonusFlowEvent::InputChanged => {}
         }
     }
-}
-
-fn claim_network_bonus(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let item_context = network_item_roll_context(state, player_id, 5);
-    let item_registry = state.item_registry.clone();
-    let mut rng = thread_rng();
-    let Some(outcome) = claim_active_bonus(
-        &mut BonusFlowState {
-            race: &mut state.race,
-            bonuses: &mut state.bonuses,
-            bonus_attempts: &mut state.runtime.bonus_attempts,
-            spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
-        },
-        player_id,
-        RacePlayerId(player_id.0),
-        now,
-        BonusClaimRoll {
-            item_context,
-            item_registry: &item_registry,
-            rng: &mut rng,
-        },
-    ) else {
-        return;
-    };
-    handle_network_bonus_claim_outcome(state, player_id, outcome.pickup, now);
 }
 
 fn handle_network_bonus_claim_outcome(

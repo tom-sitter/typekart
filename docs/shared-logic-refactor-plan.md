@@ -360,10 +360,15 @@ Progress:
   through `prepare_race_from_participants`, so local setup uses shared
   `RaceState` and `BonusState` construction while retaining local-only AI WPM
   and terminal session metadata.
-- Local banana and squid-ink activation now use shared `game::item_effects`
-  through the same local bridge as cyclone. The old local-only banana warning,
-  banana targeting, and squid-ink mutation paths were removed, so local and
-  multiplayer item impact/stun/cue behavior are closer to parity.
+- Local item activation now uses shared `game::item_effects` for all current
+  items: banana, cyclone, squid ink, mushroom, shield, and focus. The old
+  local-only banana warning, banana targeting, squid-ink mutation, mushroom
+  stepping, shield activation, and focus activation paths were removed, so
+  local and multiplayer item behavior are closer to parity.
+- Local human bonus typing now uses shared `game::bonus_flow` for starting,
+  editing, cancelling, and claiming bonus attempts. Local AI bonus pickup claim
+  selection and resolution also use a shared random-available claim helper,
+  matching the network AI path.
 
 Validation:
 

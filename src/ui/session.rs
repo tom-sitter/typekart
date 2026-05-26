@@ -13,7 +13,11 @@ use rand::{Rng, thread_rng};
 use crate::game::{
     ai::AiDifficulty,
     ai_driver::{ai_chars_per_second, ai_effective_wpm, next_ai_key_for_player},
-    bonus::{BonusState, claim_bonus_choice},
+    bonus::BonusState,
+    bonus_flow::{
+        BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key as apply_shared_bonus_key,
+        claim_random_available_bonus,
+    },
     effects::ActiveEffect,
     host_session::{
         advance_host_race_lifecycle, begin_countdown_phase, connected_racer_count,
@@ -31,9 +35,11 @@ use crate::game::{
         PlayerColorId, RaceLifecycleState, RaceParticipant, RacePlayer, RacePlayerId, RaceState,
     },
     track::{Track, WordList},
-    typing::{KeyAction, TypingEvent, apply_key, first_typo_index},
+    typing::{KeyAction, TypingEvent, apply_key},
 };
 use typekart_protocol::NetworkRacePhase;
+
+pub use crate::game::bonus_flow::BonusAttempt;
 
 const MAX_AI_RACERS: usize = 6;
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -231,12 +237,6 @@ pub enum LocalAction {
     SetSelectedAiDifficulty(AiDifficulty),
     // A full local reset: new track, new player state, new bonus layout.
     Restart,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BonusAttempt {
-    pub point_index: usize,
-    pub choice_index: usize,
 }
 
 fn build_ai_racers(count: usize, difficulty: AiDifficulty, now: Instant) -> Vec<AiRacer> {
@@ -815,36 +815,36 @@ impl LocalSession {
             return;
         }
 
-        let Some((point_index, point)) = self.bonuses.point_for_gap(ai.player.word_index) else {
-            return;
-        };
-        let available_choices = point
-            .choices
-            .iter()
-            .enumerate()
-            .filter(|(_, choice)| choice.is_available(now))
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        if available_choices.is_empty() {
-            return;
-        }
-
+        let player_id = RacePlayerId((ai.id + 1) as u64);
         let mut rng = thread_rng();
-        let choice_index = available_choices[rng.gen_range(0..available_choices.len())];
         let item_context = self.ai_item_roll_context(ai_index, 5);
-        let Some(item) = claim_bonus_choice(
-            &mut self.bonuses,
-            point_index,
-            choice_index,
+
+        let mut race = self.shared_race_state();
+        let mut attempts = HashMap::new();
+        let mut spent_bonus_gaps = HashMap::new();
+        let Some(outcome) = claim_random_available_bonus(
+            &mut BonusFlowState {
+                race: &mut race,
+                bonuses: &mut self.bonuses,
+                bonus_attempts: &mut attempts,
+                spent_bonus_gaps: &mut spent_bonus_gaps,
+            },
+            player_id,
+            player_id,
             now,
-            item_context,
-            &self.item_registry,
-            &mut rng,
+            BonusClaimRoll {
+                item_context,
+                item_registry: &self.item_registry,
+                rng: &mut rng,
+            },
         ) else {
             return;
         };
 
-        self.receive_ai_pickup(ai_index, item, now);
+        self.sync_from_shared_item_race(race);
+        if let Some(item) = outcome.pickup {
+            self.receive_ai_pickup(ai_index, item, now);
+        }
     }
 
     fn ai_has_nearby_racer(&self, ai_index: usize, max_distance_words: usize) -> bool {
@@ -879,6 +879,22 @@ impl LocalSession {
         racer_position_band(
             ai.player.word_index,
             self.active_racer_word_indices_excluding_ai(ai_index),
+        )
+    }
+
+    fn active_racer_word_indices_excluding_ai(
+        &self,
+        ai_index: usize,
+    ) -> impl Iterator<Item = usize> + '_ {
+        let player_word = (!self.player.is_finished()).then_some(self.player.word_index);
+        player_word.into_iter().chain(
+            self.ai_racers
+                .iter()
+                .enumerate()
+                .filter(move |(other_index, ai)| {
+                    *other_index != ai_index && !ai.player.is_finished()
+                })
+                .map(|(_, ai)| ai.player.word_index),
         )
     }
 
@@ -1133,20 +1149,7 @@ impl LocalSession {
             return;
         }
 
-        if self.bonus_attempt.is_some() {
-            self.apply_bonus_typing_action(action, now);
-            return;
-        }
-
-        if let KeyAction::Char(ch) = action
-            && self.can_start_bonus_attempt(now)
-            && let Some((point_index, choice_index)) = self.match_bonus_start(ch, now)
-        {
-            self.bonus_attempt = Some(BonusAttempt {
-                point_index,
-                choice_index,
-            });
-            self.apply_bonus_char(ch);
+        if self.apply_shared_bonus_typing_action(action, now) {
             return;
         }
 
@@ -1164,101 +1167,55 @@ impl LocalSession {
         }
     }
 
-    fn apply_bonus_typing_action(&mut self, action: KeyAction, now: Instant) {
-        match action {
-            KeyAction::Char(ch) => self.apply_bonus_char(ch),
-            KeyAction::Backspace => {
-                let previous_typo = self.player.typo_index;
-                if self.player.input.pop().is_some() {
-                    self.player.stats.backspaces += 1;
-                    self.recalculate_bonus_typo();
-                    let _ = previous_typo;
-                }
-                if self.player.input.is_empty() {
-                    self.bonus_attempt = None;
-                }
-            }
-            KeyAction::Space => {
-                if self.completed_bonus_word_without_typo() {
-                    if let Some(attempt) = self.bonus_attempt {
-                        self.claim_bonus(attempt, now);
-                    }
-                } else {
-                    self.apply_bonus_char(' ');
-                }
-            }
-        }
-    }
-
-    fn apply_bonus_char(&mut self, ch: char) {
-        let Some(attempt) = self.bonus_attempt else {
-            return;
-        };
-        let Some(target) = self
-            .bonuses
-            .points
-            .get(attempt.point_index)
-            .and_then(|point| point.choices.get(attempt.choice_index))
-            .map(|choice| choice.word.clone())
-        else {
-            self.bonus_attempt = None;
-            return;
-        };
-
-        let previous_typo = self.player.typo_index;
-        let input_index = self.player.input.chars().count();
-        let is_correct = previous_typo.is_none() && target.chars().nth(input_index) == Some(ch);
-
-        self.player.stats.typed_chars += 1;
-        if is_correct {
-            self.player.stats.correct_chars += 1;
-        } else {
-            self.player.stats.typo_chars += 1;
+    fn apply_shared_bonus_typing_action(&mut self, action: KeyAction, now: Instant) -> bool {
+        if self.bonus_attempt.is_none()
+            && self
+                .player_item_cue
+                .as_ref()
+                .is_some_and(|cue| cue.is_visible(now))
+        {
+            return false;
         }
 
-        self.player.input.push(ch);
-        self.player.typo_index = first_typo_index(&self.player.input, &target);
-        let _ = previous_typo;
-    }
-
-    fn completed_bonus_word_without_typo(&self) -> bool {
-        let Some(attempt) = self.bonus_attempt else {
-            return false;
-        };
-        let Some(target) = self
-            .bonuses
-            .points
-            .get(attempt.point_index)
-            .and_then(|point| point.choices.get(attempt.choice_index))
-            .map(|choice| choice.word.as_str())
-        else {
-            return false;
-        };
-
-        self.player.typo_index.is_none() && self.player.input == target
-    }
-
-    fn claim_bonus(&mut self, attempt: BonusAttempt, now: Instant) {
         let mut rng = thread_rng();
         let item_context = self.player_item_roll_context(5);
-        let Some(item) = claim_bonus_choice(
-            &mut self.bonuses,
-            attempt.point_index,
-            attempt.choice_index,
+        let mut race = self.shared_race_state();
+        let mut attempts = HashMap::new();
+        if let Some(attempt) = self.bonus_attempt {
+            attempts.insert(RacePlayerId(1), attempt);
+        }
+        let mut spent_bonus_gaps = HashMap::new();
+        let outcome = apply_shared_bonus_key(
+            &mut BonusFlowState {
+                race: &mut race,
+                bonuses: &mut self.bonuses,
+                bonus_attempts: &mut attempts,
+                spent_bonus_gaps: &mut spent_bonus_gaps,
+            },
+            RacePlayerId(1),
+            RacePlayerId(1),
+            action,
             now,
-            item_context,
-            &self.item_registry,
-            &mut rng,
-        ) else {
-            self.bonus_attempt = None;
-            self.player.input.clear();
-            return;
-        };
+            BonusClaimRoll {
+                item_context,
+                item_registry: &self.item_registry,
+                rng: &mut rng,
+            },
+        );
+        if !outcome.handled {
+            return false;
+        }
 
-        self.receive_pickup(item, now);
-        self.player.input.clear();
-        self.player.typo_index = None;
-        self.bonus_attempt = None;
+        self.sync_from_shared_item_race(race);
+        self.bonus_attempt = attempts.get(&RacePlayerId(1)).copied();
+        for event in outcome.events {
+            if let BonusFlowEvent::ClaimResolved(outcome) = event
+                && let Some(item) = outcome.pickup
+            {
+                self.receive_pickup(item, now);
+            }
+        }
+        true
     }
 
     fn player_item_roll_context(&self, max_distance_words: usize) -> ItemRollContext {
@@ -1286,67 +1243,6 @@ impl LocalSession {
             .filter(|ai| !ai.player.is_finished())
             .map(|ai| ai.player.word_index)
             .collect()
-    }
-
-    fn active_racer_word_indices_excluding_ai(
-        &self,
-        ai_index: usize,
-    ) -> impl Iterator<Item = usize> + '_ {
-        let player_word = (!self.player.is_finished()).then_some(self.player.word_index);
-        player_word.into_iter().chain(
-            self.ai_racers
-                .iter()
-                .enumerate()
-                .filter(move |(other_index, ai)| {
-                    *other_index != ai_index && !ai.player.is_finished()
-                })
-                .map(|(_, ai)| ai.player.word_index),
-        )
-    }
-
-    fn recalculate_bonus_typo(&mut self) {
-        let Some(attempt) = self.bonus_attempt else {
-            self.player.typo_index = None;
-            return;
-        };
-        let Some(target) = self
-            .bonuses
-            .points
-            .get(attempt.point_index)
-            .and_then(|point| point.choices.get(attempt.choice_index))
-            .map(|choice| choice.word.as_str())
-        else {
-            self.player.typo_index = None;
-            return;
-        };
-
-        self.player.typo_index = first_typo_index(&self.player.input, target);
-    }
-
-    fn can_start_bonus_attempt(&self, now: Instant) -> bool {
-        self.player.held_item.is_none()
-            && !self.player.has_active_shield(now)
-            && !self.player.has_active_focus(now)
-            && !player_has_active_mushroom(&self.player)
-            && !self
-                .player_item_cue
-                .as_ref()
-                .is_some_and(|cue| cue.is_visible(now))
-            && self.player.typo_index.is_none()
-            && self.player.input.is_empty()
-            && self
-                .bonuses
-                .point_for_gap(self.player.word_index)
-                .is_some_and(|(_, point)| {
-                    point.choices.iter().any(|choice| choice.is_available(now))
-                })
-    }
-
-    fn match_bonus_start(&self, ch: char, now: Instant) -> Option<(usize, usize)> {
-        let (point_index, point) = self.bonuses.point_for_gap(self.player.word_index)?;
-        point
-            .available_choice_starting_with(ch, now)
-            .map(|(choice_index, _)| (point_index, choice_index))
     }
 
     fn activate_item(&mut self, item_use: ItemUse, now: Instant) {

@@ -178,6 +178,66 @@ where
     ))
 }
 
+pub fn claim_random_available_bonus<PlayerKey, R>(
+    state: &mut BonusFlowState<'_, PlayerKey>,
+    player_key: PlayerKey,
+    race_player_id: RacePlayerId,
+    now: Instant,
+    roll: BonusClaimRoll<'_, R>,
+) -> Option<BonusClaimOutcome>
+where
+    PlayerKey: Copy + Eq + Hash,
+    R: Rng,
+{
+    if state.bonus_attempts.contains_key(&player_key) {
+        return None;
+    }
+    let player = state.race.player(race_player_id)?;
+    if player.state.held_item.is_some()
+        || player.state.has_active_shield(now)
+        || player.state.has_active_focus(now)
+        || player.state.typo_index.is_some()
+        || !player.state.input.is_empty()
+        || player.state.is_finished()
+    {
+        return None;
+    }
+
+    let (point_index, point) = state.bonuses.point_for_gap(player.state.word_index)?;
+    if state
+        .spent_bonus_gaps
+        .get(&player_key)
+        .is_some_and(|after_word_index| *after_word_index == point.after_word_index)
+    {
+        return None;
+    }
+
+    let available_choices = point
+        .choices
+        .iter()
+        .enumerate()
+        .filter(|(_, choice)| choice.is_available(now))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if available_choices.is_empty() {
+        return None;
+    }
+
+    let choice_index = available_choices[roll.rng.gen_range(0..available_choices.len())];
+    let attempt = BonusAttempt {
+        point_index,
+        choice_index,
+    };
+    Some(resolve_bonus_claim(
+        state,
+        player_key,
+        race_player_id,
+        attempt,
+        now,
+        roll,
+    ))
+}
+
 fn apply_existing_bonus_key<PlayerKey, R>(
     state: &mut BonusFlowState<'_, PlayerKey>,
     player_key: PlayerKey,
@@ -362,7 +422,10 @@ mod tests {
 
     use rand::{SeedableRng, rngs::StdRng};
 
-    use super::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key};
+    use super::{
+        BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key,
+        claim_random_available_bonus,
+    };
     use crate::game::{
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         items::{ItemRegistry, ItemRollContext, RacePositionBand},
@@ -440,6 +503,65 @@ mod tests {
                 }))
         );
         assert_eq!(race.players[0].state.input, "d");
+    }
+
+    #[test]
+    fn random_available_bonus_claim_resolves_pickup_and_spends_gap() {
+        let now = Instant::now();
+        let (mut race, mut bonuses) = race_with_bonus(now);
+        let mut attempts = HashMap::new();
+        let mut spent = HashMap::new();
+        let mut rng = StdRng::seed_from_u64(2);
+        let registry = ItemRegistry::builtin();
+
+        let outcome = claim_random_available_bonus(
+            &mut BonusFlowState {
+                race: &mut race,
+                bonuses: &mut bonuses,
+                bonus_attempts: &mut attempts,
+                spent_bonus_gaps: &mut spent,
+            },
+            1_u64,
+            RacePlayerId(1),
+            now,
+            BonusClaimRoll {
+                item_context: item_context(),
+                item_registry: &registry,
+                rng: &mut rng,
+            },
+        );
+
+        assert!(outcome.is_some_and(|outcome| outcome.pickup.is_some()));
+        assert_eq!(spent.get(&1_u64), Some(&0));
+    }
+
+    #[test]
+    fn random_available_bonus_claim_respects_spent_gap() {
+        let now = Instant::now();
+        let (mut race, mut bonuses) = race_with_bonus(now);
+        let mut attempts = HashMap::new();
+        let mut spent = HashMap::from([(1_u64, 0_usize)]);
+        let mut rng = StdRng::seed_from_u64(2);
+        let registry = ItemRegistry::builtin();
+
+        let outcome = claim_random_available_bonus(
+            &mut BonusFlowState {
+                race: &mut race,
+                bonuses: &mut bonuses,
+                bonus_attempts: &mut attempts,
+                spent_bonus_gaps: &mut spent,
+            },
+            1_u64,
+            RacePlayerId(1),
+            now,
+            BonusClaimRoll {
+                item_context: item_context(),
+                item_registry: &registry,
+                rng: &mut rng,
+            },
+        );
+
+        assert!(outcome.is_none());
     }
 
     #[test]
