@@ -902,19 +902,20 @@ impl LocalSession {
                 self.activate_ai_held_item(ai_index, held_item, now);
             }
             ItemPickup::Shield => {
-                let Some(ai) = self.ai_racers.get_mut(ai_index) else {
+                let Some(ai) = self.ai_racers.get(ai_index) else {
                     return;
                 };
                 let ai_name = ai.name.clone();
                 let word_index = ai.player.word_index;
-                ai.player.active_effects.push(ActiveEffect::Shield {
-                    until: now
-                        + Duration::from_millis(self.item_registry.shield_effect().duration_ms),
-                });
                 self.events.push(format!("{ai_name} got Shield"));
                 self.run_log.push(
                     now,
                     format!("{ai_name} picked up Shield at word={word_index}"),
+                );
+                self.activate_shared_item_pickup(
+                    RacePlayerId((ai.id + 1) as u64),
+                    ItemPickup::Shield,
+                    now,
                 );
             }
         }
@@ -934,7 +935,12 @@ impl LocalSession {
                     .map(|ai| RacePlayerId((ai.id + 1) as u64)),
                 now,
             ),
-            HeldItem::Focus => self.activate_ai_focus(ai_index, now),
+            HeldItem::Focus => self.use_focus(
+                self.ai_racers
+                    .get(ai_index)
+                    .map(|ai| RacePlayerId((ai.id + 1) as u64)),
+                now,
+            ),
             HeldItem::Cyclone => self.use_cyclone(Some(ai_index), now),
             HeldItem::SquidInk => self.use_squid_ink(
                 self.ai_racers
@@ -952,15 +958,6 @@ impl LocalSession {
 
         self.ai_racers[ai_index].player.held_item = None;
         self.activate_ai_held_item(ai_index, item, now);
-    }
-
-    fn activate_ai_focus(&mut self, ai_index: usize, now: Instant) {
-        let Some(ai) = self.ai_racers.get_mut(ai_index) else {
-            return;
-        };
-        ai.player.active_effects.push(ActiveEffect::Focus {
-            until: now + Duration::from_millis(self.item_registry.focus_effect().duration_ms),
-        });
     }
 
     fn use_cyclone(&mut self, attacker_ai_index: Option<usize>, now: Instant) {
@@ -990,6 +987,13 @@ impl LocalSession {
             return;
         };
         self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Mushroom), now);
+    }
+
+    fn use_focus(&mut self, player_id: Option<RacePlayerId>, now: Instant) {
+        let Some(player_id) = player_id else {
+            return;
+        };
+        self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Focus), now);
     }
 
     fn activate_shared_item_pickup(
@@ -1355,12 +1359,6 @@ impl LocalSession {
         self.activate_held_item(item, item_use, now);
     }
 
-    fn activate_shield(&mut self, now: Instant) {
-        self.player.active_effects.push(ActiveEffect::Shield {
-            until: now + Duration::from_millis(self.item_registry.shield_effect().duration_ms),
-        });
-    }
-
     fn receive_pickup(&mut self, item: ItemPickup, now: Instant) {
         match item {
             ItemPickup::Held(held_item) => {
@@ -1376,12 +1374,12 @@ impl LocalSession {
                 self.activate_held_item(held_item, ItemUse::Normal, now);
             }
             ItemPickup::Shield => {
-                self.activate_shield(now);
                 self.events.push("Got Shield");
                 self.run_log.push(
                     now,
                     format!("player picked up Shield at word={}", self.player.word_index),
                 );
+                self.activate_shared_item_pickup(RacePlayerId(1), ItemPickup::Shield, now);
             }
         }
     }
@@ -1389,17 +1387,11 @@ impl LocalSession {
     fn activate_held_item(&mut self, item: HeldItem, _item_use: ItemUse, now: Instant) {
         match item {
             HeldItem::Mushroom => self.use_mushroom(Some(RacePlayerId(1)), now),
-            HeldItem::Focus => self.activate_focus(now),
+            HeldItem::Focus => self.use_focus(Some(RacePlayerId(1)), now),
             HeldItem::Cyclone => self.use_cyclone(None, now),
             HeldItem::SquidInk => self.use_squid_ink(Some(RacePlayerId(1)), now),
             HeldItem::Banana => self.use_banana(Some(RacePlayerId(1)), now),
         }
-    }
-
-    fn activate_focus(&mut self, now: Instant) {
-        self.player.active_effects.push(ActiveEffect::Focus {
-            until: now + Duration::from_millis(self.item_registry.focus_effect().duration_ms),
-        });
     }
 
     fn player_is_stunned(&self, now: Instant) -> bool {
