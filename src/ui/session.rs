@@ -22,7 +22,7 @@ use crate::game::{
     },
     item_effects::{
         AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
-        RaceItemEffectState, activate_item_pickup,
+        RaceItemEffectState, activate_item_pickup, advance_mushrooms,
     },
     items::{HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse, RacePositionBand},
     mods::ActiveModConfig,
@@ -664,8 +664,7 @@ impl LocalSession {
             return;
         }
 
-        self.advance_mushroom(now);
-        self.advance_ai_mushrooms(now);
+        self.advance_shared_mushrooms(now);
         self.tick_ai_racers(now);
 
         let expired_choices = self.bonuses.expire_cooldowns(&self.track, now);
@@ -923,7 +922,12 @@ impl LocalSession {
 
     fn activate_ai_held_item(&mut self, ai_index: usize, item: HeldItem, now: Instant) {
         match item {
-            HeldItem::Mushroom => self.activate_ai_mushroom(ai_index, now),
+            HeldItem::Mushroom => self.use_mushroom(
+                self.ai_racers
+                    .get(ai_index)
+                    .map(|ai| RacePlayerId((ai.id + 1) as u64)),
+                now,
+            ),
             HeldItem::Banana => self.use_banana(
                 self.ai_racers
                     .get(ai_index)
@@ -981,6 +985,13 @@ impl LocalSession {
         self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::SquidInk), now);
     }
 
+    fn use_mushroom(&mut self, player_id: Option<RacePlayerId>, now: Instant) {
+        let Some(player_id) = player_id else {
+            return;
+        };
+        self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Mushroom), now);
+    }
+
     fn activate_shared_item_pickup(
         &mut self,
         player_id: RacePlayerId,
@@ -1005,14 +1016,11 @@ impl LocalSession {
         );
 
         self.sync_from_shared_item_race(race);
-        for interrupted in report.interrupted_players {
-            if interrupted == RacePlayerId(1) {
-                self.bonus_attempt = None;
-            }
-        }
+        self.handle_shared_interruptions(&report.interrupted_players, now);
         for reset_ai in report.reset_ai_players {
             if let Some(ai) = self.local_ai_mut(reset_ai) {
                 ai.char_budget = 0.0;
+                ai.last_update = now;
             }
         }
         self.apply_shared_item_effects(effects);
@@ -1020,6 +1028,28 @@ impl LocalSession {
             let event = local_item_event(event);
             self.run_log.push(now, event.clone());
             self.events.push(event);
+        }
+    }
+
+    fn advance_shared_mushrooms(&mut self, now: Instant) {
+        let mut race = self.shared_race_state();
+        let interrupted = advance_mushrooms(&mut race, now);
+        if interrupted.is_empty() {
+            return;
+        }
+
+        self.sync_from_shared_item_race(race);
+        self.handle_shared_interruptions(&interrupted, now);
+    }
+
+    fn handle_shared_interruptions(&mut self, player_ids: &[RacePlayerId], now: Instant) {
+        for player_id in player_ids {
+            if *player_id == RacePlayerId(1) {
+                self.bonus_attempt = None;
+            } else if let Some(ai) = self.local_ai_mut(*player_id) {
+                ai.char_budget = 0.0;
+                ai.last_update = now;
+            }
         }
     }
 
@@ -1092,88 +1122,6 @@ impl LocalSession {
     fn local_ai_mut(&mut self, player_id: RacePlayerId) -> Option<&mut AiRacer> {
         let ai_id = usize::try_from(player_id.0).ok()?.checked_sub(1)?;
         self.ai_racers.iter_mut().find(|ai| ai.id == ai_id)
-    }
-
-    fn activate_ai_mushroom(&mut self, ai_index: usize, now: Instant) {
-        let Some(ai) = self.ai_racers.get_mut(ai_index) else {
-            return;
-        };
-        ai.player.input.clear();
-        ai.player.typo_index = None;
-        ai.player.active_effects.push(ActiveEffect::Mushroom {
-            remaining_words: self.item_registry.mushroom_effect().boost_words,
-            next_step_at: now,
-            step_interval: mushroom_step_interval(self.item_registry.mushroom_effect().wpm),
-        });
-        self.advance_ai_mushroom(ai_index, now);
-    }
-
-    fn advance_ai_mushrooms(&mut self, now: Instant) {
-        for ai_index in 0..self.ai_racers.len() {
-            loop {
-                if !self.advance_ai_mushroom(ai_index, now) {
-                    break;
-                }
-                if self.ai_racers[ai_index].player.is_finished() {
-                    break;
-                }
-            }
-        }
-    }
-
-    fn advance_ai_mushroom(&mut self, ai_index: usize, now: Instant) -> bool {
-        let Some(effect_index) = self.ai_racers[ai_index]
-            .player
-            .active_effects
-            .iter()
-            .position(|effect| {
-                matches!(
-                    effect,
-                    ActiveEffect::Mushroom {
-                        remaining_words,
-                        next_step_at,
-                        ..
-                    } if *remaining_words > 0 && *next_step_at <= now
-                )
-            })
-        else {
-            return false;
-        };
-
-        let ai = &mut self.ai_racers[ai_index];
-        let remaining_track_words = self.track.len().saturating_sub(ai.player.word_index);
-        if remaining_track_words == 0 {
-            ai.player.active_effects.remove(effect_index);
-            return false;
-        }
-
-        ai.player.word_index += 1;
-        ai.player.stats.completed_words += 1;
-        ai.player.input.clear();
-        ai.player.typo_index = None;
-
-        if ai.player.word_index >= self.track.len() {
-            ai.player.finished_at = Some(now);
-            ai.player.active_effects.remove(effect_index);
-            self.events.push(format!("{} finished", ai.name));
-            return false;
-        }
-
-        if let Some(ActiveEffect::Mushroom {
-            remaining_words,
-            next_step_at,
-            step_interval,
-        }) = ai.player.active_effects.get_mut(effect_index)
-        {
-            *remaining_words -= 1;
-            if *remaining_words == 0 {
-                ai.player.active_effects.remove(effect_index);
-            } else {
-                *next_step_at += *step_interval;
-            }
-        }
-
-        true
     }
 
     fn apply_typing_action(&mut self, action: KeyAction, now: Instant) {
@@ -1440,7 +1388,7 @@ impl LocalSession {
 
     fn activate_held_item(&mut self, item: HeldItem, _item_use: ItemUse, now: Instant) {
         match item {
-            HeldItem::Mushroom => self.activate_mushroom(now),
+            HeldItem::Mushroom => self.use_mushroom(Some(RacePlayerId(1)), now),
             HeldItem::Focus => self.activate_focus(now),
             HeldItem::Cyclone => self.use_cyclone(None, now),
             HeldItem::SquidInk => self.use_squid_ink(Some(RacePlayerId(1)), now),
@@ -1454,79 +1402,9 @@ impl LocalSession {
         });
     }
 
-    fn activate_mushroom(&mut self, now: Instant) {
-        self.player.input.clear();
-        self.player.typo_index = None;
-        self.bonus_attempt = None;
-        self.player.active_effects.push(ActiveEffect::Mushroom {
-            remaining_words: self.item_registry.mushroom_effect().boost_words,
-            next_step_at: now,
-            step_interval: mushroom_step_interval(self.item_registry.mushroom_effect().wpm),
-        });
-        self.advance_mushroom(now);
-    }
-
     fn player_is_stunned(&self, now: Instant) -> bool {
         self.player_stunned_until.is_some_and(|until| until > now)
     }
-
-    fn advance_mushroom(&mut self, now: Instant) {
-        while let Some(effect_index) = self.player.active_effects.iter().position(|effect| {
-            matches!(
-                effect,
-                ActiveEffect::Mushroom {
-                    remaining_words,
-                    next_step_at,
-                    ..
-                } if *remaining_words > 0 && *next_step_at <= now
-            )
-        }) {
-            self.advance_mushroom_one_word(now, effect_index);
-
-            if self.player.is_finished() {
-                break;
-            }
-        }
-    }
-
-    fn advance_mushroom_one_word(&mut self, now: Instant, effect_index: usize) {
-        let remaining = self.track.len().saturating_sub(self.player.word_index);
-        if remaining == 0 {
-            self.player.active_effects.remove(effect_index);
-            return;
-        }
-
-        self.player.word_index += 1;
-        self.player.stats.completed_words += 1;
-        self.player.input.clear();
-        self.player.typo_index = None;
-        self.bonus_attempt = None;
-
-        if self.player.word_index >= self.track.len() {
-            self.player.finished_at = Some(now);
-            self.events.push("Race finished");
-            self.player.active_effects.remove(effect_index);
-            return;
-        }
-
-        if let Some(ActiveEffect::Mushroom {
-            remaining_words,
-            next_step_at,
-            step_interval,
-        }) = self.player.active_effects.get_mut(effect_index)
-        {
-            *remaining_words -= 1;
-            if *remaining_words == 0 {
-                self.player.active_effects.remove(effect_index);
-            } else {
-                *next_step_at += *step_interval;
-            }
-        }
-    }
-}
-
-fn mushroom_step_interval(wpm: u32) -> std::time::Duration {
-    std::time::Duration::from_secs_f64(60.0 / f64::from(wpm))
 }
 
 fn racer_position_band(
@@ -2519,6 +2397,28 @@ mod tests {
         );
 
         assert_eq!(session.player.input, "f");
+    }
+
+    #[test]
+    fn ai_mushroom_resets_typing_budget_after_shared_interruption() {
+        let track = track(&["one", "two", "three", "four", "five"]);
+        let player = PlayerState::new(Instant::now());
+        let start = Instant::now();
+        let mut session =
+            LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
+        session.ai_racers.push(AiRacer::new(
+            1,
+            AiDifficulty::Easy,
+            35.0,
+            start - std::time::Duration::from_secs(1),
+        ));
+        session.ai_racers[0].char_budget = 4.0;
+
+        session.receive_ai_pickup(0, ItemPickup::Held(HeldItem::Mushroom), start);
+
+        assert_eq!(session.ai_racers[0].player.word_index, 1);
+        assert_eq!(session.ai_racers[0].char_budget, 0.0);
+        assert_eq!(session.ai_racers[0].last_update, start);
     }
 
     #[test]
