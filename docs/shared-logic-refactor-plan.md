@@ -369,6 +369,16 @@ Progress:
   editing, cancelling, and claiming bonus attempts. Local AI bonus pickup claim
   selection and resolution also use a shared random-available claim helper,
   matching the network AI path.
+- Local human main-track typing now routes through `RaceState::apply_key_input`
+  instead of calling the typing engine directly, so the local player follows
+  the same race-state input boundary as network and browser hosts.
+- Local AI typing now uses shared `game::ai_driver::advance_ai_driver` for
+  WPM-budget typing and `RaceState::apply_key_input`, while preserving local
+  AI timing storage and local stun checks in the terminal adapter.
+- Local active-race ticking now uses shared `game::host_session` policy for
+  bonus cooldown expiry, timed effect expiry, and lifecycle advancement while
+  keeping local-only AI scheduling, run-log text, item cue expiry, and terminal
+  event presentation in `src/ui/session.rs`.
 
 Validation:
 
@@ -576,6 +586,24 @@ Progress:
   host sessions, including the "only while racing" guard and the transition to
   the finished phase. Network and browser hosts both use this helper while
   keeping event feed, result snapshots, and broadcasts adapter-owned.
+- `src/game/host_session.rs` now owns a shared active-race tick helper that
+  composes bonus cooldown expiry, timed effect expiry, lifecycle advancement,
+  and tick-action selection. Local play uses this helper; network/browser
+  adapters can migrate to the same helper once their adapter-owned AI and
+  broadcast sequencing has been isolated.
+- Network and browser host periodic race ticks now use the shared active-race
+  tick helper after adapter-owned item/AI advancement, so bonus cooldown
+  refresh, timed effect expiry, race lifecycle advancement, and tick-action
+  selection run through one host-session policy across local, LAN, and browser
+  hosts.
+- `src/game/host_session.rs` now owns a shared human key-input helper that
+  tries bonus-word input before falling back to normal race typing and returns
+  structured bonus/typing events. Network and browser hosts use it while
+  keeping item activation, event wording, lifecycle updates, and broadcasts in
+  adapter code.
+- Local single-player human typing also uses the shared human key-input helper,
+  with only local-only cue suppression, terminal event text, pickup handling,
+  and state syncing kept in `src/ui/session.rs`.
 - `src/game/host_session.rs` now returns a shared start-race outcome from the
   countdown-to-racing transition, including the `Racing` phase and common race
   started event text used by network and browser hosts.

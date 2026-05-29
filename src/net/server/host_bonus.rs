@@ -9,10 +9,8 @@ use std::time::Instant;
 use rand::thread_rng;
 
 use crate::game::{
-    bonus_flow::{
-        BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key,
-        claim_random_available_bonus,
-    },
+    bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
+    host_session::{HostPlayerKeyInput, HostPlayerKeyState, apply_host_player_key},
     item_effects::player_has_active_mushroom_effect,
     items::{ItemPickup, ItemRollContext, RacePositionBand},
     race::RacePlayerId,
@@ -39,32 +37,30 @@ pub(super) fn apply_network_key_input(
     let item_context = network_item_roll_context(state, player_id, 5);
     let item_registry = state.item_registry.clone();
     let mut rng = thread_rng();
-    let bonus_outcome = apply_bonus_key(
-        &mut BonusFlowState {
+    let outcome = apply_host_player_key(
+        &mut HostPlayerKeyState {
             race: &mut state.race,
             bonuses: &mut state.bonuses,
             bonus_attempts: &mut state.runtime.bonus_attempts,
             spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
         },
-        player_id,
-        RacePlayerId(player_id.0),
-        action,
-        now,
+        HostPlayerKeyInput {
+            player_key: player_id,
+            race_player_id: RacePlayerId(player_id.0),
+            action,
+            now,
+        },
         BonusClaimRoll {
             item_context,
             item_registry: &item_registry,
             rng: &mut rng,
         },
     );
-    if bonus_outcome.handled {
-        handle_network_bonus_events(state, player_id, bonus_outcome.events, now);
-        return true;
+    if !outcome.bonus_events.is_empty() {
+        handle_network_bonus_events(state, player_id, outcome.bonus_events, now);
     }
 
-    state
-        .race
-        .apply_key_input(RacePlayerId(player_id.0), action, now)
-        .is_some()
+    outcome.handled
 }
 
 pub(super) fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: Instant) {

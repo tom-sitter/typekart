@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 
 use crate::game::{
     host_session::{
-        advance_host_race_lifecycle, connected_racer_count, prepare_race_from_lobby,
-        prepare_waiting_race_outcome,
+        HostRaceLifecycleOutcome, advance_host_race_lifecycle, connected_racer_count,
+        prepare_race_from_lobby, prepare_waiting_race_outcome,
     },
     track::Track,
 };
@@ -68,7 +68,13 @@ pub(super) fn update_race_status(state: &mut HostState, now: Instant) {
         POST_FIRST_FINISH_TIMEOUT,
     );
     state.phase = outcome.phase;
+    apply_race_lifecycle_outcome(state, outcome);
+}
 
+pub(super) fn apply_race_lifecycle_outcome(
+    state: &mut HostState,
+    outcome: HostRaceLifecycleOutcome,
+) {
     for finished in outcome.flow.newly_finished {
         let message = finished_player_message(&finished);
         push_event(state, message.clone());

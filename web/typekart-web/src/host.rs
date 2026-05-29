@@ -12,13 +12,15 @@ use rand::thread_rng;
 use typekart::game::{
     ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
     bonus::BonusState,
-    bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
+    bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        HostRaceTickAction, PreparedHostRace, advance_host_race_lifecycle, begin_countdown_phase,
-        cancel_countdown_outcome, countdown_start_plan, countdown_tick_phase, host_race_tick_outcome,
-        prepare_race_from_selected_lobby_players, prepare_waiting_race_outcome,
-        return_to_lobby_outcome, start_active_race_runtime_outcome, start_race_from_countdown,
+        HostPlayerKeyInput, HostPlayerKeyState, HostRaceTickAction, PreparedHostRace,
+        advance_active_race_tick, advance_host_race_lifecycle, apply_host_player_key,
+        begin_countdown_phase, cancel_countdown_outcome, countdown_start_plan,
+        countdown_tick_phase, prepare_race_from_selected_lobby_players,
+        prepare_waiting_race_outcome, return_to_lobby_outcome, start_active_race_runtime_outcome,
+        start_race_from_countdown,
     },
     item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
@@ -33,7 +35,6 @@ use typekart::game::{
     },
     player::PlayerState,
     race::{PlayerColorId, RacePlayer, RacePlayerId, RaceState, RaceRuntimeState},
-    race_flow::update_race_flow,
     snapshot::{
         RaceSnapshotInput, build_bonus_snapshots,
         build_placement_snapshots as build_shared_placement_snapshots, build_player_snapshots,
@@ -814,51 +815,37 @@ fn apply_browser_host_race_key_input(
     let mut rng = thread_rng();
     if let Some(core_race) = &mut state.core_race {
         let previous_event_count = state.events.len();
-        let bonus_outcome = apply_bonus_key(
-            &mut BonusFlowState {
+        let outcome = apply_host_player_key(
+            &mut HostPlayerKeyState {
                 race: core_race,
                 bonuses: &mut state.bonuses,
                 bonus_attempts: &mut state.runtime.bonus_attempts,
                 spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
             },
-            player_id,
-            RacePlayerId(player_id.0),
-            action,
-            now,
+            HostPlayerKeyInput {
+                player_key: player_id,
+                race_player_id: RacePlayerId(player_id.0),
+                action,
+                now,
+            },
             BonusClaimRoll {
                 item_context,
                 item_registry: &item_registry,
                 rng: &mut rng,
             },
         );
-        if bonus_outcome.handled {
-            handle_browser_bonus_events(state, player_id, bonus_outcome.events, now);
+        if !outcome.bonus_events.is_empty() {
+            handle_browser_bonus_events(state, player_id, outcome.bonus_events, now);
+        }
+        if outcome.handled {
             browser_sync_active_race_from_core(state);
             set_browser_race_input_event(state, &player_name, previous_event_count);
             set_connection.set(ConnectionState::Connected {
                 message: format!("{player_name} typed"),
             });
-            return;
+            browser_update_race_status(state, now);
         }
     }
-
-    {
-        let Some(core_race) = &mut state.core_race else {
-            return;
-        };
-        core_race.apply_key_input(RacePlayerId(player_id.0), action, Instant::now());
-        state.runtime
-        .lifecycle
-            .update(core_race, Instant::now(), BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT);
-    }
-    browser_sync_active_race_from_core(state);
-    if let Some(race) = &mut state.active_race {
-        race.events = vec![format!("{player_name} typed")];
-    }
-    browser_update_race_status(state, Instant::now());
-    set_connection.set(ConnectionState::Connected {
-        message: format!("{player_name} typed"),
-    });
 }
 
 fn browser_player_input_is_paused(
@@ -1060,10 +1047,11 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
     if elapsed_ms <= 0.0 {
         return false;
     }
+    let now = Instant::now();
     browser_ensure_core_race(state);
     let mut changed = false;
     if let Some(core_race) = &mut state.core_race {
-        for interrupted in advance_mushrooms(core_race, Instant::now()) {
+        for interrupted in advance_mushrooms(core_race, now) {
             state.runtime.bonus_attempts.remove(&PlayerId(interrupted.0));
             changed = true;
         }
@@ -1079,9 +1067,6 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
         let Some(core_race) = &mut state.core_race else {
             return false;
         };
-        for player in &mut core_race.players {
-            player.state.expire_effects(Instant::now());
-        }
 
         let ai_configs = state
             .players
@@ -1107,7 +1092,7 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
 
         for (player_id, config) in ai_configs {
             let race_player_id = RacePlayerId(player_id.0);
-            if player_is_stunned(&state.runtime.player_effects, race_player_id, Instant::now()) {
+            if player_is_stunned(&state.runtime.player_effects, race_player_id, now) {
                 continue;
             }
             let driver = state.ai_char_budget.entry(player_id).or_default();
@@ -1116,50 +1101,50 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
                 race_player_id,
                 driver,
                 config,
-                Instant::now(),
+                now,
                 Duration::from_secs_f64(elapsed_ms / 1000.0),
             );
             if advance.changed() {
                 changed = true;
             }
         }
+    }
 
-        if changed {
-            update_race_flow(
-                &mut state.runtime.lifecycle,
-                core_race,
-                Instant::now(),
-                BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
-            );
-            browser_sync_snapshot_from_core(
-                snapshot,
-                core_race,
-                &state.players,
-                &state.runtime.player_effects,
-            );
-            state.race_sequence += 1;
-            snapshot.sequence = state.race_sequence;
-            snapshot.events = vec!["AI racers advanced".to_string()];
+    let phase = state.phase();
+    let tick = {
+        let Some(core_race) = &mut state.core_race else {
+            return false;
+        };
+        advance_active_race_tick(
+            &mut state.runtime.lifecycle,
+            core_race,
+            &mut state.bonuses,
+            phase,
+            now,
+            BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT,
+            changed,
+        )
+    };
+    let should_publish = !matches!(tick.tick.action, HostRaceTickAction::Ignore);
+
+    if tick.lifecycle.flow.finished.is_some() {
+        if let Some(event) = tick.lifecycle.finish_event {
+            browser_finish_race(state, event);
+        }
+        return true;
+    }
+
+    if should_publish {
+        browser_sync_active_race_from_core(state);
+        if let Some(snapshot) = &mut state.active_race {
+            snapshot.phase = tick.lifecycle.phase;
+            if changed {
+                snapshot.events = vec!["AI racers advanced".to_string()];
+            }
         }
     }
 
-    let race_status_changed = browser_update_race_status(state, Instant::now());
-    let phase = state
-        .active_race
-        .as_ref()
-        .map(|snapshot| snapshot.phase)
-        .unwrap_or_else(|| {
-            if state.active_results.is_some() {
-                NetworkRacePhase::Finished
-            } else {
-                state.phase()
-            }
-        });
-    let tick_outcome = host_race_tick_outcome(phase, changed || race_status_changed, 0);
-    matches!(
-        tick_outcome.action,
-        HostRaceTickAction::BroadcastDelta | HostRaceTickAction::BroadcastResults
-    )
+    should_publish
 }
 
 fn browser_update_race_status(state: &mut BrowserHostLobby, now: Instant) -> bool {

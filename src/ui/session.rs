@@ -12,16 +12,14 @@ use rand::{Rng, thread_rng};
 
 use crate::game::{
     ai::AiDifficulty,
-    ai_driver::{ai_chars_per_second, ai_effective_wpm, next_ai_key_for_player},
+    ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
     bonus::BonusState,
-    bonus_flow::{
-        BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key as apply_shared_bonus_key,
-        claim_random_available_bonus,
-    },
+    bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
     effects::ActiveEffect,
     host_session::{
-        advance_host_race_lifecycle, begin_countdown_phase, connected_racer_count,
-        countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+        HostPlayerKeyInput, HostPlayerKeyState, advance_active_race_tick,
+        advance_host_race_lifecycle, apply_host_player_key, begin_countdown_phase,
+        connected_racer_count, countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
         prepare_race_from_participants, return_to_lobby_outcome, start_race_from_countdown,
     },
     item_effects::{
@@ -35,7 +33,7 @@ use crate::game::{
         PlayerColorId, RaceLifecycleState, RaceParticipant, RacePlayer, RacePlayerId, RaceState,
     },
     track::{Track, WordList},
-    typing::{KeyAction, TypingEvent, apply_key},
+    typing::{KeyAction, TypingEvent},
 };
 use typekart_protocol::NetworkRacePhase;
 
@@ -667,23 +665,45 @@ impl LocalSession {
         self.advance_shared_mushrooms(now);
         self.tick_ai_racers(now);
 
-        let expired_choices = self.bonuses.expire_cooldowns(&self.track, now);
-        if expired_choices > 0 {
-            self.run_log
-                .push(now, format!("bonus refreshed choices={expired_choices}"));
-        }
+        let mut race = self.shared_race_state();
+        let mut lifecycle = RaceLifecycleState {
+            placements: Vec::new(),
+            first_finished_at: self.race_status.first_finished_at,
+        };
+        let outcome = advance_active_race_tick(
+            &mut lifecycle,
+            &mut race,
+            &mut self.bonuses,
+            self.race_phase,
+            now,
+            POST_FIRST_FINISH_TIMEOUT,
+            false,
+        );
+        self.sync_from_shared_item_race(race);
+        self.race_status.first_finished_at = lifecycle.first_finished_at;
+        self.race_phase = outcome.lifecycle.phase;
 
-        let expired_effects = self.player.expire_effects(now);
-        if expired_effects > 0 {
-            self.events.push("Shield expired");
+        if outcome.tick.bonus_choices_refreshed > 0 {
+            self.run_log.push(
+                now,
+                format!(
+                    "bonus refreshed choices={}",
+                    outcome.tick.bonus_choices_refreshed
+                ),
+            );
         }
-        for ai in &mut self.ai_racers {
-            ai.player.expire_effects(now);
+        if outcome.expired_effect_players.contains(&RacePlayerId(1)) {
+            self.events.push("Shield expired");
         }
 
         self.expire_item_cues(now);
 
-        self.update_race_status(now);
+        if outcome.lifecycle.flow.finished.is_some() {
+            self.race_status.ended_at = Some(now);
+            if let Some(event) = outcome.lifecycle.finish_event {
+                self.events.push(event);
+            }
+        }
     }
 
     fn expire_item_cues(&mut self, now: Instant) {
@@ -761,41 +781,53 @@ impl LocalSession {
     }
 
     fn advance_ai_typing(&mut self, ai_index: usize, now: Instant) {
-        let Some(ai) = self.ai_racers.get_mut(ai_index) else {
+        let Some(ai) = self.ai_racers.get(ai_index) else {
             return;
         };
 
         let elapsed = now.saturating_duration_since(ai.last_update);
-        ai.last_update = now;
+        let player_id = RacePlayerId((ai.id + 1) as u64);
+        let ai_name = ai.name.clone();
+        let words_per_minute = ai.words_per_minute;
+        let char_budget = ai.char_budget;
+        let last_update = ai.last_update;
+        let is_stunned = ai.is_stunned(now);
 
-        if ai.player.is_finished() || ai.is_stunned(now) {
+        if let Some(ai) = self.ai_racers.get_mut(ai_index) {
+            ai.last_update = now;
+        }
+
+        if is_stunned {
             return;
         }
 
-        let effective_wpm = ai_effective_wpm(
-            ai.words_per_minute,
-            ai.player.has_active_focus(now),
-            ai.player.is_inked_at(now),
-            self.item_registry.focus_effect().ai_wpm_boost,
-            self.item_registry
-                .squid_ink_effect()
-                .ai_wpm_multiplier_percent,
+        let mut race = self.shared_race_state();
+        let mut driver = AiDriverState {
+            char_budget,
+            last_update: Some(last_update),
+        };
+        let advance = advance_ai_driver(
+            &mut race,
+            player_id,
+            &mut driver,
+            AiDriverConfig {
+                base_wpm: words_per_minute,
+                focus_boost_wpm: self.item_registry.focus_effect().ai_wpm_boost,
+                ink_multiplier_percent: self
+                    .item_registry
+                    .squid_ink_effect()
+                    .ai_wpm_multiplier_percent,
+            },
+            now,
+            elapsed,
         );
-        ai.char_budget += elapsed.as_secs_f64() * ai_chars_per_second(effective_wpm);
-        while ai.char_budget >= 1.0 && !ai.player.is_finished() {
-            let Some(action) = next_ai_key_for_player(&ai.player, &self.track) else {
-                break;
-            };
-            let events = apply_key(&mut ai.player, &self.track, action, now);
-            ai.char_budget -= 1.0;
+        self.sync_from_shared_item_race(race);
+        if let Some(ai) = self.ai_racers.get_mut(ai_index) {
+            ai.char_budget = driver.char_budget;
+        }
 
-            if events
-                .iter()
-                .any(|event| matches!(event, TypingEvent::RaceFinished))
-            {
-                self.events.push(format!("{} finished", ai.name));
-                break;
-            }
+        if advance.finished() {
+            self.events.push(format!("{ai_name} finished"));
         }
     }
 
@@ -1149,53 +1181,48 @@ impl LocalSession {
             return;
         }
 
-        if self.apply_shared_bonus_typing_action(action, now) {
-            return;
-        }
-
         let previous_word_index = self.player.word_index;
         let previous_word = self
             .track
             .current_word(previous_word_index)
             .map(str::to_owned);
-        let events = apply_key(&mut self.player, &self.track, action, now);
 
-        for event in events {
-            if let Some(message) = event_message(event, previous_word.as_deref()) {
-                self.events.push(message);
-            }
-        }
-    }
-
-    fn apply_shared_bonus_typing_action(&mut self, action: KeyAction, now: Instant) -> bool {
         if self.bonus_attempt.is_none()
             && self
                 .player_item_cue
                 .as_ref()
                 .is_some_and(|cue| cue.is_visible(now))
         {
-            return false;
+            let mut race = self.shared_race_state();
+            let events = race
+                .apply_key_input(RacePlayerId(1), action, now)
+                .unwrap_or_default();
+            self.sync_from_shared_item_race(race);
+            self.push_typing_events(events, previous_word.as_deref());
+            return;
         }
 
-        let mut rng = thread_rng();
-        let item_context = self.player_item_roll_context(5);
-        let mut race = self.shared_race_state();
         let mut attempts = HashMap::new();
         if let Some(attempt) = self.bonus_attempt {
             attempts.insert(RacePlayerId(1), attempt);
         }
         let mut spent_bonus_gaps = HashMap::new();
-        let outcome = apply_shared_bonus_key(
-            &mut BonusFlowState {
+        let item_context = self.player_item_roll_context(5);
+        let mut rng = thread_rng();
+        let mut race = self.shared_race_state();
+        let outcome = apply_host_player_key(
+            &mut HostPlayerKeyState {
                 race: &mut race,
                 bonuses: &mut self.bonuses,
                 bonus_attempts: &mut attempts,
                 spent_bonus_gaps: &mut spent_bonus_gaps,
             },
-            RacePlayerId(1),
-            RacePlayerId(1),
-            action,
-            now,
+            HostPlayerKeyInput {
+                player_key: RacePlayerId(1),
+                race_player_id: RacePlayerId(1),
+                action,
+                now,
+            },
             BonusClaimRoll {
                 item_context,
                 item_registry: &self.item_registry,
@@ -1203,19 +1230,34 @@ impl LocalSession {
             },
         );
         if !outcome.handled {
-            return false;
+            return;
         }
 
         self.sync_from_shared_item_race(race);
         self.bonus_attempt = attempts.get(&RacePlayerId(1)).copied();
-        for event in outcome.events {
+
+        for event in outcome.typing_events {
+            self.push_typing_event(event, previous_word.as_deref());
+        }
+        for event in outcome.bonus_events {
             if let BonusFlowEvent::ClaimResolved(outcome) = event
                 && let Some(item) = outcome.pickup
             {
                 self.receive_pickup(item, now);
             }
         }
-        true
+    }
+
+    fn push_typing_events(&mut self, events: Vec<TypingEvent>, previous_word: Option<&str>) {
+        for event in events {
+            self.push_typing_event(event, previous_word);
+        }
+    }
+
+    fn push_typing_event(&mut self, event: TypingEvent, previous_word: Option<&str>) {
+        if let Some(message) = event_message(event, previous_word) {
+            self.events.push(message);
+        }
     }
 
     fn player_item_roll_context(&self, max_distance_words: usize) -> ItemRollContext {
@@ -1478,6 +1520,7 @@ mod tests {
     use crate::{
         game::{
             ai::AiDifficulty,
+            ai_driver::ai_effective_wpm,
             bonus::{BonusChoice, BonusPoint, BonusState},
             effects::ActiveEffect,
             items::{HeldItem, ItemPickup, ItemRegistry},
@@ -1834,8 +1877,8 @@ mod tests {
 
     #[test]
     fn focused_ai_racer_gets_small_wpm_boost() {
-        assert_eq!(super::ai_effective_wpm(60.0, true, false, 10, 70), 70.0);
-        assert_eq!(super::ai_effective_wpm(60.0, false, false, 10, 70), 60.0);
+        assert_eq!(ai_effective_wpm(60.0, true, false, 10, 70), 70.0);
+        assert_eq!(ai_effective_wpm(60.0, false, false, 10, 70), 60.0);
     }
 
     #[test]

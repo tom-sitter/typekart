@@ -14,16 +14,17 @@ use anyhow::Result;
 
 use crate::game::host_session::{
     CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-    HostRaceTickAction, begin_countdown_phase, cancel_countdown_outcome, countdown_should_cancel,
-    countdown_start_plan, countdown_tick_phase, has_connected_active_racer, host_race_tick_outcome,
-    return_to_lobby_outcome, start_active_race_runtime_outcome, start_race_from_countdown,
+    HostRaceTickAction, advance_active_race_tick, begin_countdown_phase, cancel_countdown_outcome,
+    countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+    has_connected_active_racer, return_to_lobby_outcome, start_active_race_runtime_outcome,
+    start_race_from_countdown,
 };
 use crate::net::{log::push_network_log, protocol::NetworkRacePhase};
 
 use super::{
     HostState, RACE_SNAPSHOT_INTERVAL, broadcast_lobby_snapshot, broadcast_race_delta,
-    broadcast_race_results_once, broadcast_race_snapshot, expire_bonus_cooldowns, host_ai,
-    host_items, host_race, print_server_line, push_event,
+    broadcast_race_results_once, broadcast_race_snapshot, host_ai, host_items, host_race,
+    print_server_line, push_event,
 };
 
 pub(super) fn start_countdown(state: Arc<Mutex<HostState>>) {
@@ -215,13 +216,32 @@ fn spawn_race_snapshot_loop(state: Arc<Mutex<HostState>>) {
             let now = Instant::now();
             host_items::advance_network_mushrooms(&mut state, now);
             host_ai::advance_network_ai_racers(&mut state, now);
-            host_race::update_race_status(&mut state, now);
-            let expired_choices = expire_bonus_cooldowns(&mut state, now);
-            let tick_outcome = host_race_tick_outcome(state.phase, true, expired_choices);
-            if expired_choices > 0 {
+            let phase = state.phase;
+            let tick = {
+                let HostState {
+                    runtime,
+                    race,
+                    bonuses,
+                    ..
+                } = &mut *state;
+                advance_active_race_tick(
+                    &mut runtime.lifecycle,
+                    race,
+                    bonuses,
+                    phase,
+                    now,
+                    super::POST_FIRST_FINISH_TIMEOUT,
+                    true,
+                )
+            };
+            state.phase = tick.lifecycle.phase;
+            let tick_outcome = tick.tick;
+            let refreshed_choices = tick_outcome.bonus_choices_refreshed;
+            host_race::apply_race_lifecycle_outcome(&mut state, tick.lifecycle);
+            if refreshed_choices > 0 {
                 push_network_log(
                     &state.debug_log,
-                    format!("bonus refreshed choices={expired_choices}"),
+                    format!("bonus refreshed choices={refreshed_choices}"),
                 );
             }
 

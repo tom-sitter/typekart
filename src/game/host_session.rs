@@ -5,16 +5,23 @@
 //! This module contains browser-safe pieces of that authority and leaves
 //! sockets, rendering, timers, and UI side effects to the adapters.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    time::{Duration, Instant},
+};
 
+use rand::Rng;
 use typekart_protocol::{LobbyPlayer, NetworkRacePhase};
 
 use super::{
     bonus::BonusState,
+    bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
     lobby::{lobby_players_to_participants, ready_connected_participants},
-    race::{RaceLifecycleState, RaceParticipant, RaceState},
+    race::{RaceLifecycleState, RaceParticipant, RacePlayerId, RaceState},
     race_flow::{RaceFlowOutcome, advance_race_flow},
     track::{Track, WordList},
+    typing::{KeyAction, TypingEvent},
 };
 
 #[derive(Debug, Clone)]
@@ -74,6 +81,35 @@ pub struct HostRaceLifecycleOutcome {
     pub phase: NetworkRacePhase,
     pub flow: RaceFlowOutcome,
     pub finish_event: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRaceTickOutcome {
+    pub lifecycle: HostRaceLifecycleOutcome,
+    pub tick: HostRaceTickOutcome,
+    pub expired_effect_players: Vec<RacePlayerId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPlayerKeyOutcome {
+    pub handled: bool,
+    pub typing_events: Vec<TypingEvent>,
+    pub bonus_events: Vec<BonusFlowEvent>,
+}
+
+pub struct HostPlayerKeyState<'a, PlayerKey> {
+    pub race: &'a mut RaceState,
+    pub bonuses: &'a mut BonusState,
+    pub bonus_attempts: &'a mut HashMap<PlayerKey, BonusAttempt>,
+    pub spent_bonus_gaps: &'a mut HashMap<PlayerKey, usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostPlayerKeyInput<PlayerKey> {
+    pub player_key: PlayerKey,
+    pub race_player_id: RacePlayerId,
+    pub action: KeyAction,
+    pub now: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,10 +358,103 @@ pub fn advance_host_race_lifecycle(
     }
 }
 
+pub fn advance_active_race_tick(
+    lifecycle: &mut RaceLifecycleState,
+    race: &mut RaceState,
+    bonuses: &mut BonusState,
+    phase: NetworkRacePhase,
+    now: Instant,
+    post_first_finish_timeout: Duration,
+    race_changed: bool,
+) -> ActiveRaceTickOutcome {
+    if phase != NetworkRacePhase::Racing {
+        let lifecycle =
+            advance_host_race_lifecycle(lifecycle, race, phase, now, post_first_finish_timeout);
+        return ActiveRaceTickOutcome {
+            tick: host_race_tick_outcome(lifecycle.phase, false, 0),
+            lifecycle,
+            expired_effect_players: Vec::new(),
+        };
+    }
+
+    let bonus_choices_refreshed = bonuses.expire_cooldowns(&race.track, now);
+    let expired_effect_players = race
+        .players
+        .iter_mut()
+        .filter_map(|player| (player.state.expire_effects(now) > 0).then_some(player.id))
+        .collect::<Vec<_>>();
+    let lifecycle =
+        advance_host_race_lifecycle(lifecycle, race, phase, now, post_first_finish_timeout);
+    let tick = host_race_tick_outcome(
+        lifecycle.phase,
+        race_changed || !expired_effect_players.is_empty(),
+        bonus_choices_refreshed,
+    );
+
+    ActiveRaceTickOutcome {
+        lifecycle,
+        tick,
+        expired_effect_players,
+    }
+}
+
+pub fn apply_host_player_key<PlayerKey, R>(
+    state: &mut HostPlayerKeyState<'_, PlayerKey>,
+    input: HostPlayerKeyInput<PlayerKey>,
+    roll: BonusClaimRoll<'_, R>,
+) -> HostPlayerKeyOutcome
+where
+    PlayerKey: Copy + Eq + Hash,
+    R: Rng,
+{
+    let bonus_outcome = apply_bonus_key(
+        &mut BonusFlowState {
+            race: state.race,
+            bonuses: state.bonuses,
+            bonus_attempts: state.bonus_attempts,
+            spent_bonus_gaps: state.spent_bonus_gaps,
+        },
+        input.player_key,
+        input.race_player_id,
+        input.action,
+        input.now,
+        roll,
+    );
+    if bonus_outcome.handled {
+        return HostPlayerKeyOutcome {
+            handled: true,
+            typing_events: Vec::new(),
+            bonus_events: bonus_outcome.events,
+        };
+    }
+
+    let Some(typing_events) =
+        state
+            .race
+            .apply_key_input(input.race_player_id, input.action, input.now)
+    else {
+        return HostPlayerKeyOutcome {
+            handled: false,
+            typing_events: Vec::new(),
+            bonus_events: Vec::new(),
+        };
+    };
+
+    HostPlayerKeyOutcome {
+        handled: true,
+        typing_events,
+        bonus_events: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    };
 
+    use rand::{SeedableRng, rngs::StdRng};
     use typekart_protocol::{
         AiDifficultySnapshot, AssignedColor, LobbyPlayer, NetworkRacePhase, PlayerId, PlayerKind,
     };
@@ -333,16 +462,22 @@ mod tests {
     use super::prepare_race_from_selected_lobby_players;
     use super::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        HostRaceTickAction, ReturnToLobbyDecision, advance_countdown_to_racing,
-        advance_host_race_lifecycle, begin_countdown_phase, cancel_countdown_outcome,
-        connected_racer_count, countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
-        has_connected_active_racer, host_race_tick_outcome, prepare_race_from_lobby,
-        prepare_waiting_race_outcome, return_to_lobby_decision, return_to_lobby_outcome,
-        start_active_race_runtime_outcome, start_race_from_countdown,
+        HostRaceTickAction, ReturnToLobbyDecision, advance_active_race_tick,
+        advance_countdown_to_racing, advance_host_race_lifecycle, begin_countdown_phase,
+        cancel_countdown_outcome, connected_racer_count, countdown_should_cancel,
+        countdown_start_plan, countdown_tick_phase, has_connected_active_racer,
+        host_race_tick_outcome, prepare_race_from_lobby, prepare_waiting_race_outcome,
+        return_to_lobby_decision, return_to_lobby_outcome, start_active_race_runtime_outcome,
+        start_race_from_countdown,
     };
     use crate::game::{
+        bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
+        bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
+        effects::ActiveEffect,
+        items::{ItemRegistry, ItemRollContext, RacePositionBand},
         race::{RaceLifecycleState, RacePlayerId},
         track::{Track, WordList},
+        typing::{KeyAction, TypingEvent},
     };
 
     fn lobby_player(
@@ -601,6 +736,167 @@ mod tests {
     }
 
     #[test]
+    fn active_race_tick_expires_bonuses_effects_and_advances_lifecycle() {
+        let now = Instant::now();
+        let players = vec![
+            lobby_player(1, "host", true, true, PlayerKind::Human),
+            lobby_player(2, "joiner", true, true, PlayerKind::Human),
+        ];
+        let prepared = prepare_race_from_lobby(
+            &players,
+            Track::new(vec!["go".to_string(), "fast".to_string()]),
+            &WordList::from_static("go\nfast\nbonus\none\ntwo\nthree"),
+            now,
+        );
+        let mut race = prepared.race;
+        race.players[0]
+            .state
+            .active_effects
+            .push(ActiveEffect::Shield {
+                until: now - Duration::from_millis(1),
+            });
+        race.players[0].state.finished_at = Some(now);
+        let mut bonuses = BonusState::with_points(
+            vec![BonusPoint::new(
+                0,
+                [
+                    BonusChoice {
+                        word: "one".to_string(),
+                        status: BonusChoiceStatus::Cooldown {
+                            until: now - Duration::from_millis(1),
+                        },
+                    },
+                    BonusChoice::available("two"),
+                    BonusChoice::available("three"),
+                ],
+            )],
+            vec!["one".to_string()],
+        );
+        let mut lifecycle = RaceLifecycleState::default();
+
+        let outcome = advance_active_race_tick(
+            &mut lifecycle,
+            &mut race,
+            &mut bonuses,
+            NetworkRacePhase::Racing,
+            now,
+            Duration::from_secs(15),
+            false,
+        );
+
+        assert_eq!(outcome.tick.bonus_choices_refreshed, 1);
+        assert_eq!(outcome.expired_effect_players, vec![RacePlayerId(1)]);
+        assert_eq!(outcome.lifecycle.phase, NetworkRacePhase::Racing);
+        assert_eq!(lifecycle.first_finished_at, Some(now));
+    }
+
+    #[test]
+    fn host_player_key_applies_normal_typing_when_no_bonus_is_claimed() {
+        let now = Instant::now();
+        let players = vec![lobby_player(1, "host", true, true, PlayerKind::Human)];
+        let prepared = prepare_race_from_lobby(
+            &players,
+            Track::new(vec!["go".to_string()]),
+            &WordList::from_static("go\nbonus\nword"),
+            now,
+        );
+        let mut race = prepared.race;
+        let mut bonuses = prepared.bonuses;
+        let mut attempts = HashMap::new();
+        let mut spent_bonus_gaps = HashMap::new();
+        let registry = ItemRegistry::builtin();
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let outcome = super::apply_host_player_key(
+            &mut super::HostPlayerKeyState {
+                race: &mut race,
+                bonuses: &mut bonuses,
+                bonus_attempts: &mut attempts,
+                spent_bonus_gaps: &mut spent_bonus_gaps,
+            },
+            super::HostPlayerKeyInput {
+                player_key: PlayerId(1),
+                race_player_id: RacePlayerId(1),
+                action: KeyAction::Char('g'),
+                now,
+            },
+            BonusClaimRoll {
+                item_context: item_context(),
+                item_registry: &registry,
+                rng: &mut rng,
+            },
+        );
+
+        assert!(outcome.handled);
+        assert_eq!(outcome.typing_events, vec![TypingEvent::InputChanged]);
+        assert!(outcome.bonus_events.is_empty());
+        assert_eq!(race.players[0].state.input, "g");
+    }
+
+    #[test]
+    fn host_player_key_prefers_available_bonus_attempt_over_track_typing() {
+        let now = Instant::now();
+        let players = vec![lobby_player(1, "host", true, true, PlayerKind::Human)];
+        let prepared = prepare_race_from_lobby(
+            &players,
+            Track::new(vec!["go".to_string(), "fast".to_string()]),
+            &WordList::from_static("go\nfast\ndash\nspin\nzoom"),
+            now,
+        );
+        let mut race = prepared.race;
+        race.players[0].state.word_index = 1;
+        let mut bonuses = BonusState::with_points(
+            vec![BonusPoint::new(
+                0,
+                [
+                    BonusChoice::available("dash"),
+                    BonusChoice::available("spin"),
+                    BonusChoice::available("zoom"),
+                ],
+            )],
+            vec!["dash".into(), "spin".into(), "zoom".into()],
+        );
+        let mut attempts = HashMap::new();
+        let mut spent_bonus_gaps = HashMap::new();
+        let registry = ItemRegistry::builtin();
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let outcome = super::apply_host_player_key(
+            &mut super::HostPlayerKeyState {
+                race: &mut race,
+                bonuses: &mut bonuses,
+                bonus_attempts: &mut attempts,
+                spent_bonus_gaps: &mut spent_bonus_gaps,
+            },
+            super::HostPlayerKeyInput {
+                player_key: PlayerId(1),
+                race_player_id: RacePlayerId(1),
+                action: KeyAction::Char('d'),
+                now,
+            },
+            BonusClaimRoll {
+                item_context: item_context(),
+                item_registry: &registry,
+                rng: &mut rng,
+            },
+        );
+
+        assert!(outcome.handled);
+        assert!(outcome.typing_events.is_empty());
+        assert_eq!(race.players[0].state.input, "d");
+        assert!(attempts.contains_key(&PlayerId(1)));
+        assert!(outcome.bonus_events.iter().any(|event| {
+            matches!(
+                event,
+                BonusFlowEvent::AttemptStarted(BonusAttempt {
+                    point_index: 0,
+                    choice_index: 0
+                })
+            )
+        }));
+    }
+
+    #[test]
     fn host_race_lifecycle_advances_only_while_racing() {
         let now = Instant::now();
         let players = vec![lobby_player(1, "host", true, true, PlayerKind::Human)];
@@ -637,5 +933,12 @@ mod tests {
         assert_eq!(racing.flow.newly_finished[0].player_id, RacePlayerId(1));
         assert!(racing.flow.finished.is_some());
         assert_eq!(racing.finish_event, Some("Race finished"));
+    }
+
+    fn item_context() -> ItemRollContext {
+        ItemRollContext {
+            has_nearby_racer: false,
+            position: RacePositionBand::Middle,
+        }
     }
 }
