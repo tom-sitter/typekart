@@ -19,9 +19,9 @@ use typekart::game::{
         HostRaceTickAction, PreparedHostRace, advance_active_race_tick,
         advance_host_race_lifecycle, apply_host_item_pickup, apply_host_player_key,
         begin_countdown_phase, cancel_countdown_outcome, countdown_start_plan,
-        countdown_tick_phase, prepare_race_from_selected_lobby_players,
-        prepare_waiting_race_outcome, return_to_lobby_outcome, start_active_race_runtime_outcome,
-        start_race_from_countdown,
+        countdown_tick_phase, finalize_host_race_results, host_item_aftermath_actions,
+        prepare_race_from_selected_lobby_players, prepare_waiting_race_outcome,
+        return_to_lobby_outcome, start_active_race_runtime_outcome, start_race_from_countdown,
     },
     item_effects::{RaceItemEffectState, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
@@ -38,9 +38,7 @@ use typekart::game::{
     race::{PlayerColorId, RacePlayer, RacePlayerId, RaceState, RaceRuntimeState},
     snapshot::{
         RaceSnapshotInput, build_bonus_snapshots,
-        build_placement_snapshots as build_shared_placement_snapshots, build_player_snapshots,
-        build_race_result_snapshots as build_shared_race_result_snapshots, build_race_snapshot,
-        player_color_id,
+        build_player_snapshots, build_race_snapshot, player_color_id,
     },
     track::{Track, WordList},
     typing::KeyAction,
@@ -959,16 +957,17 @@ fn activate_browser_item_pickup(
         },
     );
 
-    for interrupted in report.interrupted_players {
+    let aftermath = host_item_aftermath_actions(report);
+    for interrupted in aftermath.interrupted_players {
         state.runtime.bonus_attempts.remove(&PlayerId(interrupted.0));
     }
-    for ai_id in report.reset_ai_players {
+    for ai_id in aftermath.reset_ai_players {
         state
             .ai_char_budget
             .insert(PlayerId(ai_id.0), AiDriverState::default());
     }
-    for event in report.events {
-        state.push_event(event);
+    for event in aftermath.events {
+        state.push_event(event.message());
     }
 }
 
@@ -1181,7 +1180,7 @@ fn browser_finish_race(state: &mut BrowserHostLobby, finish_event: &str) {
     let Some(core_race) = &state.core_race else {
         return;
     };
-    let rows = build_shared_race_result_snapshots(
+    let results = finalize_host_race_results(
         core_race,
         &state.runtime.lifecycle.placements,
         Instant::now(),
@@ -1191,9 +1190,9 @@ fn browser_finish_race(state: &mut BrowserHostLobby, finish_event: &str) {
         snapshot.events = vec![finish_event.to_string()];
     }
     state.active_results = Some(ResultsFrame {
-        placements: build_shared_placement_snapshots(&state.runtime.lifecycle.placements),
-        rows,
-        events: vec![finish_event.to_string()],
+        placements: results.placements,
+        rows: results.rows,
+        events: results.events.into_iter().map(|event| event.message()).collect(),
     });
     state.active_race = None;
     state.ai_char_budget.clear();

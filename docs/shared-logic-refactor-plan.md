@@ -608,6 +608,15 @@ Progress:
   around the lower-level item effect rules. Network, browser, and local hosts
   all call this helper while keeping bonus-attempt cleanup, AI budget resets,
   event wording, run logs, and snapshot/broadcast sync in adapter code.
+- `src/game/host_session.rs` now normalizes item activation reports into shared
+  aftermath actions. Network, browser, and local hosts use those actions while
+  retaining their own storage mutations for bonus-attempt maps and AI timing.
+- Race result finalization now has a shared host-session projection that
+  returns protocol placements, protocol result rows, and semantic result events.
+  Network result messages and browser result frames both use this projection.
+- Host-session events now have an initial semantic representation for player
+  finishes, race finish, and existing item messages. Adapters still decide how
+  those events are rendered, logged, or broadcast.
 - `src/game/host_session.rs` now returns a shared start-race outcome from the
   countdown-to-racing transition, including the `Racing` phase and common race
   started event text used by network and browser hosts.

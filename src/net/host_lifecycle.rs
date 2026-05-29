@@ -9,9 +9,9 @@ use std::time::Instant;
 use typekart_protocol::{PlayerId, RaceResultRow, ServerMessage};
 
 use crate::game::{
+    host_session::{HostEvent, finalize_host_race_results},
     race::{RacePlayerId, RaceState},
     race_flow::{RaceFinishedPlayer, RaceFinishedSummary},
-    snapshot::{build_placement_snapshots, build_race_result_snapshots},
 };
 
 #[derive(Debug, Clone)]
@@ -22,7 +22,11 @@ pub struct RaceResultsMessage {
 }
 
 pub fn finished_player_message(finished: &RaceFinishedPlayer) -> String {
-    format!("{}. {} finished", finished.placement, finished.name)
+    HostEvent::PlayerFinished {
+        placement: finished.placement,
+        name: finished.name.clone(),
+    }
+    .message()
 }
 
 pub fn finish_summary_log(summary: &RaceFinishedSummary) -> String {
@@ -37,7 +41,7 @@ pub fn build_race_result_rows(
     placements: &[RacePlayerId],
     now: Instant,
 ) -> Vec<RaceResultRow> {
-    build_race_result_snapshots(race, placements, now)
+    finalize_host_race_results(race, placements, now).rows
 }
 
 pub fn build_race_results_message(
@@ -45,9 +49,10 @@ pub fn build_race_results_message(
     placements: &[RacePlayerId],
     now: Instant,
 ) -> RaceResultsMessage {
-    let rows = build_race_result_rows(race, placements, now);
+    let results = finalize_host_race_results(race, placements, now);
+    let rows = results.rows;
     let row_count = rows.len();
-    let placements = build_placement_snapshots(placements);
+    let placements = results.placements;
     let message = ServerMessage::RaceResults {
         placements: placements.clone(),
         rows,

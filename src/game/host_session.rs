@@ -12,7 +12,7 @@ use std::{
 };
 
 use rand::Rng;
-use typekart_protocol::{LobbyPlayer, NetworkRacePhase};
+use typekart_protocol::{LobbyPlayer, NetworkRacePhase, PlayerId, RaceResultRow};
 
 use super::{
     bonus::BonusState,
@@ -22,6 +22,7 @@ use super::{
     lobby::{lobby_players_to_participants, ready_connected_participants},
     race::{RaceLifecycleState, RaceParticipant, RacePlayerId, RaceState},
     race_flow::{RaceFlowOutcome, advance_race_flow},
+    snapshot::{build_placement_snapshots, build_race_result_snapshots},
     track::{Track, WordList},
     typing::{KeyAction, TypingEvent},
 };
@@ -93,6 +94,23 @@ pub struct ActiveRaceTickOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostEvent {
+    PlayerFinished { placement: usize, name: String },
+    RaceFinished,
+    ItemMessage(String),
+}
+
+impl HostEvent {
+    pub fn message(&self) -> String {
+        match self {
+            Self::PlayerFinished { placement, name } => format!("{placement}. {name} finished"),
+            Self::RaceFinished => "Race finished".to_string(),
+            Self::ItemMessage(message) => message.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostPlayerKeyOutcome {
     pub handled: bool,
     pub typing_events: Vec<TypingEvent>,
@@ -126,6 +144,20 @@ pub struct HostItemPickupInput {
     pub player_id: RacePlayerId,
     pub item: ItemPickup,
     pub now: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostItemAftermath {
+    pub interrupted_players: Vec<RacePlayerId>,
+    pub reset_ai_players: Vec<RacePlayerId>,
+    pub events: Vec<HostEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostRaceResults {
+    pub placements: Vec<PlayerId>,
+    pub rows: Vec<RaceResultRow>,
+    pub events: Vec<HostEvent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -478,6 +510,30 @@ pub fn apply_host_item_pickup(
     )
 }
 
+pub fn host_item_aftermath_actions(report: ItemActivationReport) -> HostItemAftermath {
+    HostItemAftermath {
+        interrupted_players: report.interrupted_players,
+        reset_ai_players: report.reset_ai_players,
+        events: report
+            .events
+            .into_iter()
+            .map(HostEvent::ItemMessage)
+            .collect(),
+    }
+}
+
+pub fn finalize_host_race_results(
+    race: &RaceState,
+    placements: &[RacePlayerId],
+    now: Instant,
+) -> HostRaceResults {
+    HostRaceResults {
+        placements: build_placement_snapshots(placements),
+        rows: build_race_result_snapshots(race, placements, now),
+        events: vec![HostEvent::RaceFinished],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -505,6 +561,7 @@ mod tests {
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
         effects::ActiveEffect,
+        item_effects::ItemActivationReport,
         items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
         race::{RaceLifecycleState, RacePlayerId},
         track::{Track, WordList},
@@ -958,6 +1015,40 @@ mod tests {
 
         assert!(report.events.is_empty());
         assert!(race.players[0].state.has_active_shield(now));
+    }
+
+    #[test]
+    fn item_aftermath_actions_preserve_interruption_reset_and_events() {
+        let report = ItemActivationReport {
+            interrupted_players: vec![RacePlayerId(1)],
+            reset_ai_players: vec![RacePlayerId(2)],
+            events: vec!["ai-1 hit host".to_string()],
+        };
+
+        let aftermath = super::host_item_aftermath_actions(report);
+
+        assert_eq!(aftermath.interrupted_players, vec![RacePlayerId(1)]);
+        assert_eq!(aftermath.reset_ai_players, vec![RacePlayerId(2)]);
+        assert_eq!(aftermath.events[0].message(), "ai-1 hit host");
+    }
+
+    #[test]
+    fn finalized_host_race_results_use_shared_protocol_projection() {
+        let now = Instant::now();
+        let players = vec![lobby_player(1, "host", true, true, PlayerKind::Human)];
+        let mut prepared = prepare_race_from_lobby(
+            &players,
+            Track::new(vec!["go".to_string()]),
+            &WordList::from_static("go\nbonus"),
+            now,
+        );
+        prepared.race.players[0].state.finished_at = Some(now);
+
+        let results = super::finalize_host_race_results(&prepared.race, &[RacePlayerId(1)], now);
+
+        assert_eq!(results.placements, vec![PlayerId(1)]);
+        assert_eq!(results.rows.len(), 1);
+        assert_eq!(results.events, vec![super::HostEvent::RaceFinished]);
     }
 
     #[test]

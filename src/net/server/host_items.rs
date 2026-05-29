@@ -6,7 +6,10 @@
 use std::{collections::HashSet, time::Instant};
 
 use crate::game::{
-    host_session::{HostItemPickupInput, HostItemPickupState, apply_host_item_pickup},
+    host_session::{
+        HostItemPickupInput, HostItemPickupState, apply_host_item_pickup,
+        host_item_aftermath_actions,
+    },
     item_effects::advance_mushrooms,
     items::ItemPickup,
     race::RacePlayerId,
@@ -40,20 +43,22 @@ pub(super) fn activate_network_pickup(
         },
     );
 
-    for interrupted in report.interrupted_players {
+    let aftermath = host_item_aftermath_actions(report);
+    for interrupted in aftermath.interrupted_players {
         state
             .runtime
             .bonus_attempts
             .remove(&PlayerId(interrupted.0));
     }
-    for ai_id in report.reset_ai_players {
+    for ai_id in aftermath.reset_ai_players {
         if let Some(ai) = state.ai_racers.get_mut(&PlayerId(ai_id.0)) {
             ai.char_budget = 0.0;
         }
     }
-    for event in report.events {
-        push_network_log(&state.debug_log, event.clone());
-        push_event(state, event);
+    for event in aftermath.events {
+        let message = event.message();
+        push_network_log(&state.debug_log, message.clone());
+        push_event(state, message);
     }
 }
 

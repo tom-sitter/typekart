@@ -21,7 +21,8 @@ use crate::game::{
         advance_active_race_tick, advance_host_race_lifecycle, apply_host_item_pickup,
         apply_host_player_key, begin_countdown_phase, connected_racer_count,
         countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
-        prepare_race_from_participants, return_to_lobby_outcome, start_race_from_countdown,
+        host_item_aftermath_actions, prepare_race_from_participants, return_to_lobby_outcome,
+        start_race_from_countdown,
     },
     item_effects::{
         AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
@@ -1072,17 +1073,18 @@ impl LocalSession {
             },
         );
 
+        let aftermath = host_item_aftermath_actions(report);
         self.sync_from_shared_item_race(race);
-        self.handle_shared_interruptions(&report.interrupted_players, now);
-        for reset_ai in report.reset_ai_players {
+        self.handle_shared_interruptions(&aftermath.interrupted_players, now);
+        for reset_ai in aftermath.reset_ai_players {
             if let Some(ai) = self.local_ai_mut(reset_ai) {
                 ai.char_budget = 0.0;
                 ai.last_update = now;
             }
         }
         self.apply_shared_item_effects(effects);
-        for event in report.events {
-            let event = local_item_event(event);
+        for event in aftermath.events {
+            let event = local_item_event(event.message());
             self.run_log.push(now, event.clone());
             self.events.push(event);
         }
