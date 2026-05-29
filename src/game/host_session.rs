@@ -6,7 +6,7 @@
 //! sockets, rendering, timers, and UI side effects to the adapters.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::Hash,
     time::{Duration, Instant},
 };
@@ -17,6 +17,8 @@ use typekart_protocol::{LobbyPlayer, NetworkRacePhase};
 use super::{
     bonus::BonusState,
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
+    item_effects::{ItemActivationReport, RaceItemEffectState, activate_item_pickup},
+    items::{ItemPickup, ItemRegistry},
     lobby::{lobby_players_to_participants, ready_connected_participants},
     race::{RaceLifecycleState, RaceParticipant, RacePlayerId, RaceState},
     race_flow::{RaceFlowOutcome, advance_race_flow},
@@ -109,6 +111,20 @@ pub struct HostPlayerKeyInput<PlayerKey> {
     pub player_key: PlayerKey,
     pub race_player_id: RacePlayerId,
     pub action: KeyAction,
+    pub now: Instant,
+}
+
+pub struct HostItemPickupState<'a> {
+    pub race: &'a mut RaceState,
+    pub effects: &'a mut HashMap<RacePlayerId, RaceItemEffectState>,
+    pub ai_players: &'a HashSet<RacePlayerId>,
+    pub item_registry: &'a ItemRegistry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostItemPickupInput {
+    pub player_id: RacePlayerId,
+    pub item: ItemPickup,
     pub now: Instant,
 }
 
@@ -447,10 +463,25 @@ where
     }
 }
 
+pub fn apply_host_item_pickup(
+    state: &mut HostItemPickupState<'_>,
+    input: HostItemPickupInput,
+) -> ItemActivationReport {
+    activate_item_pickup(
+        state.race,
+        state.effects,
+        state.ai_players,
+        state.item_registry,
+        input.player_id,
+        input.item,
+        input.now,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         time::{Duration, Instant},
     };
 
@@ -474,7 +505,7 @@ mod tests {
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
         effects::ActiveEffect,
-        items::{ItemRegistry, ItemRollContext, RacePositionBand},
+        items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
         race::{RaceLifecycleState, RacePlayerId},
         track::{Track, WordList},
         typing::{KeyAction, TypingEvent},
@@ -894,6 +925,39 @@ mod tests {
                 })
             )
         }));
+    }
+
+    #[test]
+    fn host_item_pickup_applies_shared_item_rules() {
+        let now = Instant::now();
+        let players = vec![lobby_player(1, "host", true, true, PlayerKind::Human)];
+        let prepared = prepare_race_from_lobby(
+            &players,
+            Track::new(vec!["go".to_string(), "fast".to_string()]),
+            &WordList::from_static("go\nfast\nbonus"),
+            now,
+        );
+        let mut race = prepared.race;
+        let mut effects = HashMap::new();
+        let ai_players = HashSet::new();
+        let registry = ItemRegistry::builtin();
+
+        let report = super::apply_host_item_pickup(
+            &mut super::HostItemPickupState {
+                race: &mut race,
+                effects: &mut effects,
+                ai_players: &ai_players,
+                item_registry: &registry,
+            },
+            super::HostItemPickupInput {
+                player_id: RacePlayerId(1),
+                item: ItemPickup::Shield,
+                now,
+            },
+        );
+
+        assert!(report.events.is_empty());
+        assert!(race.players[0].state.has_active_shield(now));
     }
 
     #[test]

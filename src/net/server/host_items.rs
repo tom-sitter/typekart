@@ -6,7 +6,8 @@
 use std::{collections::HashSet, time::Instant};
 
 use crate::game::{
-    item_effects::{activate_item_pickup, advance_mushrooms},
+    host_session::{HostItemPickupInput, HostItemPickupState, apply_host_item_pickup},
+    item_effects::advance_mushrooms,
     items::ItemPickup,
     race::RacePlayerId,
 };
@@ -25,14 +26,18 @@ pub(super) fn activate_network_pickup(
         .keys()
         .map(|player_id| RacePlayerId(player_id.0))
         .collect::<HashSet<_>>();
-    let report = activate_item_pickup(
-        &mut state.race,
-        &mut state.runtime.player_effects,
-        &ai_players,
-        &state.item_registry,
-        RacePlayerId(player_id.0),
-        item,
-        now,
+    let report = apply_host_item_pickup(
+        &mut HostItemPickupState {
+            race: &mut state.race,
+            effects: &mut state.runtime.player_effects,
+            ai_players: &ai_players,
+            item_registry: &state.item_registry,
+        },
+        HostItemPickupInput {
+            player_id: RacePlayerId(player_id.0),
+            item,
+            now,
+        },
     );
 
     for interrupted in report.interrupted_players {

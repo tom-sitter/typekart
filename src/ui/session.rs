@@ -17,14 +17,15 @@ use crate::game::{
     bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
     effects::ActiveEffect,
     host_session::{
-        HostPlayerKeyInput, HostPlayerKeyState, advance_active_race_tick,
-        advance_host_race_lifecycle, apply_host_player_key, begin_countdown_phase,
-        connected_racer_count, countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+        HostItemPickupInput, HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState,
+        advance_active_race_tick, advance_host_race_lifecycle, apply_host_item_pickup,
+        apply_host_player_key, begin_countdown_phase, connected_racer_count,
+        countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
         prepare_race_from_participants, return_to_lobby_outcome, start_race_from_countdown,
     },
     item_effects::{
         AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
-        RaceItemEffectState, activate_item_pickup, advance_mushrooms,
+        RaceItemEffectState, advance_mushrooms,
     },
     items::{HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse, RacePositionBand},
     mods::ActiveModConfig,
@@ -1057,14 +1058,18 @@ impl LocalSession {
             .map(|ai| RacePlayerId((ai.id + 1) as u64))
             .collect::<HashSet<_>>();
         let mut effects = self.shared_item_effects();
-        let report = activate_item_pickup(
-            &mut race,
-            &mut effects,
-            &ai_players,
-            &self.item_registry,
-            player_id,
-            item,
-            now,
+        let report = apply_host_item_pickup(
+            &mut HostItemPickupState {
+                race: &mut race,
+                effects: &mut effects,
+                ai_players: &ai_players,
+                item_registry: &self.item_registry,
+            },
+            HostItemPickupInput {
+                player_id,
+                item,
+                now,
+            },
         );
 
         self.sync_from_shared_item_race(race);

@@ -604,6 +604,10 @@ Progress:
 - Local single-player human typing also uses the shared human key-input helper,
   with only local-only cue suppression, terminal event text, pickup handling,
   and state syncing kept in `src/ui/session.rs`.
+- `src/game/host_session.rs` now owns a shared item-pickup activation wrapper
+  around the lower-level item effect rules. Network, browser, and local hosts
+  all call this helper while keeping bonus-attempt cleanup, AI budget resets,
+  event wording, run logs, and snapshot/broadcast sync in adapter code.
 - `src/game/host_session.rs` now returns a shared start-race outcome from the
   countdown-to-racing transition, including the `Racing` phase and common race
   started event text used by network and browser hosts.

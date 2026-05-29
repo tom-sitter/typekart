@@ -15,14 +15,15 @@ use typekart::game::{
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        HostPlayerKeyInput, HostPlayerKeyState, HostRaceTickAction, PreparedHostRace,
-        advance_active_race_tick, advance_host_race_lifecycle, apply_host_player_key,
+        HostItemPickupInput, HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState,
+        HostRaceTickAction, PreparedHostRace, advance_active_race_tick,
+        advance_host_race_lifecycle, apply_host_item_pickup, apply_host_player_key,
         begin_countdown_phase, cancel_countdown_outcome, countdown_start_plan,
         countdown_tick_phase, prepare_race_from_selected_lobby_players,
         prepare_waiting_race_outcome, return_to_lobby_outcome, start_active_race_runtime_outcome,
         start_race_from_countdown,
     },
-    item_effects::{RaceItemEffectState, activate_item_pickup, advance_mushrooms, player_is_stunned},
+    item_effects::{RaceItemEffectState, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
     lobby::{
@@ -944,14 +945,18 @@ fn activate_browser_item_pickup(
         .filter(|player| player.kind == PlayerKind::Bot)
         .map(|player| RacePlayerId(player.id.0))
         .collect::<HashSet<_>>();
-    let report = activate_item_pickup(
-        core_race,
-        &mut state.runtime.player_effects,
-        &ai_players,
-        &state.item_registry,
-        RacePlayerId(player_id.0),
-        item,
-        now,
+    let report = apply_host_item_pickup(
+        &mut HostItemPickupState {
+            race: core_race,
+            effects: &mut state.runtime.player_effects,
+            ai_players: &ai_players,
+            item_registry: &state.item_registry,
+        },
+        HostItemPickupInput {
+            player_id: RacePlayerId(player_id.0),
+            item,
+            now,
+        },
     );
 
     for interrupted in report.interrupted_players {
