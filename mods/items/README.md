@@ -9,7 +9,7 @@ Edit a copy of this file when making a new pack. Item packs can tune names, enab
 - `shield`
 - `focus`
 - `cyclone`
-- `squid_ink`
+- `fog`
 
 Run with:
 

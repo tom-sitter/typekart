@@ -540,12 +540,12 @@ mod tests {
     }
 
     #[test]
-    fn network_inked_ai_racer_hesitates_from_reduced_wpm_budget() {
+    fn network_fogged_ai_racer_hesitates_from_reduced_wpm_budget() {
         let now = Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.players[1].kind = PlayerKind::Bot;
-        state.race.players[1].state.inked_word_index = Some(0);
-        state.race.players[1].state.inked_until = Some(now + Duration::from_secs(5));
+        state.race.players[1].state.fogged_word_index = Some(0);
+        state.race.players[1].state.fogged_until = Some(now + Duration::from_secs(5));
         state.ai_racers.insert(
             PlayerId(2),
             NetworkAiRacer {
@@ -1467,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn network_squid_ink_marks_all_targets_in_range() {
+    fn network_fog_marks_all_targets_in_range() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.race.players[0].state.word_index = 1;
@@ -1476,12 +1476,12 @@ mod tests {
         activate_network_pickup(
             &mut state,
             PlayerId(1),
-            ItemPickup::Held(HeldItem::SquidInk),
+            ItemPickup::Held(HeldItem::Fog),
             now,
         );
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
-        assert!(alex.state.is_inked_at(now));
+        assert!(alex.state.is_fogged_at(now));
         assert_eq!(
             state
                 .runtime
@@ -1489,15 +1489,15 @@ mod tests {
                 .get(&RacePlayerId(2))
                 .and_then(|effects| effects.impact_cue)
                 .map(|cue| cue.kind),
-            Some(RaceImpactCueKind::SquidInk)
+            Some(RaceImpactCueKind::Fog)
         );
 
         let snapshot = build_race_snapshot(&mut state);
-        assert!(snapshot.players[1].inked);
+        assert!(snapshot.players[1].fogged);
     }
 
     #[test]
-    fn network_squid_ink_is_blocked_by_shield() {
+    fn network_fog_is_blocked_by_shield() {
         let now = std::time::Instant::now();
         let mut state = test_host_state(NetworkRacePhase::Racing);
         state.race.players[1]
@@ -1510,19 +1510,14 @@ mod tests {
         activate_network_pickup(
             &mut state,
             PlayerId(1),
-            ItemPickup::Held(HeldItem::SquidInk),
+            ItemPickup::Held(HeldItem::Fog),
             now,
         );
 
         let alex = state.race.player(RacePlayerId(2)).unwrap();
-        assert!(!alex.state.is_inked_at(now));
+        assert!(!alex.state.is_fogged_at(now));
         assert!(!alex.state.has_active_shield(now));
-        assert!(
-            state
-                .events
-                .iter()
-                .any(|event| event == "alex blocked Squid Ink")
-        );
+        assert!(state.events.iter().any(|event| event == "alex blocked Fog"));
     }
 
     #[test]
@@ -1842,9 +1837,7 @@ mod tests {
             ItemPickup::Held(HeldItem::Banana) => ("banana", "Banana", ItemActivation::Held),
             ItemPickup::Held(HeldItem::Focus) => ("focus", "Focus", ItemActivation::Held),
             ItemPickup::Held(HeldItem::Cyclone) => ("cyclone", "Cyclone", ItemActivation::Held),
-            ItemPickup::Held(HeldItem::SquidInk) => {
-                ("squid_ink", "Squid Ink", ItemActivation::Held)
-            }
+            ItemPickup::Held(HeldItem::Fog) => ("fog", "Fog", ItemActivation::Held),
             ItemPickup::Shield => ("shield", "Shield", ItemActivation::Immediate),
         };
         ItemRegistry::new(vec![ItemDefinition::built_in(

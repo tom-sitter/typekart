@@ -9,12 +9,12 @@ use std::time::Instant;
 use rand::thread_rng;
 
 use crate::game::{
-    bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
+    bonus_flow::{BonusClaimRoll, BonusFlowEvent},
     host_session::{
-        HostBonusClaimInput, HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState,
-        apply_host_bonus_claim, apply_host_player_key,
+        HostAiBonusClaimInput, HostAiBonusClaimState, HostBonusClaimInput, HostItemPickupState,
+        HostPlayerKeyInput, HostPlayerKeyState, apply_host_bonus_claim, apply_host_player_key,
+        try_host_ai_bonus_claim,
     },
-    item_effects::player_has_active_mushroom_effect,
     items::{ItemPickup, ItemRollContext, RacePositionBand},
     race::RacePlayerId,
     typing::KeyAction,
@@ -67,50 +67,49 @@ pub(super) fn apply_network_key_input(
 }
 
 pub(super) fn network_ai_try_claim_bonus(state: &mut HostState, player_id: PlayerId, now: Instant) {
-    let Some(player) = state.race.player(RacePlayerId(player_id.0)) else {
-        return;
-    };
-    if player.state.held_item.is_some()
-        || player.state.has_active_shield(now)
-        || player.state.has_active_focus(now)
-        || player_has_active_mushroom_effect(player, now)
-        || player_is_stunned(state, player_id, now)
-        || state
-            .runtime
-            .player_effects
-            .get(&RacePlayerId(player_id.0))
-            .and_then(|effects| effects.item_cue.as_ref())
-            .is_some_and(|cue| cue.until > now)
-        || player.state.typo_index.is_some()
-        || !player.state.input.is_empty()
-        || player.state.is_finished()
-        || state.runtime.bonus_attempts.contains_key(&player_id)
-    {
-        return;
-    }
-
+    let name = player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0));
     let mut rng = thread_rng();
     let item_context = network_item_roll_context(state, player_id, 5);
-    let item_registry = state.item_registry.clone();
-    let Some(outcome) = claim_random_available_bonus(
-        &mut BonusFlowState {
+    let ai_players = state
+        .ai_racers
+        .keys()
+        .map(|player_id| RacePlayerId(player_id.0))
+        .collect();
+    let Some(outcome) = try_host_ai_bonus_claim(
+        &mut HostAiBonusClaimState {
             race: &mut state.race,
             bonuses: &mut state.bonuses,
             bonus_attempts: &mut state.runtime.bonus_attempts,
             spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
+            effects: &mut state.runtime.player_effects,
+            ai_players: &ai_players,
+            item_registry: &state.item_registry,
         },
-        player_id,
-        RacePlayerId(player_id.0),
-        now,
-        BonusClaimRoll {
+        HostAiBonusClaimInput {
+            player_key: player_id,
+            player_id: RacePlayerId(player_id.0),
+            player_name: name.clone(),
             item_context,
-            item_registry: &item_registry,
-            rng: &mut rng,
+            now,
         },
+        &mut rng,
     ) else {
         return;
     };
-    handle_network_bonus_claim_outcome(state, player_id, outcome.pickup, now);
+
+    if let Some(item) = outcome.pickup {
+        let item_name = item_pickup_name(item);
+        push_network_log(
+            &state.debug_log,
+            format!("{name} picked up {item_name} from network bonus"),
+        );
+    } else {
+        push_network_log(
+            &state.debug_log,
+            format!("{name} missed network bonus; choice was unavailable"),
+        );
+    }
+    host_items::apply_network_item_aftermath(state, outcome.aftermath);
 }
 
 fn handle_network_bonus_events(
@@ -261,14 +260,6 @@ fn network_position_band(state: &HostState, player_id: PlayerId) -> RacePosition
     } else {
         RacePositionBand::Middle
     }
-}
-
-fn player_is_stunned(state: &HostState, player_id: PlayerId, now: Instant) -> bool {
-    crate::game::item_effects::player_is_stunned(
-        &state.runtime.player_effects,
-        RacePlayerId(player_id.0),
-        now,
-    )
 }
 
 fn item_pickup_name(item: ItemPickup) -> &'static str {

@@ -104,7 +104,7 @@ pub fn build_player_snapshots(
                 connected: player.connected,
                 shielded: player.state.has_active_shield(now),
                 focused: player.state.has_active_focus(now),
-                inked: player.state.is_inked_at(now),
+                fogged: player.state.is_fogged_at(now),
                 boosted: player_has_active_mushroom_effect(player, now),
                 stunned: effects.stunned_until.is_some_and(|until| until > now),
                 impact_remaining_ms: remaining_ms(effects.impact_cue.map(|cue| cue.until), now),
@@ -183,7 +183,7 @@ pub fn build_item_cue_snapshot(cue: Option<RaceItemCue>, now: Instant) -> Option
             RaceItemCueKind::Cyclone { direction } => ItemCueSnapshotKind::Cyclone {
                 direction: attack_direction(direction),
             },
-            RaceItemCueKind::SquidInk => ItemCueSnapshotKind::SquidInk,
+            RaceItemCueKind::Fog => ItemCueSnapshotKind::Fog,
         },
         ascii_label: cue.ascii_label,
         unicode_label: cue.unicode_label,
@@ -204,7 +204,7 @@ pub fn build_impact_cue_snapshot(
         kind: match cue.kind {
             RaceImpactCueKind::Banana => ImpactCueSnapshotKind::Banana,
             RaceImpactCueKind::Cyclone => ImpactCueSnapshotKind::Cyclone,
-            RaceImpactCueKind::SquidInk => ImpactCueSnapshotKind::SquidInk,
+            RaceImpactCueKind::Fog => ImpactCueSnapshotKind::Fog,
             RaceImpactCueKind::ShieldBlock => ImpactCueSnapshotKind::ShieldBlock,
         },
         remaining_ms: remaining_ms(Some(cue.until), now),

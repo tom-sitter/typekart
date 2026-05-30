@@ -1,7 +1,7 @@
 //! Shared AI racer typing rules.
 //!
 //! Hosts still decide when to tick AIs and how to broadcast/log the result.
-//! This module owns the browser-safe rule details for WPM, focus/ink modifiers,
+//! This module owns the browser-safe rule details for WPM, focus/fog modifiers,
 //! character budgets, pause checks, and selecting the next typing key.
 
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ use super::{
 pub struct AiDriverConfig {
     pub base_wpm: f64,
     pub focus_boost_wpm: u32,
-    pub ink_multiplier_percent: u32,
+    pub fog_multiplier_percent: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -73,9 +73,9 @@ pub fn advance_ai_driver(
     let effective_wpm = ai_effective_wpm(
         config.base_wpm,
         player.state.has_active_focus(now),
-        player.state.is_inked_at(now),
+        player.state.is_fogged_at(now),
         config.focus_boost_wpm,
-        config.ink_multiplier_percent,
+        config.fog_multiplier_percent,
     );
     driver.char_budget += ai_chars_for_elapsed(effective_wpm, elapsed);
 
@@ -129,17 +129,17 @@ pub fn next_ai_key_for_player(player: &PlayerState, track: &Track) -> Option<Key
 pub fn ai_effective_wpm(
     base_wpm: f64,
     is_focused: bool,
-    is_inked: bool,
+    is_fogged: bool,
     focus_boost_wpm: u32,
-    ink_multiplier_percent: u32,
+    fog_multiplier_percent: u32,
 ) -> f64 {
     let focused_wpm = if is_focused {
         base_wpm + f64::from(focus_boost_wpm)
     } else {
         base_wpm
     };
-    if is_inked {
-        focused_wpm * f64::from(ink_multiplier_percent) / 100.0
+    if is_fogged {
+        focused_wpm * f64::from(fog_multiplier_percent) / 100.0
     } else {
         focused_wpm
     }
@@ -194,7 +194,7 @@ mod tests {
             AiDriverConfig {
                 base_wpm: 60.0,
                 focus_boost_wpm: 0,
-                ink_multiplier_percent: 100,
+                fog_multiplier_percent: 100,
             },
             now,
             Duration::from_secs(1),

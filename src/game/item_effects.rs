@@ -32,7 +32,7 @@ pub struct RaceImpactCue {
 pub enum RaceImpactCueKind {
     Banana,
     Cyclone,
-    SquidInk,
+    Fog,
     ShieldBlock,
 }
 
@@ -49,7 +49,7 @@ pub struct RaceItemCue {
 pub enum RaceItemCueKind {
     Banana { direction: AttackDirection },
     Cyclone { direction: AttackDirection },
-    SquidInk,
+    Fog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,8 +114,8 @@ pub fn activate_item_pickup(
         ItemPickup::Held(HeldItem::Cyclone) => {
             activate_cyclone(race, effects, ai_players, item_registry, player_id, now)
         }
-        ItemPickup::Held(HeldItem::SquidInk) => {
-            activate_squid_ink(race, effects, item_registry, player_id, now)
+        ItemPickup::Held(HeldItem::Fog) => {
+            activate_fog(race, effects, item_registry, player_id, now)
         }
         ItemPickup::Shield => activate_shield(race, player_id, item_registry, now),
     }
@@ -387,7 +387,7 @@ fn activate_banana(
     report
 }
 
-fn activate_squid_ink(
+fn activate_fog(
     race: &mut RaceState,
     effects: &mut HashMap<RacePlayerId, RaceItemEffectState>,
     item_registry: &ItemRegistry,
@@ -400,30 +400,28 @@ fn activate_squid_ink(
     };
     let attacker_word_index = attacker.state.word_index;
     let attacker_name = attacker.name.clone();
-    let squid_ink = item_registry.squid_ink_effect();
+    let fog = item_registry.fog_effect();
     let targets = race
         .players
         .iter()
         .filter(|player| player.id != attacker.id)
         .filter(|player| player.connected)
         .filter(|player| !player.state.is_finished())
-        .filter(|player| {
-            attacker_word_index.abs_diff(player.state.word_index) <= squid_ink.range_words
-        })
+        .filter(|player| attacker_word_index.abs_diff(player.state.word_index) <= fog.range_words)
         .map(|player| player.id)
         .collect::<Vec<_>>();
 
     effects.entry(player_id).or_default().item_cue = Some(RaceItemCue {
-        kind: RaceItemCueKind::SquidInk,
-        ascii_label: " ink ".to_string(),
-        unicode_label: " 🦑 ".to_string(),
+        kind: RaceItemCueKind::Fog,
+        ascii_label: " fog ".to_string(),
+        unicode_label: " 🌫 ".to_string(),
         placement: RaceItemCuePlacement::After,
-        until: now + Duration::from_millis(squid_ink.cue_ms),
+        until: now + Duration::from_millis(fog.cue_ms),
     });
 
     let mut hit_count = 0;
     for target_id in targets {
-        if apply_squid_ink_to_player(race, effects, item_registry, target_id, now, &mut report) {
+        if apply_fog_to_player(race, effects, item_registry, target_id, now, &mut report) {
             hit_count += 1;
         }
     }
@@ -432,10 +430,10 @@ fn activate_squid_ink(
         report.events.push(HostEvent::ItemMissed {
             player_id,
             player_name: attacker_name,
-            item: HeldItem::SquidInk,
+            item: HeldItem::Fog,
         });
     } else {
-        report.events.push(HostEvent::SquidInkHit {
+        report.events.push(HostEvent::FogHit {
             attacker_id: player_id,
             attacker_name,
             hit_count,
@@ -578,7 +576,7 @@ fn apply_cyclone_to_player(
     applied
 }
 
-fn apply_squid_ink_to_player(
+fn apply_fog_to_player(
     race: &mut RaceState,
     effects: &mut HashMap<RacePlayerId, RaceItemEffectState>,
     item_registry: &ItemRegistry,
@@ -607,18 +605,18 @@ fn apply_squid_ink_to_player(
         report.events.push(HostEvent::ItemBlocked {
             target_id,
             target_name,
-            item: HeldItem::SquidInk,
+            item: HeldItem::Fog,
         });
         return false;
     }
 
     let target = &mut race.players[target_index].state;
-    let squid_ink = item_registry.squid_ink_effect();
-    target.inked_word_index = Some(target.word_index);
-    target.inked_until = Some(now + Duration::from_millis(squid_ink.duration_ms));
+    let fog = item_registry.fog_effect();
+    target.fogged_word_index = Some(target.word_index);
+    target.fogged_until = Some(now + Duration::from_millis(fog.duration_ms));
     effects.entry(target_id).or_default().impact_cue = Some(RaceImpactCue {
-        kind: RaceImpactCueKind::SquidInk,
-        until: now + Duration::from_millis(squid_ink.impact_blink_ms),
+        kind: RaceImpactCueKind::Fog,
+        until: now + Duration::from_millis(fog.impact_blink_ms),
     });
     true
 }

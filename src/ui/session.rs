@@ -14,21 +14,22 @@ use crate::game::{
     ai::AiDifficulty,
     ai_driver::{AiDriverConfig, AiDriverState},
     bonus::BonusState,
-    bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
+    bonus_flow::{BonusClaimRoll, BonusFlowEvent},
     effects::ActiveEffect,
     host_session::{
-        HostAftermathAction, HostAiTickInput, HostBonusClaimInput, HostItemAftermath,
-        HostItemPickupInput, HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState,
-        advance_active_race_tick, advance_host_ai_racer_tick, advance_host_race_lifecycle,
-        apply_host_bonus_claim, apply_host_item_pickup, apply_host_player_key,
-        begin_countdown_phase, connected_racer_count, countdown_should_cancel,
-        countdown_start_plan, countdown_tick_phase, host_aftermath_adapter_actions,
-        host_item_aftermath_actions, prepare_race_from_participants, return_to_lobby_outcome,
-        start_race_from_countdown,
+        HostAftermathAction, HostAiBonusClaimInput, HostAiBonusClaimState, HostAiTickInput,
+        HostBonusClaimInput, HostItemAftermath, HostItemPickupInput, HostItemPickupState,
+        HostPlayerKeyInput, HostPlayerKeyState, advance_active_race_tick,
+        advance_host_ai_racer_tick, advance_host_race_lifecycle, apply_host_bonus_claim,
+        apply_host_item_pickup, apply_host_player_key, begin_countdown_phase,
+        connected_racer_count, countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+        host_aftermath_adapter_actions, host_item_aftermath_actions,
+        prepare_race_from_participants, return_to_lobby_outcome, start_race_from_countdown,
+        try_host_ai_bonus_claim,
     },
     item_effects::{
-        AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
-        RaceItemEffectState, advance_mushrooms,
+        AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCue, RaceItemCueKind,
+        RaceItemCuePlacement, RaceItemEffectState, advance_mushrooms,
     },
     items::{HeldItem, ItemPickup, ItemRegistry, ItemRollContext, ItemUse, RacePositionBand},
     mods::ActiveModConfig,
@@ -108,7 +109,7 @@ pub struct ImpactCue {
 pub enum ImpactCueKind {
     Banana,
     Cyclone,
-    SquidInk,
+    Fog,
     ShieldBlock,
 }
 
@@ -159,7 +160,7 @@ impl ItemCue {
                 Self::banana(direction, now, &ItemRegistry::builtin())
             }
             ItemCueKind::Cyclone { direction } => Self::cyclone(direction, now),
-            ItemCueKind::SquidInk => Self::squid_ink(now, &ItemRegistry::builtin()),
+            ItemCueKind::Fog => Self::fog(now, &ItemRegistry::builtin()),
         }
     }
 
@@ -198,13 +199,13 @@ impl ItemCue {
     }
 
     #[cfg(test)]
-    fn squid_ink(now: Instant, item_registry: &ItemRegistry) -> Self {
-        let effect = item_registry.squid_ink_effect();
+    fn fog(now: Instant, item_registry: &ItemRegistry) -> Self {
+        let effect = item_registry.fog_effect();
         Self {
-            kind: ItemCueKind::SquidInk,
+            kind: ItemCueKind::Fog,
             until: now + Duration::from_millis(effect.cue_ms),
-            ascii_label: " ink ".to_string(),
-            unicode_label: " 🦑 ".to_string(),
+            ascii_label: " fog ".to_string(),
+            unicode_label: " 🌫 ".to_string(),
         }
     }
 
@@ -217,7 +218,7 @@ impl ItemCue {
 pub enum ItemCueKind {
     Banana { direction: AttackDirection },
     Cyclone { direction: AttackDirection },
-    SquidInk,
+    Fog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -815,9 +816,9 @@ impl LocalSession {
                 config: AiDriverConfig {
                     base_wpm: words_per_minute,
                     focus_boost_wpm: self.item_registry.focus_effect().ai_wpm_boost,
-                    ink_multiplier_percent: self
+                    fog_multiplier_percent: self
                         .item_registry
-                        .squid_ink_effect()
+                        .fog_effect()
                         .ai_wpm_multiplier_percent,
                 },
                 now,
@@ -838,48 +839,54 @@ impl LocalSession {
         let Some(ai) = self.ai_racers.get(ai_index) else {
             return;
         };
-        if ai.player.held_item.is_some()
-            || ai.player.has_active_shield(now)
-            || ai.player.has_active_focus(now)
-            || player_has_active_mushroom(&ai.player)
-            || ai.item_cue.as_ref().is_some_and(|cue| cue.is_visible(now))
-            || ai.player.is_finished()
-            || ai.player.typo_index.is_some()
-            || !ai.player.input.is_empty()
-        {
-            return;
-        }
-
+        let ai_name = ai.name.clone();
         let player_id = RacePlayerId((ai.id + 1) as u64);
         let mut rng = thread_rng();
         let item_context = self.ai_item_roll_context(ai_index, 5);
-
         let mut race = self.shared_race_state();
         let mut attempts = HashMap::new();
         let mut spent_bonus_gaps = HashMap::new();
-        let Some(outcome) = claim_random_available_bonus(
-            &mut BonusFlowState {
+        let mut effects = self.shared_item_effects();
+        let ai_players = self
+            .ai_racers
+            .iter()
+            .map(|ai| RacePlayerId((ai.id + 1) as u64))
+            .collect::<HashSet<_>>();
+        let Some(outcome) = try_host_ai_bonus_claim(
+            &mut HostAiBonusClaimState {
                 race: &mut race,
                 bonuses: &mut self.bonuses,
                 bonus_attempts: &mut attempts,
                 spent_bonus_gaps: &mut spent_bonus_gaps,
-            },
-            player_id,
-            player_id,
-            now,
-            BonusClaimRoll {
-                item_context,
+                effects: &mut effects,
+                ai_players: &ai_players,
                 item_registry: &self.item_registry,
-                rng: &mut rng,
             },
+            HostAiBonusClaimInput {
+                player_key: player_id,
+                player_id,
+                player_name: ai_name.clone(),
+                item_context,
+                now,
+            },
+            &mut rng,
         ) else {
             return;
         };
 
         self.sync_from_shared_item_race(race);
+        self.apply_shared_item_effects(effects);
         if let Some(item) = outcome.pickup {
-            self.receive_ai_pickup(ai_index, item, now);
+            self.run_log.push(
+                now,
+                format!(
+                    "{ai_name} picked up {} at word={}",
+                    item_pickup_name(item),
+                    self.ai_racers[ai_index].player.word_index
+                ),
+            );
         }
+        self.apply_shared_item_aftermath(outcome.aftermath, now);
     }
 
     fn ai_has_nearby_racer(&self, ai_index: usize, max_distance_words: usize) -> bool {
@@ -933,6 +940,7 @@ impl LocalSession {
         )
     }
 
+    #[cfg(test)]
     fn receive_ai_pickup(&mut self, ai_index: usize, item: ItemPickup, now: Instant) {
         let Some(ai) = self.ai_racers.get(ai_index) else {
             return;
@@ -975,7 +983,7 @@ impl LocalSession {
                 now,
             ),
             HeldItem::Cyclone => self.use_cyclone(Some(ai_index), now),
-            HeldItem::SquidInk => self.use_squid_ink(
+            HeldItem::Fog => self.use_fog(
                 self.ai_racers
                     .get(ai_index)
                     .map(|ai| RacePlayerId((ai.id + 1) as u64)),
@@ -1008,11 +1016,11 @@ impl LocalSession {
         self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Banana), now);
     }
 
-    fn use_squid_ink(&mut self, player_id: Option<RacePlayerId>, now: Instant) {
+    fn use_fog(&mut self, player_id: Option<RacePlayerId>, now: Instant) {
         let Some(player_id) = player_id else {
             return;
         };
-        self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::SquidInk), now);
+        self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Fog), now);
     }
 
     fn use_mushroom(&mut self, player_id: Option<RacePlayerId>, now: Instant) {
@@ -1141,21 +1149,23 @@ impl LocalSession {
 
     fn shared_item_effects(&self) -> HashMap<RacePlayerId, RaceItemEffectState> {
         let mut effects = HashMap::new();
-        if self.player_stunned_until.is_some() {
+        if self.player_stunned_until.is_some() || self.player_item_cue.is_some() {
             effects.insert(
                 RacePlayerId(1),
                 RaceItemEffectState {
                     stunned_until: self.player_stunned_until,
+                    item_cue: self.player_item_cue.as_ref().map(race_item_cue_from_local),
                     ..RaceItemEffectState::default()
                 },
             );
         }
         for ai in &self.ai_racers {
-            if ai.stunned_until.is_some() {
+            if ai.stunned_until.is_some() || ai.item_cue.is_some() {
                 effects.insert(
                     RacePlayerId((ai.id + 1) as u64),
                     RaceItemEffectState {
                         stunned_until: ai.stunned_until,
+                        item_cue: ai.item_cue.as_ref().map(race_item_cue_from_local),
                         ..RaceItemEffectState::default()
                     },
                 );
@@ -1348,7 +1358,7 @@ impl LocalSession {
             HeldItem::Mushroom => self.use_mushroom(Some(RacePlayerId(1)), now),
             HeldItem::Focus => self.use_focus(Some(RacePlayerId(1)), now),
             HeldItem::Cyclone => self.use_cyclone(None, now),
-            HeldItem::SquidInk => self.use_squid_ink(Some(RacePlayerId(1)), now),
+            HeldItem::Fog => self.use_fog(Some(RacePlayerId(1)), now),
             HeldItem::Banana => self.use_banana(Some(RacePlayerId(1)), now),
         }
     }
@@ -1385,7 +1395,7 @@ fn impact_cue_kind(kind: RaceImpactCueKind) -> ImpactCueKind {
     match kind {
         RaceImpactCueKind::Banana => ImpactCueKind::Banana,
         RaceImpactCueKind::Cyclone => ImpactCueKind::Cyclone,
-        RaceImpactCueKind::SquidInk => ImpactCueKind::SquidInk,
+        RaceImpactCueKind::Fog => ImpactCueKind::Fog,
         RaceImpactCueKind::ShieldBlock => ImpactCueKind::ShieldBlock,
     }
 }
@@ -1399,6 +1409,16 @@ fn item_cue_from_shared(cue: crate::game::item_effects::RaceItemCue) -> ItemCue 
     }
 }
 
+fn race_item_cue_from_local(cue: &ItemCue) -> RaceItemCue {
+    RaceItemCue {
+        kind: shared_item_cue_kind(cue.kind),
+        ascii_label: cue.ascii_label.clone(),
+        unicode_label: cue.unicode_label.clone(),
+        placement: RaceItemCuePlacement::After,
+        until: cue.until,
+    }
+}
+
 fn item_cue_kind(kind: RaceItemCueKind) -> ItemCueKind {
     match kind {
         RaceItemCueKind::Banana { direction } => ItemCueKind::Banana {
@@ -1407,7 +1427,19 @@ fn item_cue_kind(kind: RaceItemCueKind) -> ItemCueKind {
         RaceItemCueKind::Cyclone { direction } => ItemCueKind::Cyclone {
             direction: attack_direction_from_shared(direction),
         },
-        RaceItemCueKind::SquidInk => ItemCueKind::SquidInk,
+        RaceItemCueKind::Fog => ItemCueKind::Fog,
+    }
+}
+
+fn shared_item_cue_kind(kind: ItemCueKind) -> RaceItemCueKind {
+    match kind {
+        ItemCueKind::Banana { direction } => RaceItemCueKind::Banana {
+            direction: shared_attack_direction(direction),
+        },
+        ItemCueKind::Cyclone { direction } => RaceItemCueKind::Cyclone {
+            direction: shared_attack_direction(direction),
+        },
+        ItemCueKind::Fog => RaceItemCueKind::Fog,
     }
 }
 
@@ -1416,6 +1448,14 @@ fn attack_direction_from_shared(direction: SharedAttackDirection) -> AttackDirec
         SharedAttackDirection::Ahead => AttackDirection::Ahead,
         SharedAttackDirection::Behind => AttackDirection::Behind,
         SharedAttackDirection::Overlap => AttackDirection::Overlap,
+    }
+}
+
+fn shared_attack_direction(direction: AttackDirection) -> SharedAttackDirection {
+    match direction {
+        AttackDirection::Ahead => SharedAttackDirection::Ahead,
+        AttackDirection::Behind => SharedAttackDirection::Behind,
+        AttackDirection::Overlap => SharedAttackDirection::Overlap,
     }
 }
 
@@ -1859,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn inked_ai_racer_hesitates_from_reduced_wpm_budget() {
+    fn fogged_ai_racer_hesitates_from_reduced_wpm_budget() {
         let now = Instant::now();
         let mut session = LocalSession::with_bonuses(
             track(&["one", "two"]),
@@ -1867,8 +1907,8 @@ mod tests {
             BonusState::with_points(vec![], vec![]),
         );
         let mut ai = AiRacer::new(1, AiDifficulty::Easy, 60.0, now);
-        ai.player.inked_word_index = Some(0);
-        ai.player.inked_until = Some(now + Duration::from_secs(5));
+        ai.player.fogged_word_index = Some(0);
+        ai.player.fogged_until = Some(now + Duration::from_secs(5));
         session.ai_racers.push(ai);
 
         session.tick(now + Duration::from_secs(1));
@@ -2538,7 +2578,7 @@ mod tests {
     }
 
     #[test]
-    fn squid_ink_hits_all_ai_racers_in_range() {
+    fn fog_hits_all_ai_racers_in_range() {
         let now = Instant::now();
         let track = track(&["one", "two", "three", "four"]);
         let player = PlayerState::new(now);
@@ -2550,29 +2590,29 @@ mod tests {
         far_ai.player.word_index = 6;
         session.ai_racers.push(near_ai);
         session.ai_racers.push(far_ai);
-        session.player.held_item = Some(HeldItem::SquidInk);
+        session.player.held_item = Some(HeldItem::Fog);
 
         session.apply_action(LocalAction::ActivateItem, now);
 
-        assert!(session.ai_racers[0].player.is_inked_at(now));
-        assert!(!session.ai_racers[1].player.is_inked_at(now));
+        assert!(session.ai_racers[0].player.is_fogged_at(now));
+        assert!(!session.ai_racers[1].player.is_fogged_at(now));
         assert!(matches!(
             session.ai_racers[0].impact_cue.map(|cue| cue.kind),
-            Some(ImpactCueKind::SquidInk)
+            Some(ImpactCueKind::Fog)
         ));
         assert!(matches!(
             session.player_item_cue.as_ref().map(|cue| cue.kind),
-            Some(ItemCueKind::SquidInk)
+            Some(ItemCueKind::Fog)
         ));
     }
 
     #[test]
-    fn squid_ink_persists_after_current_word_is_completed() {
+    fn fog_persists_after_current_word_is_completed() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let mut player = PlayerState::new(now);
-        player.inked_word_index = Some(0);
-        player.inked_until = Some(now + Duration::from_secs(5));
+        player.fogged_word_index = Some(0);
+        player.fogged_until = Some(now + Duration::from_secs(5));
         let mut session =
             LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
 
@@ -2586,26 +2626,26 @@ mod tests {
         }
         session.tick(now);
 
-        assert!(session.player.is_inked_at(now));
+        assert!(session.player.is_fogged_at(now));
         assert_eq!(session.player.word_index, 1);
-        assert_eq!(session.player.inked_word_index, Some(0));
+        assert_eq!(session.player.fogged_word_index, Some(0));
     }
 
     #[test]
-    fn squid_ink_expires_after_duration() {
+    fn fog_expires_after_duration() {
         let now = Instant::now();
         let track = track(&["one", "two", "three"]);
         let mut player = PlayerState::new(now);
-        player.inked_word_index = Some(0);
-        player.inked_until = Some(now + Duration::from_secs(5));
+        player.fogged_word_index = Some(0);
+        player.fogged_until = Some(now + Duration::from_secs(5));
         let mut session =
             LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
 
         session.tick(now + Duration::from_secs(5));
 
-        assert!(!session.player.is_inked_at(now + Duration::from_secs(5)));
-        assert_eq!(session.player.inked_word_index, None);
-        assert_eq!(session.player.inked_until, None);
+        assert!(!session.player.is_fogged_at(now + Duration::from_secs(5)));
+        assert_eq!(session.player.fogged_word_index, None);
+        assert_eq!(session.player.fogged_until, None);
     }
 
     #[test]

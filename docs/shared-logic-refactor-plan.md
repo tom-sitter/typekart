@@ -361,8 +361,8 @@ Progress:
   `RaceState` and `BonusState` construction while retaining local-only AI WPM
   and terminal session metadata.
 - Local item activation now uses shared `game::item_effects` for all current
-  items: banana, cyclone, squid ink, mushroom, shield, and focus. The old
-  local-only banana warning, banana targeting, squid-ink mutation, mushroom
+  items: banana, cyclone, fog, mushroom, shield, and focus. The old
+  local-only banana warning, banana targeting, fog mutation, mushroom
   stepping, shield activation, and focus activation paths were removed, so
   local and multiplayer item behavior are closer to parity.
 - Local human bonus typing now uses shared `game::bonus_flow` for starting,
@@ -616,7 +616,7 @@ Progress:
   Network result messages and browser result frames both use this projection.
 - Host-visible events now live in `src/game/host_events.rs` with semantic
   variants for player finishes, race finish, item misses, hits, blocks, and
-  Squid Ink hit counts. Adapters still decide how those events are rendered,
+  Fog hit counts. Adapters still decide how those events are rendered,
   logged, or broadcast, and can use `HostEvent::message()` for the existing
   event-feed text.
 - Local single-player item events now use the same neutral host-event wording
@@ -630,6 +630,10 @@ Progress:
 - AI typing ticks now use a shared host-session wrapper around the lower-level
   AI driver, so local, network, and browser hosts share finished/stunned/paused
   gating before an AI consumes typing budget.
+- AI bonus claims now use a shared host-session helper for eligibility checks,
+  random bonus resolution, pickup/miss events, item activation, and aftermath
+  output. Local, network, and browser hosts still apply the returned adapter
+  actions to their own runtime storage.
 - `src/game/host_session.rs` now returns a shared start-race outcome from the
   countdown-to-racing transition, including the `Racing` phase and common race
   started event text used by network and browser hosts.

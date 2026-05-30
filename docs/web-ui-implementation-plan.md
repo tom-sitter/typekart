@@ -252,11 +252,11 @@ Initial slice:
 - `crates/typekart-protocol` contains the shared JSON wire contract used by the
   terminal app and browser app.
 - Gallery scenarios cover lobby, countdown, Banana, Mushroom, Shield, Focus,
-  Cyclone, Squid Ink, finish sprint, and results states.
+  Cyclone, Fog, finish sprint, and results states.
 - The browser renderer includes track words, stacked bonus choices, racer
   lanes, Unicode/ASCII cue toggle, minimap, and event feed.
 - Fixture smoke tests assert that major states are represented, consumed bonus
-  choices render, all current item cue/impact concepts are covered, Squid Ink
+  choices render, all current item cue/impact concepts are covered, Fog
   masks only future words, results include timed-out racers, and finished
   players pin to the minimap finish edge.
 
@@ -285,7 +285,7 @@ Validation:
 
 - Static fixtures render without overlap on desktop widths.
 - Key item states have visible cues: Banana, Mushroom, Shield, Focus, Cyclone,
-  and Squid Ink.
+  and Fog.
 
 ## Milestone 5: Browser Joiner Read-Only Mode
 
@@ -389,7 +389,7 @@ Recommended order:
 4. Validate item effects against browser players:
    - Mushroom input pause and boost indicator
    - Shield/Focus marker overlays
-   - Banana/Cyclone/Squid Ink impacts
+   - Banana/Cyclone/Fog impacts
    - bonus word cooldown/availability rendering
 5. Decide whether browser joiners should remain compatible with CLI hosts long
    term or whether this is only a migration/testing bridge.

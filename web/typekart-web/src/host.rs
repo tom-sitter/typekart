@@ -15,14 +15,15 @@ use typekart::game::{
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        HostAftermathAction, HostAiTickInput, HostBonusClaimInput, HostItemAftermath,
-        HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState, HostRaceTickAction,
-        PreparedHostRace, advance_active_race_tick, advance_host_ai_racer_tick,
-        advance_host_race_lifecycle, apply_host_bonus_claim, apply_host_player_key,
-        begin_countdown_phase, cancel_countdown_outcome, countdown_start_plan,
-        countdown_tick_phase, finalize_host_race_results, host_aftermath_adapter_actions,
-        prepare_race_from_selected_lobby_players, prepare_waiting_race_outcome,
-        return_to_lobby_outcome, start_active_race_runtime_outcome, start_race_from_countdown,
+        HostAftermathAction, HostAiBonusClaimInput, HostAiBonusClaimState, HostAiTickInput,
+        HostBonusClaimInput, HostItemAftermath, HostItemPickupState, HostPlayerKeyInput,
+        HostPlayerKeyState, HostRaceTickAction, PreparedHostRace, advance_active_race_tick,
+        advance_host_ai_racer_tick, advance_host_race_lifecycle, apply_host_bonus_claim,
+        apply_host_player_key, begin_countdown_phase, cancel_countdown_outcome,
+        countdown_start_plan, countdown_tick_phase, finalize_host_race_results,
+        host_aftermath_adapter_actions, prepare_race_from_selected_lobby_players,
+        prepare_waiting_race_outcome, return_to_lobby_outcome, start_active_race_runtime_outcome,
+        start_race_from_countdown, try_host_ai_bonus_claim,
     },
     item_effects::{RaceItemEffectState, advance_mushrooms},
     input_rules::player_input_is_paused,
@@ -1089,11 +1090,7 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
         if snapshot.phase != NetworkRacePhase::Racing {
             return false;
         }
-        let Some(core_race) = &mut state.core_race else {
-            return false;
-        };
-
-        let ai_configs = state
+        let ai_inputs = state
             .players
             .iter()
             .filter(|player| player.kind == PlayerKind::Bot)
@@ -1101,22 +1098,77 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
                 let base_wpm = player
                     .ai_wpm
                     .unwrap_or_else(|| browser_ai_wpm(AiDifficultySnapshot::Easy));
+                let item_context = browser_item_roll_context(state, player.id, 5);
                 (
                     player.id,
+                    player.name.clone(),
+                    item_context,
                     AiDriverConfig {
                         base_wpm: f64::from(base_wpm),
                         focus_boost_wpm: state.item_registry.focus_effect().ai_wpm_boost,
-                        ink_multiplier_percent: state
+                        fog_multiplier_percent: state
                             .item_registry
-                            .squid_ink_effect()
+                            .fog_effect()
                             .ai_wpm_multiplier_percent,
                     },
                 )
             })
             .collect::<Vec<_>>();
 
-        for (player_id, config) in ai_configs {
+        let ai_players = state
+            .players
+            .iter()
+            .filter(|player| player.kind == PlayerKind::Bot)
+            .map(|player| RacePlayerId(player.id.0))
+            .collect::<HashSet<_>>();
+
+        let Some(core_race) = &mut state.core_race else {
+            return false;
+        };
+
+        for (player_id, player_name, item_context, config) in ai_inputs {
             let race_player_id = RacePlayerId(player_id.0);
+            let mut rng = thread_rng();
+            if let Some(outcome) = try_host_ai_bonus_claim(
+                &mut HostAiBonusClaimState {
+                    race: core_race,
+                    bonuses: &mut state.bonuses,
+                    bonus_attempts: &mut state.runtime.bonus_attempts,
+                    spent_bonus_gaps: &mut state.runtime.spent_bonus_gaps,
+                    effects: &mut state.runtime.player_effects,
+                    ai_players: &ai_players,
+                    item_registry: &state.item_registry,
+                },
+                HostAiBonusClaimInput {
+                    player_key: player_id,
+                    player_id: race_player_id,
+                    player_name,
+                    item_context,
+                    now,
+                },
+                &mut rng,
+            ) {
+                for action in host_aftermath_adapter_actions(outcome.aftermath) {
+                    match action {
+                        HostAftermathAction::ClearBonusAttempt(player_id) => {
+                            state.runtime.bonus_attempts.remove(&PlayerId(player_id.0));
+                        }
+                        HostAftermathAction::ResetAiDriver(player_id) => {
+                            state
+                                .ai_char_budget
+                                .insert(PlayerId(player_id.0), AiDriverState::default());
+                        }
+                        HostAftermathAction::EmitEvent(event) => {
+                            state.events.push(event.message());
+                            const MAX_EVENTS: usize = 8;
+                            if state.events.len() > MAX_EVENTS {
+                                state.events.drain(0..state.events.len() - MAX_EVENTS);
+                            }
+                        }
+                    }
+                }
+                changed = true;
+            }
             let driver = state.ai_char_budget.entry(player_id).or_default();
             let advance = advance_host_ai_racer_tick(
                 core_race,
@@ -1987,6 +2039,56 @@ fn browser_host_ai_tick_advances_bot_racers() {
         .find(|player| player.kind == PlayerKind::Bot)
         .unwrap();
     assert!(!ai.input.is_empty() || ai.word_index > 0);
+}
+
+#[test]
+fn browser_host_ai_tick_can_claim_bonus_pickup() {
+    let room = RoomCode::parse("rocket-salad-tiger").unwrap();
+    let mut lobby = BrowserHostLobby::new(room, "host".to_string());
+    process_browser_host_client_message(
+        &mut lobby,
+        PlayerId(1),
+        typekart_protocol::ClientMessage::AddAi,
+        signal(ConnectionState::Disconnected).1,
+    );
+    let ai_id = lobby
+        .players
+        .iter()
+        .find(|player| player.kind == PlayerKind::Bot)
+        .unwrap()
+        .id;
+    let racers = lobby.players.clone();
+    let mut snapshot = browser_host_race_snapshot(
+        1,
+        NetworkRacePhase::Racing,
+        &lobby.mod_config,
+        &racers,
+        Vec::new(),
+    );
+    snapshot.track_words = vec!["one".to_string(), "two".to_string(), "three".to_string()];
+    snapshot
+        .players
+        .iter_mut()
+        .find(|player| player.id == ai_id)
+        .unwrap()
+        .word_index = 1;
+    lobby.active_race = Some(snapshot);
+    lobby.bonuses = BonusState::with_points(
+        vec![BonusPoint::new(
+            0,
+            [
+                BonusChoice::available("dash"),
+                BonusChoice::available("spin"),
+                BonusChoice::available("zoom"),
+            ],
+        )],
+        vec!["dash".into(), "spin".into(), "zoom".into()],
+    );
+
+    assert!(apply_browser_host_ai_tick(&mut lobby, 1_000));
+
+    assert_eq!(lobby.runtime.spent_bonus_gaps.get(&ai_id), Some(&0));
+    assert!(lobby.events.iter().any(|event| event.starts_with("ai-1 got ")));
 }
 
 #[test]

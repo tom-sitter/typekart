@@ -85,8 +85,8 @@
       }
     },
     {
-      "id": "squid_ink",
-      "name": "Squid Ink",
+      "id": "fog",
+      "name": "Fog",
       "enabled": true,
       "standard_weight": 1,
       "nearby_racer_weight": 2,

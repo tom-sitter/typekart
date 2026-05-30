@@ -790,8 +790,8 @@ fn effect_prefix(player: &PlayerSnapshot, unicode_icons: bool) -> &'static str {
         false if player.shielded => "[",
         true if player.focused => "⭐ ",
         false if player.focused => "* ",
-        true if player.inked => "⬛ ",
-        false if player.inked => "# ",
+        true if player.fogged => "🌫 ",
+        false if player.fogged => "# ",
         _ => "",
     }
 }
@@ -811,8 +811,8 @@ fn impact_label(impact: Option<ImpactCueSnapshot>, unicode_icons: bool) -> &'sta
             (ImpactCueSnapshotKind::Banana, false) => "BAN",
             (ImpactCueSnapshotKind::Cyclone, true) => "🌀",
             (ImpactCueSnapshotKind::Cyclone, false) => "CYC",
-            (ImpactCueSnapshotKind::SquidInk, true) => "⬛",
-            (ImpactCueSnapshotKind::SquidInk, false) => "INK",
+            (ImpactCueSnapshotKind::Fog, true) => "🌫",
+            (ImpactCueSnapshotKind::Fog, false) => "FOG",
             (ImpactCueSnapshotKind::ShieldBlock, true) => "🛡",
             (ImpactCueSnapshotKind::ShieldBlock, false) => "BLK",
         })
@@ -824,8 +824,8 @@ fn status_label(player: &PlayerSnapshot) -> &'static str {
         "finished"
     } else if player.stunned {
         "stunned"
-    } else if player.inked {
-        "inked"
+    } else if player.fogged {
+        "fogged"
     } else if !player.connected {
         "offline"
     } else {

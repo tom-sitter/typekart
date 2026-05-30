@@ -189,7 +189,7 @@ enum GalleryScenario {
     BonusScramble,
     ComebackChase,
     BananaHitPack,
-    SquidInkPack,
+    FogPack,
     ItemPileup,
     FinishSprint,
     MushroomBoost,
@@ -200,9 +200,9 @@ enum GalleryScenario {
     BananaImpact,
     CycloneAhead,
     CycloneImpact,
-    SquidInkCue,
-    SquidInkImpact,
-    SquidInkMaskedWords,
+    FogCue,
+    FogImpact,
+    FogMaskedWords,
 }
 
 impl GalleryScenario {
@@ -213,7 +213,7 @@ impl GalleryScenario {
             Self::BonusScramble => "bonus-scramble",
             Self::ComebackChase => "comeback-chase",
             Self::BananaHitPack => "banana-hit-pack",
-            Self::SquidInkPack => "squid-ink-pack",
+            Self::FogPack => "fog-pack",
             Self::ItemPileup => "item-pileup",
             Self::FinishSprint => "finish-sprint",
             Self::MushroomBoost => "mushroom-boost",
@@ -224,9 +224,9 @@ impl GalleryScenario {
             Self::BananaImpact => "banana-impact",
             Self::CycloneAhead => "cyclone-ahead",
             Self::CycloneImpact => "cyclone-impact",
-            Self::SquidInkCue => "squid-ink-cue",
-            Self::SquidInkImpact => "squid-ink-impact",
-            Self::SquidInkMaskedWords => "squid-ink-masked",
+            Self::FogCue => "fog-cue",
+            Self::FogImpact => "fog-impact",
+            Self::FogMaskedWords => "fog-masked",
         }
     }
 
@@ -237,7 +237,7 @@ impl GalleryScenario {
             Self::BonusScramble => "Bonus scramble",
             Self::ComebackChase => "Comeback chase",
             Self::BananaHitPack => "Banana hit pack",
-            Self::SquidInkPack => "Squid Ink pack",
+            Self::FogPack => "Fog pack",
             Self::ItemPileup => "Item pileup",
             Self::FinishSprint => "Finish sprint",
             Self::MushroomBoost => "Mushroom boost",
@@ -248,9 +248,9 @@ impl GalleryScenario {
             Self::BananaImpact => "Banana impact blink",
             Self::CycloneAhead => "Cyclone fired",
             Self::CycloneImpact => "Cyclone impact blink",
-            Self::SquidInkCue => "Squid Ink fired",
-            Self::SquidInkImpact => "Squid Ink impact blink",
-            Self::SquidInkMaskedWords => "Squid Ink masked words",
+            Self::FogCue => "Fog fired",
+            Self::FogImpact => "Fog impact blink",
+            Self::FogMaskedWords => "Fog masked words",
         }
     }
 
@@ -261,9 +261,7 @@ impl GalleryScenario {
             Self::BonusScramble => "Racers converge around a bonus-word pickup point.",
             Self::ComebackChase => "A trailing player lines up a comeback with active effects.",
             Self::BananaHitPack => "Player fires Banana while the target blinks from impact.",
-            Self::SquidInkPack => {
-                "Squid Ink cue, impacted racers, and masked words beyond the current word."
-            }
+            Self::FogPack => "Fog cue, impacted racers, and masked words beyond the current word.",
             Self::ItemPileup => "Multiple simultaneous effects for stress-testing readability.",
             Self::FinishSprint => "Racers near the finish with a finished offscreen marker.",
             Self::MushroomBoost => "Boost prefix on a racer lane.",
@@ -274,9 +272,9 @@ impl GalleryScenario {
             Self::BananaImpact => "Yellow blink on the impacted racer.",
             Self::CycloneAhead => "Cyclone cue rendered in front of the attacker.",
             Self::CycloneImpact => "Blue blink on the impacted racer.",
-            Self::SquidInkCue => "Squid cue rendered after the attacker.",
-            Self::SquidInkImpact => "Black blink on the impacted racer.",
-            Self::SquidInkMaskedWords => "Future words hidden until reached or ink expires.",
+            Self::FogCue => "Fog cue rendered after the attacker.",
+            Self::FogImpact => "Gray blink on the impacted racer.",
+            Self::FogMaskedWords => "Future words hidden until reached or fog expires.",
         }
     }
 }
@@ -288,7 +286,7 @@ fn gallery_scenarios() -> Vec<GalleryScenario> {
         GalleryScenario::BonusScramble,
         GalleryScenario::ComebackChase,
         GalleryScenario::BananaHitPack,
-        GalleryScenario::SquidInkPack,
+        GalleryScenario::FogPack,
         GalleryScenario::ItemPileup,
         GalleryScenario::FinishSprint,
         GalleryScenario::MushroomBoost,
@@ -299,9 +297,9 @@ fn gallery_scenarios() -> Vec<GalleryScenario> {
         GalleryScenario::BananaImpact,
         GalleryScenario::CycloneAhead,
         GalleryScenario::CycloneImpact,
-        GalleryScenario::SquidInkCue,
-        GalleryScenario::SquidInkImpact,
-        GalleryScenario::SquidInkMaskedWords,
+        GalleryScenario::FogCue,
+        GalleryScenario::FogImpact,
+        GalleryScenario::FogMaskedWords,
     ]
 }
 
@@ -422,9 +420,9 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             ai_behind.player.active_effects.push(ActiveEffect::Focus {
                 until: now + Duration::from_secs(5),
             });
-            extra_ai[0].item_cue = Some(item_cue(ItemCueKind::SquidInk, " ink ", " 🦑 ", now));
+            extra_ai[0].item_cue = Some(item_cue(ItemCueKind::Fog, " fog ", " 🌫 ", now));
             events.push("Bonus words are live in the middle lane");
-            events.push("Shield, Focus, and Squid Ink pressure overlap");
+            events.push("Shield, Focus, and Fog pressure overlap");
         }
         GalleryScenario::ComebackChase => {
             player.word_index = 2;
@@ -493,26 +491,26 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
             events.push("you picked up Banana");
             events.push("you hit ahead");
         }
-        GalleryScenario::SquidInkPack => {
+        GalleryScenario::FogPack => {
             player.word_index = 4;
             player.stats.completed_words = 4;
             consume_gallery_bonus_choice(&mut bonuses, 2, now);
-            player_item_cue = Some(item_cue(ItemCueKind::SquidInk, " ink ", " 🦑 ", now));
+            player_item_cue = Some(item_cue(ItemCueKind::Fog, " fog ", " 🌫 ", now));
             ai_ahead.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::SquidInk,
+                kind: ImpactCueKind::Fog,
                 until: now + Duration::from_secs(2),
             });
             ai_behind.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::SquidInk,
+                kind: ImpactCueKind::Fog,
                 until: now + Duration::from_secs(2),
             });
-            player.inked_word_index = Some(player.word_index);
-            player.inked_until = Some(now + Duration::from_secs(5));
+            player.fogged_word_index = Some(player.word_index);
+            player.fogged_until = Some(now + Duration::from_secs(5));
             player_impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::SquidInk,
+                kind: ImpactCueKind::Fog,
                 until: now + Duration::from_secs(2),
             });
-            events.push("Squid Ink hit 3 racer(s)");
+            events.push("Fog hit 3 racer(s)");
             events.push("Future words are hidden until reached");
         }
         GalleryScenario::ItemPileup => {
@@ -544,10 +542,10 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
                 now,
             ));
             extra_ai[2].impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::SquidInk,
+                kind: ImpactCueKind::Fog,
                 until: now + Duration::from_secs(2),
             });
-            events.push("Cyclone, Banana, Shield, Focus, and Squid Ink visible");
+            events.push("Cyclone, Banana, Shield, Focus, and Fog visible");
         }
         GalleryScenario::FinishSprint => {
             player.word_index = 8;
@@ -641,23 +639,23 @@ fn scenario_state(scenario: GalleryScenario, now: Instant) -> GalleryState {
                 until: now + Duration::from_secs(2),
             });
         }
-        GalleryScenario::SquidInkCue => {
+        GalleryScenario::FogCue => {
             player.word_index = 4;
             player.stats.completed_words = 4;
             consume_gallery_bonus_choice(&mut bonuses, 2, now);
-            player_item_cue = Some(item_cue(ItemCueKind::SquidInk, " ink ", " 🦑 ", now));
+            player_item_cue = Some(item_cue(ItemCueKind::Fog, " fog ", " 🌫 ", now));
         }
-        GalleryScenario::SquidInkImpact => {
+        GalleryScenario::FogImpact => {
             ai_ahead.impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::SquidInk,
+                kind: ImpactCueKind::Fog,
                 until: now + Duration::from_secs(2),
             });
         }
-        GalleryScenario::SquidInkMaskedWords => {
-            player.inked_word_index = Some(player.word_index);
-            player.inked_until = Some(now + Duration::from_secs(5));
+        GalleryScenario::FogMaskedWords => {
+            player.fogged_word_index = Some(player.word_index);
+            player.fogged_until = Some(now + Duration::from_secs(5));
             player_impact_cue = Some(ImpactCue {
-                kind: ImpactCueKind::SquidInk,
+                kind: ImpactCueKind::Fog,
                 until: now + Duration::from_secs(2),
             });
         }
@@ -685,14 +683,10 @@ fn gallery_bonuses() -> BonusState {
             [
                 BonusChoice::available("turbo"),
                 BonusChoice::available("shield"),
-                BonusChoice::available("squid"),
+                BonusChoice::available("fog"),
             ],
         )],
-        vec![
-            "turbo".to_string(),
-            "shield".to_string(),
-            "squid".to_string(),
-        ],
+        vec!["turbo".to_string(), "shield".to_string(), "fog".to_string()],
     )
 }
 
@@ -826,13 +820,13 @@ mod tests {
         assert!(scenarios.contains(&GalleryScenario::FocusActive));
         assert!(scenarios.contains(&GalleryScenario::BananaAhead));
         assert!(scenarios.contains(&GalleryScenario::CycloneAhead));
-        assert!(scenarios.contains(&GalleryScenario::SquidInkMaskedWords));
+        assert!(scenarios.contains(&GalleryScenario::FogMaskedWords));
         assert!(scenarios.contains(&GalleryScenario::MultiplayerPack));
         assert!(scenarios.contains(&GalleryScenario::MultiplayerOpening));
         assert!(scenarios.contains(&GalleryScenario::BonusScramble));
         assert!(scenarios.contains(&GalleryScenario::ComebackChase));
         assert!(scenarios.contains(&GalleryScenario::BananaHitPack));
-        assert!(scenarios.contains(&GalleryScenario::SquidInkPack));
+        assert!(scenarios.contains(&GalleryScenario::FogPack));
         assert!(scenarios.contains(&GalleryScenario::ItemPileup));
         assert!(scenarios.contains(&GalleryScenario::FinishSprint));
     }
@@ -855,7 +849,7 @@ mod tests {
         assert_eq!(bonuses.points[0].after_word_index, 3);
         assert_eq!(bonuses.points[0].choices[0].word, "turbo");
         assert_eq!(bonuses.points[0].choices[1].word, "shield");
-        assert_eq!(bonuses.points[0].choices[2].word, "squid");
+        assert_eq!(bonuses.points[0].choices[2].word, "fog");
     }
 
     #[test]

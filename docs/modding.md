@@ -52,7 +52,7 @@ Supported item ids:
 - `shield`
 - `focus`
 - `cyclone`
-- `squid_ink`
+- `fog`
 
 Example:
 
@@ -107,7 +107,7 @@ Example:
       }
     },
     {
-      "id": "squid_ink",
+      "id": "fog",
       "effect": {
         "range_words": 5,
         "duration_ms": 5000,
@@ -160,7 +160,7 @@ Effect fields are item-specific:
 - Shield: `duration_ms`.
 - Focus: `duration_ms`, `ai_wpm_boost`.
 - Cyclone: `affected_words`, `duration_ms`.
-- Squid Ink: `range_words`, `duration_ms`, `impact_duration_ms`, `cue_duration_ms`, `ai_wpm_multiplier_percent`.
+- Fog: `range_words`, `duration_ms`, `impact_duration_ms`, `cue_duration_ms`, `ai_wpm_multiplier_percent`.
 
 Banana display fields:
 

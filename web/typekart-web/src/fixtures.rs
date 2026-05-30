@@ -23,7 +23,7 @@ enum ScenarioKind {
     MushroomBoost,
     ShieldFocus,
     CycloneImpact,
-    SquidInk,
+    Fog,
     FinishSprint,
     Results,
 }
@@ -94,11 +94,11 @@ pub const SCENARIOS: &[GalleryScenario] = &[
         ScenarioKind::CycloneImpact,
     ),
     scenario(
-        "squid-ink",
-        "Squid ink",
-        "Squid ink cue, impacted marker, and masked future words for the local affected player.",
+        "fog",
+        "Fog",
+        "Fog cue, impacted marker, and masked future words for the local affected player.",
         "Unicode and ASCII labels should both be legible.",
-        ScenarioKind::SquidInk,
+        ScenarioKind::Fog,
     ),
     scenario(
         "finish-sprint",
@@ -172,12 +172,12 @@ pub fn scenario_frame(scenario: GalleryScenario) -> GalleryFrame {
             consumed_bonuses(),
             ["you fired Cyclone", "alex was hit by Cyclone"],
         )),
-        ScenarioKind::SquidInk => GalleryFrame::Race(race_snapshot(
+        ScenarioKind::Fog => GalleryFrame::Race(race_snapshot(
             4,
             NetworkRacePhase::Racing,
-            squid_ink_players(),
+            fog_players(),
             consumed_bonuses(),
-            ["you fired Squid Ink", "alex was inked"],
+            ["you fired Fog", "alex was fogged"],
         )),
         ScenarioKind::FinishSprint => GalleryFrame::Race(race_snapshot(
             8,
@@ -199,7 +199,7 @@ pub fn minimap_position(player: &PlayerSnapshot, word_count: usize) -> usize {
 }
 
 pub fn masked_word(player: &PlayerSnapshot, index: usize, word: &str) -> String {
-    if !player.inked || index <= player.word_index {
+    if !player.fogged || index <= player.word_index {
         return word.to_string();
     }
     "█".repeat(word.chars().count())
@@ -406,22 +406,22 @@ fn cyclone_players() -> Vec<PlayerSnapshot> {
     ]
 }
 
-fn squid_ink_players() -> Vec<PlayerSnapshot> {
+fn fog_players() -> Vec<PlayerSnapshot> {
     vec![
         PlayerSnapshot {
             item_cue: Some(ItemCueSnapshot {
-                kind: ItemCueSnapshotKind::SquidInk,
+                kind: ItemCueSnapshotKind::Fog,
                 unicode_label: "⬛ >>".to_string(),
-                ascii_label: "INK>".to_string(),
+                ascii_label: "FOG>".to_string(),
                 placement: ItemCuePlacementSnapshot::After,
                 remaining_ms: 700,
             }),
             ..player(1, "you", PlayerKind::Human, AssignedColor::Cyan, 3, "cy")
         },
         PlayerSnapshot {
-            inked: true,
+            fogged: true,
             impact_cue: Some(ImpactCueSnapshot {
-                kind: ImpactCueSnapshotKind::SquidInk,
+                kind: ImpactCueSnapshotKind::Fog,
                 remaining_ms: 900,
             }),
             ..player(2, "alex", PlayerKind::Human, AssignedColor::Red, 3, "cyc")
@@ -469,7 +469,7 @@ fn player(
         connected: true,
         shielded: false,
         focused: false,
-        inked: false,
+        fogged: false,
         boosted: false,
         stunned: false,
         impact_remaining_ms: 0,
@@ -551,7 +551,7 @@ mod tests {
             "mushroom-boost",
             "shield-focus",
             "cyclone-impact",
-            "squid-ink",
+            "fog",
             "finish-sprint",
             "results",
         ] {
@@ -572,7 +572,7 @@ mod tests {
 
         assert!(all_players.iter().any(|player| player.shielded));
         assert!(all_players.iter().any(|player| player.focused));
-        assert!(all_players.iter().any(|player| player.inked));
+        assert!(all_players.iter().any(|player| player.fogged));
         assert!(all_players.iter().any(|player| player.boosted));
         assert!(
             all_players
@@ -591,7 +591,7 @@ mod tests {
             all_players
                 .iter()
                 .filter_map(|player| player.item_cue.as_ref())
-                .any(|cue| cue.kind == ItemCueSnapshotKind::SquidInk)
+                .any(|cue| cue.kind == ItemCueSnapshotKind::Fog)
         );
         assert!(
             all_players
@@ -609,7 +609,7 @@ mod tests {
             all_players
                 .iter()
                 .filter_map(|player| player.impact_cue.as_ref())
-                .any(|impact| impact.kind == ImpactCueSnapshotKind::SquidInk)
+                .any(|impact| impact.kind == ImpactCueSnapshotKind::Fog)
         );
     }
 
@@ -655,14 +655,14 @@ mod tests {
     }
 
     #[test]
-    fn squid_ink_masks_only_future_words() {
-        let inked = match scenario_frame(SCENARIOS[6]) {
+    fn fog_masks_only_future_words() {
+        let fogged = match scenario_frame(SCENARIOS[6]) {
             GalleryFrame::Race(snapshot) => snapshot.players[1].clone(),
             _ => unreachable!(),
         };
 
-        assert_eq!(masked_word(&inked, inked.word_index, "cyclone"), "cyclone");
-        assert_eq!(masked_word(&inked, inked.word_index + 1, "maple"), "█████");
+        assert_eq!(masked_word(&fogged, fogged.word_index, "cyclone"), "cyclone");
+        assert_eq!(masked_word(&fogged, fogged.word_index + 1, "maple"), "█████");
     }
 
     #[test]

@@ -14,7 +14,7 @@ pub enum HeldItem {
     Banana,
     Focus,
     Cyclone,
-    SquidInk,
+    Fog,
 }
 
 impl HeldItem {
@@ -24,7 +24,7 @@ impl HeldItem {
             Self::Banana => "Banana",
             Self::Focus => "Focus",
             Self::Cyclone => "Cyclone",
-            Self::SquidInk => "Squid Ink",
+            Self::Fog => "Fog",
         }
     }
 }
@@ -62,7 +62,7 @@ pub struct ItemEffectConfig {
     pub shield: Option<ShieldEffectConfig>,
     pub focus: Option<FocusEffectConfig>,
     pub cyclone: Option<CycloneEffectConfig>,
-    pub squid_ink: Option<SquidInkEffectConfig>,
+    pub fog: Option<FogEffectConfig>,
 }
 
 impl ItemEffectConfig {
@@ -74,7 +74,7 @@ impl ItemEffectConfig {
                 shield: None,
                 focus: None,
                 cyclone: None,
-                squid_ink: None,
+                fog: None,
             },
             ItemPickup::Held(HeldItem::Banana) => Self {
                 mushroom: None,
@@ -82,7 +82,7 @@ impl ItemEffectConfig {
                 shield: None,
                 focus: None,
                 cyclone: None,
-                squid_ink: None,
+                fog: None,
             },
             ItemPickup::Held(HeldItem::Focus) => Self {
                 mushroom: None,
@@ -90,7 +90,7 @@ impl ItemEffectConfig {
                 shield: None,
                 focus: Some(FocusEffectConfig::default()),
                 cyclone: None,
-                squid_ink: None,
+                fog: None,
             },
             ItemPickup::Held(HeldItem::Cyclone) => Self {
                 mushroom: None,
@@ -98,15 +98,15 @@ impl ItemEffectConfig {
                 shield: None,
                 focus: None,
                 cyclone: Some(CycloneEffectConfig::default()),
-                squid_ink: None,
+                fog: None,
             },
-            ItemPickup::Held(HeldItem::SquidInk) => Self {
+            ItemPickup::Held(HeldItem::Fog) => Self {
                 mushroom: None,
                 banana: None,
                 shield: None,
                 focus: None,
                 cyclone: None,
-                squid_ink: Some(SquidInkEffectConfig::default()),
+                fog: Some(FogEffectConfig::default()),
             },
             ItemPickup::Shield => Self {
                 mushroom: None,
@@ -114,7 +114,7 @@ impl ItemEffectConfig {
                 shield: Some(ShieldEffectConfig::default()),
                 focus: None,
                 cyclone: None,
-                squid_ink: None,
+                fog: None,
             },
         }
     }
@@ -196,7 +196,7 @@ impl Default for CycloneEffectConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct SquidInkEffectConfig {
+pub struct FogEffectConfig {
     pub range_words: usize,
     pub duration_ms: u64,
     pub impact_blink_ms: u64,
@@ -204,7 +204,7 @@ pub struct SquidInkEffectConfig {
     pub ai_wpm_multiplier_percent: u32,
 }
 
-impl Default for SquidInkEffectConfig {
+impl Default for FogEffectConfig {
     fn default() -> Self {
         Self {
             range_words: 5,
@@ -230,7 +230,7 @@ impl ItemDisplayConfig {
             ItemPickup::Held(HeldItem::Mushroom)
             | ItemPickup::Held(HeldItem::Focus)
             | ItemPickup::Held(HeldItem::Cyclone)
-            | ItemPickup::Held(HeldItem::SquidInk)
+            | ItemPickup::Held(HeldItem::Fog)
             | ItemPickup::Shield => Self { banana: None },
         }
     }
@@ -511,9 +511,9 @@ impl ItemRegistry {
                 },
             ),
             ItemDefinition::built_in_with_context(
-                "squid_ink",
-                "Squid Ink",
-                ItemPickup::Held(HeldItem::SquidInk),
+                "fog",
+                "Fog",
+                ItemPickup::Held(HeldItem::Fog),
                 ItemActivation::Held,
                 1,
                 2,
@@ -756,7 +756,7 @@ impl ItemRegistry {
                         );
                     }
                     target.effect.cyclone = Some(cyclone);
-                } else if target.effect.squid_ink.is_some() {
+                } else if target.effect.fog.is_some() {
                     if effect.boost_words.is_some()
                         || effect.wpm.is_some()
                         || effect.ai_wpm_boost.is_some()
@@ -767,43 +767,41 @@ impl ItemRegistry {
                             override_item.id
                         );
                     }
-                    let mut squid_ink = target.effect.squid_ink.unwrap_or_default();
+                    let mut fog = target.effect.fog.unwrap_or_default();
                     if let Some(range_words) = effect.range_words {
-                        squid_ink.range_words = range_words;
+                        fog.range_words = range_words;
                     }
                     if let Some(duration_ms) = effect.duration_ms {
-                        squid_ink.duration_ms = duration_ms;
+                        fog.duration_ms = duration_ms;
                     }
                     if let Some(impact_duration_ms) = effect.impact_duration_ms {
-                        squid_ink.impact_blink_ms = impact_duration_ms;
+                        fog.impact_blink_ms = impact_duration_ms;
                     }
                     if let Some(cue_duration_ms) = effect.cue_duration_ms {
-                        squid_ink.cue_ms = cue_duration_ms;
+                        fog.cue_ms = cue_duration_ms;
                     }
                     if let Some(multiplier) = effect.ai_wpm_multiplier_percent {
-                        squid_ink.ai_wpm_multiplier_percent = multiplier;
+                        fog.ai_wpm_multiplier_percent = multiplier;
                     }
-                    if squid_ink.range_words == 0 {
+                    if fog.range_words == 0 {
                         bail!(
-                            "item '{}' squid ink range_words must be greater than zero",
+                            "item '{}' fog range_words must be greater than zero",
                             override_item.id
                         );
                     }
-                    if squid_ink.duration_ms == 0 {
+                    if fog.duration_ms == 0 {
                         bail!(
-                            "item '{}' squid ink duration_ms must be greater than zero",
+                            "item '{}' fog duration_ms must be greater than zero",
                             override_item.id
                         );
                     }
-                    if squid_ink.ai_wpm_multiplier_percent == 0
-                        || squid_ink.ai_wpm_multiplier_percent > 100
-                    {
+                    if fog.ai_wpm_multiplier_percent == 0 || fog.ai_wpm_multiplier_percent > 100 {
                         bail!(
-                            "item '{}' squid ink ai_wpm_multiplier_percent must be between 1 and 100",
+                            "item '{}' fog ai_wpm_multiplier_percent must be between 1 and 100",
                             override_item.id
                         );
                     }
-                    target.effect.squid_ink = Some(squid_ink);
+                    target.effect.fog = Some(fog);
                 }
             }
 
@@ -902,11 +900,11 @@ impl ItemRegistry {
             .unwrap_or_default()
     }
 
-    pub fn squid_ink_effect(&self) -> SquidInkEffectConfig {
+    pub fn fog_effect(&self) -> FogEffectConfig {
         self.items
             .iter()
-            .find(|item| item.pickup == ItemPickup::Held(HeldItem::SquidInk))
-            .and_then(|item| item.effect.squid_ink)
+            .find(|item| item.pickup == ItemPickup::Held(HeldItem::Fog))
+            .and_then(|item| item.effect.fog)
             .unwrap_or_default()
     }
 
@@ -1505,7 +1503,7 @@ mod tests {
                         }
                     },
                     {
-                        "id": "squid_ink",
+                        "id": "fog",
                         "effect": {
                             "range_words": 7,
                             "duration_ms": 2500,
@@ -1532,11 +1530,11 @@ mod tests {
         assert_eq!(registry.focus_effect().ai_wpm_boost, 15);
         assert_eq!(registry.cyclone_effect().affected_words, 2);
         assert_eq!(registry.cyclone_effect().stun_ms, 3000);
-        assert_eq!(registry.squid_ink_effect().range_words, 7);
-        assert_eq!(registry.squid_ink_effect().duration_ms, 2500);
-        assert_eq!(registry.squid_ink_effect().impact_blink_ms, 800);
-        assert_eq!(registry.squid_ink_effect().cue_ms, 600);
-        assert_eq!(registry.squid_ink_effect().ai_wpm_multiplier_percent, 55);
+        assert_eq!(registry.fog_effect().range_words, 7);
+        assert_eq!(registry.fog_effect().duration_ms, 2500);
+        assert_eq!(registry.fog_effect().impact_blink_ms, 800);
+        assert_eq!(registry.fog_effect().cue_ms, 600);
+        assert_eq!(registry.fog_effect().ai_wpm_multiplier_percent, 55);
 
         let _ = std::fs::remove_file(path);
     }
@@ -1591,6 +1589,6 @@ mod tests {
         assert_eq!(registry.focus_effect().duration_ms, 10_000);
         assert_eq!(registry.focus_effect().ai_wpm_boost, 10);
         assert!(registry.cyclone_effect().stun_ms > registry.banana_effect().stun_ms);
-        assert_eq!(registry.squid_ink_effect().range_words, 5);
+        assert_eq!(registry.fog_effect().range_words, 5);
     }
 }

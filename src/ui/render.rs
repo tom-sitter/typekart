@@ -539,7 +539,7 @@ fn visible_item_cue(
             AttackDirection::Ahead | AttackDirection::Overlap => ItemCuePlacement::After,
             AttackDirection::Behind => ItemCuePlacement::Before,
         },
-        ItemCueKind::SquidInk => ItemCuePlacement::After,
+        ItemCueKind::Fog => ItemCuePlacement::After,
     };
     let label = match icon_mode {
         IconMode::Ascii => cue.ascii_label,
@@ -908,8 +908,8 @@ fn impact_marker_symbol(
         (ImpactCueKind::Banana, IconMode::Ascii) => Some("B"),
         (ImpactCueKind::Cyclone, IconMode::Unicode) => Some("🌀"),
         (ImpactCueKind::Cyclone, IconMode::Ascii) => Some("C"),
-        (ImpactCueKind::SquidInk, IconMode::Unicode) => Some("🦑"),
-        (ImpactCueKind::SquidInk, IconMode::Ascii) => Some("I"),
+        (ImpactCueKind::Fog, IconMode::Unicode) => Some("🌫"),
+        (ImpactCueKind::Fog, IconMode::Ascii) => Some("F"),
         (ImpactCueKind::ShieldBlock, IconMode::Unicode) => Some("🛡"),
         (ImpactCueKind::ShieldBlock, IconMode::Ascii) => Some("S"),
     }
@@ -955,7 +955,7 @@ fn marker_style(color: Color, impact_cue: Option<ImpactCue>, now: std::time::Ins
         match impact_cue.map(|cue| cue.kind) {
             Some(ImpactCueKind::Banana) => base.bg(Color::Yellow).fg(Color::Black),
             Some(ImpactCueKind::Cyclone) => base.bg(Color::Blue).fg(Color::White),
-            Some(ImpactCueKind::SquidInk) => base.bg(Color::Black).fg(Color::White),
+            Some(ImpactCueKind::Fog) => base.bg(Color::Gray).fg(Color::Black),
             Some(ImpactCueKind::ShieldBlock) => base.bg(Color::Cyan).fg(Color::Black),
             None => base,
         }
@@ -1157,7 +1157,7 @@ fn visible_word_char(
     ch: char,
     now: std::time::Instant,
 ) -> char {
-    if player.is_inked_at(now) && word_index > player.word_index {
+    if player.is_fogged_at(now) && word_index > player.word_index {
         '█'
     } else {
         ch
@@ -2337,12 +2337,12 @@ mod tests {
     }
 
     #[test]
-    fn squid_ink_reveals_current_word_and_masks_future_words_until_expired() {
+    fn fog_reveals_current_word_and_masks_future_words_until_expired() {
         let now = Instant::now();
         let mut player = PlayerState::new(now);
         player.word_index = 1;
-        player.inked_word_index = Some(0);
-        player.inked_until = Some(now + Duration::from_secs(5));
+        player.fogged_word_index = Some(0);
+        player.fogged_until = Some(now + Duration::from_secs(5));
 
         assert_eq!(visible_word_char(&player, 1, 'r', now), 'r');
         assert_eq!(visible_word_char(&player, 2, 'l', now), '█');

@@ -194,13 +194,13 @@ fn hash_item_registry(item_registry: &ItemRegistry) -> ModHash {
                 cyclone.stun_ms.to_string(),
             ]);
         }
-        if let Some(squid_ink) = item.effect.squid_ink {
+        if let Some(fog) = item.effect.fog {
             fields.extend([
-                squid_ink.range_words.to_string(),
-                squid_ink.duration_ms.to_string(),
-                squid_ink.impact_blink_ms.to_string(),
-                squid_ink.cue_ms.to_string(),
-                squid_ink.ai_wpm_multiplier_percent.to_string(),
+                fog.range_words.to_string(),
+                fog.duration_ms.to_string(),
+                fog.impact_blink_ms.to_string(),
+                fog.cue_ms.to_string(),
+                fog.ai_wpm_multiplier_percent.to_string(),
             ]);
         }
         if let Some(banana_display) = &item.display.banana {

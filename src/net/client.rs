@@ -1512,7 +1512,7 @@ fn network_track_word_line<'a>(
 }
 
 fn network_visible_word_char(local: Option<&PlayerSnapshot>, word_index: usize, ch: char) -> char {
-    if local.is_some_and(|player| player.inked && word_index > player.word_index) {
+    if local.is_some_and(|player| player.fogged && word_index > player.word_index) {
         '█'
     } else {
         ch
@@ -1945,15 +1945,15 @@ fn network_impact_marker(
     match (marker, symbol, icon_mode) {
         (NETWORK_RACER_MARKER, "🍌", IconMode::Unicode) => Some("█🍌"),
         (NETWORK_RACER_MARKER, "🌀", IconMode::Unicode) => Some("█🌀"),
-        (NETWORK_RACER_MARKER, "🦑", IconMode::Unicode) => Some("█🦑"),
+        (NETWORK_RACER_MARKER, "🌫", IconMode::Unicode) => Some("█🌫"),
         (NETWORK_RACER_MARKER, "🛡", IconMode::Unicode) => Some("█🛡"),
         ("<", "🍌", IconMode::Unicode) => Some("<🍌"),
         ("<", "🌀", IconMode::Unicode) => Some("<🌀"),
-        ("<", "🦑", IconMode::Unicode) => Some("<🦑"),
+        ("<", "🌫", IconMode::Unicode) => Some("<🌫"),
         ("<", "🛡", IconMode::Unicode) => Some("<🛡"),
         (">", "🍌", IconMode::Unicode) => Some(">🍌"),
         (">", "🌀", IconMode::Unicode) => Some(">🌀"),
-        (">", "🦑", IconMode::Unicode) => Some(">🦑"),
+        (">", "🌫", IconMode::Unicode) => Some(">🌫"),
         (">", "🛡", IconMode::Unicode) => Some(">🛡"),
         (NETWORK_RACER_MARKER | "<" | ">", "B", IconMode::Ascii) => Some("[B]"),
         (NETWORK_RACER_MARKER | "<" | ">", "C", IconMode::Ascii) => Some("[C]"),
@@ -1976,8 +1976,8 @@ fn network_impact_marker_symbol(
         (ImpactCueSnapshotKind::Banana, IconMode::Ascii) => Some("B"),
         (ImpactCueSnapshotKind::Cyclone, IconMode::Unicode) => Some("🌀"),
         (ImpactCueSnapshotKind::Cyclone, IconMode::Ascii) => Some("C"),
-        (ImpactCueSnapshotKind::SquidInk, IconMode::Unicode) => Some("🦑"),
-        (ImpactCueSnapshotKind::SquidInk, IconMode::Ascii) => Some("I"),
+        (ImpactCueSnapshotKind::Fog, IconMode::Unicode) => Some("🌫"),
+        (ImpactCueSnapshotKind::Fog, IconMode::Ascii) => Some("F"),
         (ImpactCueSnapshotKind::ShieldBlock, IconMode::Unicode) => Some("🛡"),
         (ImpactCueSnapshotKind::ShieldBlock, IconMode::Ascii) => Some("S"),
     }
@@ -1989,7 +1989,7 @@ fn network_marker_style(player: &PlayerSnapshot, color: Color) -> Style {
         match cue.kind {
             ImpactCueSnapshotKind::Banana => base.bg(Color::Yellow).fg(Color::Black),
             ImpactCueSnapshotKind::Cyclone => base.bg(Color::Blue).fg(Color::White),
-            ImpactCueSnapshotKind::SquidInk => base.bg(Color::Black).fg(Color::White),
+            ImpactCueSnapshotKind::Fog => base.bg(Color::Gray).fg(Color::Black),
             ImpactCueSnapshotKind::ShieldBlock => base.bg(Color::Cyan).fg(Color::Black),
         }
     } else if player.impact_remaining_ms > 0 {
@@ -2783,7 +2783,7 @@ mod tests {
             connected: true,
             shielded: false,
             focused: false,
-            inked: false,
+            fogged: false,
             boosted: false,
             stunned: false,
             impact_remaining_ms: 0,

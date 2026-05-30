@@ -17,10 +17,13 @@ use typekart_protocol::{LobbyPlayer, NetworkRacePhase, PlayerId, RaceResultRow};
 use super::{
     ai_driver::{AiDriverAdvance, AiDriverConfig, AiDriverState, advance_ai_driver},
     bonus::BonusState,
-    bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
+    bonus_flow::{
+        BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key,
+        claim_random_available_bonus,
+    },
     input_rules::player_input_is_paused_or_finished,
     item_effects::{ItemActivationReport, RaceItemEffectState, activate_item_pickup},
-    items::{ItemPickup, ItemRegistry},
+    items::{ItemPickup, ItemRegistry, ItemRollContext},
     lobby::{lobby_players_to_participants, ready_connected_participants},
     race::{RaceLifecycleState, RaceParticipant, RacePlayerId, RaceState},
     race_flow::{RaceFlowOutcome, advance_race_flow},
@@ -126,6 +129,16 @@ pub struct HostItemPickupState<'a> {
     pub item_registry: &'a ItemRegistry,
 }
 
+pub struct HostAiBonusClaimState<'a, PlayerKey> {
+    pub race: &'a mut RaceState,
+    pub bonuses: &'a mut BonusState,
+    pub bonus_attempts: &'a mut HashMap<PlayerKey, BonusAttempt>,
+    pub spent_bonus_gaps: &'a mut HashMap<PlayerKey, usize>,
+    pub effects: &'a mut HashMap<RacePlayerId, RaceItemEffectState>,
+    pub ai_players: &'a HashSet<RacePlayerId>,
+    pub item_registry: &'a ItemRegistry,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostItemPickupInput {
     pub player_id: RacePlayerId,
@@ -139,6 +152,15 @@ pub struct HostAiTickInput {
     pub config: AiDriverConfig,
     pub now: Instant,
     pub elapsed: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostAiBonusClaimInput<PlayerKey> {
+    pub player_key: PlayerKey,
+    pub player_id: RacePlayerId,
+    pub player_name: String,
+    pub item_context: ItemRollContext,
+    pub now: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -547,6 +569,58 @@ pub fn advance_host_ai_racer_tick(
         input.now,
         input.elapsed,
     )
+}
+
+pub fn try_host_ai_bonus_claim<PlayerKey, R>(
+    state: &mut HostAiBonusClaimState<'_, PlayerKey>,
+    input: HostAiBonusClaimInput<PlayerKey>,
+    rng: &mut R,
+) -> Option<HostBonusClaimAftermath>
+where
+    PlayerKey: Copy + Eq + Hash,
+    R: Rng,
+{
+    if player_input_is_paused_or_finished(state.race, state.effects, input.player_id, input.now)
+        || state
+            .effects
+            .get(&input.player_id)
+            .and_then(|effects| effects.item_cue.as_ref())
+            .is_some_and(|cue| cue.until > input.now)
+    {
+        return None;
+    }
+
+    let outcome = claim_random_available_bonus(
+        &mut BonusFlowState {
+            race: state.race,
+            bonuses: state.bonuses,
+            bonus_attempts: state.bonus_attempts,
+            spent_bonus_gaps: state.spent_bonus_gaps,
+        },
+        input.player_key,
+        input.player_id,
+        input.now,
+        BonusClaimRoll {
+            item_context: input.item_context,
+            item_registry: state.item_registry,
+            rng,
+        },
+    )?;
+
+    Some(apply_host_bonus_claim(
+        &mut HostItemPickupState {
+            race: state.race,
+            effects: state.effects,
+            ai_players: state.ai_players,
+            item_registry: state.item_registry,
+        },
+        HostBonusClaimInput {
+            player_id: input.player_id,
+            player_name: input.player_name,
+            pickup: outcome.pickup,
+            now: input.now,
+        },
+    ))
 }
 
 pub fn host_item_aftermath_actions(report: ItemActivationReport) -> HostItemAftermath {
@@ -1140,7 +1214,7 @@ mod tests {
                 config: AiDriverConfig {
                     base_wpm: 12.0,
                     focus_boost_wpm: 0,
-                    ink_multiplier_percent: 100,
+                    fog_multiplier_percent: 100,
                 },
                 now,
                 elapsed: Duration::from_secs(1),
@@ -1180,7 +1254,7 @@ mod tests {
                 config: AiDriverConfig {
                     base_wpm: 600.0,
                     focus_boost_wpm: 0,
-                    ink_multiplier_percent: 100,
+                    fog_multiplier_percent: 100,
                 },
                 now,
                 elapsed: Duration::from_secs(1),
@@ -1310,6 +1384,65 @@ mod tests {
             "host missed the bonus"
         );
         assert!(!race.players[0].state.has_active_shield(now));
+    }
+
+    #[test]
+    fn host_ai_bonus_claim_rolls_and_applies_pickup() {
+        let now = Instant::now();
+        let mut race = RaceState::new(Track::new(vec!["go".to_string(), "fast".to_string()]));
+        race.add_player(
+            RacePlayerId(1),
+            "ai-1",
+            crate::game::race::PlayerColorId::Cyan,
+            now,
+        );
+        race.players[0].state.word_index = 1;
+        let mut bonuses = BonusState::with_points(
+            vec![BonusPoint::new(
+                0,
+                [
+                    BonusChoice::available("dash"),
+                    BonusChoice::available("spin"),
+                    BonusChoice::available("zoom"),
+                ],
+            )],
+            vec!["dash".into(), "spin".into(), "zoom".into()],
+        );
+        let mut attempts = HashMap::new();
+        let mut spent_bonus_gaps = HashMap::new();
+        let mut effects = HashMap::new();
+        let ai_players = HashSet::from([RacePlayerId(1)]);
+        let registry = ItemRegistry::builtin();
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let outcome = super::try_host_ai_bonus_claim(
+            &mut super::HostAiBonusClaimState {
+                race: &mut race,
+                bonuses: &mut bonuses,
+                bonus_attempts: &mut attempts,
+                spent_bonus_gaps: &mut spent_bonus_gaps,
+                effects: &mut effects,
+                ai_players: &ai_players,
+                item_registry: &registry,
+            },
+            super::HostAiBonusClaimInput {
+                player_key: RacePlayerId(1),
+                player_id: RacePlayerId(1),
+                player_name: "ai-1".to_string(),
+                item_context: item_context(),
+                now,
+            },
+            &mut rng,
+        )
+        .expect("AI should claim an available bonus");
+
+        assert!(outcome.pickup.is_some());
+        assert!(
+            outcome.aftermath.events[0]
+                .message()
+                .starts_with("ai-1 got ")
+        );
+        assert_eq!(spent_bonus_gaps.get(&RacePlayerId(1)), Some(&0));
     }
 
     #[test]

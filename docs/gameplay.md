@@ -95,7 +95,7 @@ Items currently activate automatically when obtained.
 | Shield | Protects the racer from the next blockable attack until it expires or is consumed. |
 | Focus | Temporarily discards incorrect keys without adding typo input. Correct keys are still required to advance. AI racers get a small WPM boost while focused. |
 | Cyclone | Targets first place, briefly stuns them, and reverses the affected racer's next word. |
-| Squid Ink | Hits every unfinished racer within five words and hides upcoming words for up to five seconds. The current word is visible, but later words stay hidden until reached or until the ink wears off. AI racers hesitate while inked. |
+| Fog | Hits every unfinished racer within five words and hides upcoming words for up to five seconds. The current word is visible, but later words stay hidden until reached or until the fog wears off. AI racers hesitate while fogged. |
 
 ## Visual Indicators
 
@@ -108,9 +108,9 @@ Unicode icons are enabled by default. Use `--ascii` if a terminal renders emoji 
 | Focus icon on marker and light magenta track text | Focus is active. |
 | `🍌 >>` or `<< 🍌` | Banana fired ahead or behind. |
 | Cyclone cue | Cyclone fired. |
-| Squid icon cue | Squid Ink fired. |
+| Fog icon cue | Fog fired. |
 | Yellow blink | Banana impact. |
 | Blue blink | Cyclone impact. |
-| Black blink | Squid Ink impact. |
+| Gray blink | Fog impact. |
 
 ASCII fallback keeps plain text markers for terminals without reliable Unicode support.

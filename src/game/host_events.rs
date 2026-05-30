@@ -43,7 +43,7 @@ pub enum HostEvent {
         target_name: String,
         item: HeldItem,
     },
-    SquidInkHit {
+    FogHit {
         attacker_id: RacePlayerId,
         attacker_name: String,
         hit_count: usize,
@@ -76,11 +76,11 @@ impl HostEvent {
             Self::ItemBlocked {
                 target_name, item, ..
             } => format!("{target_name} blocked {}", item.name()),
-            Self::SquidInkHit {
+            Self::FogHit {
                 attacker_name,
                 hit_count,
                 ..
-            } => format!("{attacker_name} inked {hit_count} racer(s)"),
+            } => format!("{attacker_name} fogged {hit_count} racer(s)"),
         }
     }
 }

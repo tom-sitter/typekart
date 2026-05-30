@@ -28,7 +28,7 @@ typekart gallery items --scenario multiplayer-opening
 typekart gallery items --scenario bonus-scramble
 typekart gallery items --scenario comeback-chase
 typekart gallery items --scenario banana-hit-pack
-typekart gallery items --scenario squid-ink-pack
+typekart gallery items --scenario fog-pack
 ```
 
 ## Controls
@@ -51,7 +51,7 @@ Screenshot-oriented scenarios:
 - `bonus-scramble`: racers converge around a bonus-word pickup point with overlapping effects.
 - `comeback-chase`: a trailing player uses boost and Focus while chasing shielded leaders.
 - `banana-hit-pack`: the player firing a Banana while another racer shows the impact blink.
-- `squid-ink-pack`: Squid Ink fired, multiple racers impacted, and future words hidden.
+- `fog-pack`: Fog fired, multiple racers impacted, and future words hidden.
 - `item-pileup`: several simultaneous effects to stress-test readability.
 - `finish-sprint`: racers near the finish line with one racer already finished.
 
@@ -62,7 +62,7 @@ Focused item scenarios:
 - Focus active marker.
 - Banana fired ahead, behind, and impact blink.
 - Cyclone fired and impact blink.
-- Squid Ink fired and impact blink.
-- Squid Ink obscuring words beyond the affected racer's current word.
+- Fog fired and impact blink.
+- Fog obscuring words beyond the affected racer's current word.
 
 The gallery is not a full simulator. It uses deterministic race states so visual states can be compared quickly.

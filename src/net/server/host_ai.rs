@@ -207,10 +207,7 @@ fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: In
     let config = AiDriverConfig {
         base_wpm: words_per_minute,
         focus_boost_wpm: state.item_registry.focus_effect().ai_wpm_boost,
-        ink_multiplier_percent: state
-            .item_registry
-            .squid_ink_effect()
-            .ai_wpm_multiplier_percent,
+        fog_multiplier_percent: state.item_registry.fog_effect().ai_wpm_multiplier_percent,
     };
     let advance = advance_host_ai_racer_tick(
         &mut state.race,
