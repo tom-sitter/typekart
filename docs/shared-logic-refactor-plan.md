@@ -624,6 +624,9 @@ Progress:
 - `src/game/host_session.rs` now owns shared bonus-claim aftermath handling:
   pickup/miss events, item activation, interruptions, and AI reset requests are
   produced through one helper used by local, network, and browser hosts.
+- Item and bonus aftermath now also flow through shared adapter actions:
+  clear bonus attempts, reset AI driver state, and emit host events. Local,
+  network, and browser adapters still apply those actions to their own storage.
 - `src/game/host_session.rs` now returns a shared start-race outcome from the
   countdown-to-racing transition, including the `Racing` phase and common race
   started event text used by network and browser hosts.

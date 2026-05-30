@@ -17,11 +17,12 @@ use crate::game::{
     bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
     effects::ActiveEffect,
     host_session::{
-        HostBonusClaimInput, HostItemPickupInput, HostItemPickupState, HostPlayerKeyInput,
-        HostPlayerKeyState, advance_active_race_tick, advance_host_race_lifecycle,
-        apply_host_bonus_claim, apply_host_item_pickup, apply_host_player_key,
-        begin_countdown_phase, connected_racer_count, countdown_should_cancel,
-        countdown_start_plan, countdown_tick_phase, host_item_aftermath_actions,
+        HostAftermathAction, HostBonusClaimInput, HostItemAftermath, HostItemPickupInput,
+        HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState, advance_active_race_tick,
+        advance_host_race_lifecycle, apply_host_bonus_claim, apply_host_item_pickup,
+        apply_host_player_key, begin_countdown_phase, connected_racer_count,
+        countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
+        host_aftermath_adapter_actions, host_item_aftermath_actions,
         prepare_race_from_participants, return_to_lobby_outcome, start_race_from_countdown,
     },
     item_effects::{
@@ -1058,19 +1059,8 @@ impl LocalSession {
         );
 
         self.sync_from_shared_item_race(race);
-        self.handle_shared_interruptions(&outcome.aftermath.interrupted_players, now);
-        for reset_ai in outcome.aftermath.reset_ai_players {
-            if let Some(ai) = self.local_ai_mut(reset_ai) {
-                ai.char_budget = 0.0;
-                ai.last_update = now;
-            }
-        }
         self.apply_shared_item_effects(effects);
-        for event in outcome.aftermath.events {
-            let event = event.message();
-            self.run_log.push(now, event.clone());
-            self.events.push(event);
-        }
+        self.apply_shared_item_aftermath(outcome.aftermath, now);
     }
 
     fn activate_shared_item_pickup(
@@ -1102,18 +1092,28 @@ impl LocalSession {
 
         let aftermath = host_item_aftermath_actions(report);
         self.sync_from_shared_item_race(race);
-        self.handle_shared_interruptions(&aftermath.interrupted_players, now);
-        for reset_ai in aftermath.reset_ai_players {
-            if let Some(ai) = self.local_ai_mut(reset_ai) {
-                ai.char_budget = 0.0;
-                ai.last_update = now;
-            }
-        }
         self.apply_shared_item_effects(effects);
-        for event in aftermath.events {
-            let event = event.message();
-            self.run_log.push(now, event.clone());
-            self.events.push(event);
+        self.apply_shared_item_aftermath(aftermath, now);
+    }
+
+    fn apply_shared_item_aftermath(&mut self, aftermath: HostItemAftermath, now: Instant) {
+        for action in host_aftermath_adapter_actions(aftermath) {
+            match action {
+                HostAftermathAction::ClearBonusAttempt(player_id) => {
+                    self.handle_shared_interruptions(&[player_id], now);
+                }
+                HostAftermathAction::ResetAiDriver(player_id) => {
+                    if let Some(ai) = self.local_ai_mut(player_id) {
+                        ai.char_budget = 0.0;
+                        ai.last_update = now;
+                    }
+                }
+                HostAftermathAction::EmitEvent(event) => {
+                    let event = event.message();
+                    self.run_log.push(now, event.clone());
+                    self.events.push(event);
+                }
+            }
         }
     }
 

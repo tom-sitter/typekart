@@ -7,7 +7,10 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crate::game::{host_session::HostItemAftermath, item_effects::advance_mushrooms};
+use crate::game::{
+    host_session::{HostAftermathAction, HostItemAftermath, host_aftermath_adapter_actions},
+    item_effects::advance_mushrooms,
+};
 #[cfg(test)]
 use crate::game::{
     host_session::{
@@ -52,21 +55,22 @@ pub(super) fn activate_network_pickup(
 }
 
 pub(super) fn apply_network_item_aftermath(state: &mut HostState, aftermath: HostItemAftermath) {
-    for interrupted in aftermath.interrupted_players {
-        state
-            .runtime
-            .bonus_attempts
-            .remove(&PlayerId(interrupted.0));
-    }
-    for ai_id in aftermath.reset_ai_players {
-        if let Some(ai) = state.ai_racers.get_mut(&PlayerId(ai_id.0)) {
-            ai.char_budget = 0.0;
+    for action in host_aftermath_adapter_actions(aftermath) {
+        match action {
+            HostAftermathAction::ClearBonusAttempt(player_id) => {
+                state.runtime.bonus_attempts.remove(&PlayerId(player_id.0));
+            }
+            HostAftermathAction::ResetAiDriver(player_id) => {
+                if let Some(ai) = state.ai_racers.get_mut(&PlayerId(player_id.0)) {
+                    ai.char_budget = 0.0;
+                }
+            }
+            HostAftermathAction::EmitEvent(event) => {
+                let message = event.message();
+                push_network_log(&state.debug_log, message.clone());
+                push_event(state, message);
+            }
         }
-    }
-    for event in aftermath.events {
-        let message = event.message();
-        push_network_log(&state.debug_log, message.clone());
-        push_event(state, message);
     }
 }
 

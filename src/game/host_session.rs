@@ -147,6 +147,13 @@ pub struct HostItemAftermath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostAftermathAction {
+    ClearBonusAttempt(RacePlayerId),
+    ResetAiDriver(RacePlayerId),
+    EmitEvent(HostEvent),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostBonusClaimAftermath {
     pub pickup: Option<ItemPickup>,
     pub aftermath: HostItemAftermath,
@@ -515,6 +522,26 @@ pub fn host_item_aftermath_actions(report: ItemActivationReport) -> HostItemAfte
         reset_ai_players: report.reset_ai_players,
         events: report.events,
     }
+}
+
+pub fn host_aftermath_adapter_actions(aftermath: HostItemAftermath) -> Vec<HostAftermathAction> {
+    aftermath
+        .interrupted_players
+        .into_iter()
+        .map(HostAftermathAction::ClearBonusAttempt)
+        .chain(
+            aftermath
+                .reset_ai_players
+                .into_iter()
+                .map(HostAftermathAction::ResetAiDriver),
+        )
+        .chain(
+            aftermath
+                .events
+                .into_iter()
+                .map(HostAftermathAction::EmitEvent),
+        )
+        .collect()
 }
 
 pub fn apply_host_bonus_claim(
@@ -1077,6 +1104,32 @@ mod tests {
         assert_eq!(aftermath.interrupted_players, vec![RacePlayerId(1)]);
         assert_eq!(aftermath.reset_ai_players, vec![RacePlayerId(2)]);
         assert_eq!(aftermath.events[0].message(), "ai-1 hit host");
+    }
+
+    #[test]
+    fn host_aftermath_adapter_actions_preserve_shared_order() {
+        let actions = super::host_aftermath_adapter_actions(super::HostItemAftermath {
+            interrupted_players: vec![RacePlayerId(1)],
+            reset_ai_players: vec![RacePlayerId(2)],
+            events: vec![super::HostEvent::ItemBlocked {
+                target_id: RacePlayerId(3),
+                target_name: "guest".to_string(),
+                item: HeldItem::Cyclone,
+            }],
+        });
+
+        assert_eq!(
+            actions,
+            vec![
+                super::HostAftermathAction::ClearBonusAttempt(RacePlayerId(1)),
+                super::HostAftermathAction::ResetAiDriver(RacePlayerId(2)),
+                super::HostAftermathAction::EmitEvent(super::HostEvent::ItemBlocked {
+                    target_id: RacePlayerId(3),
+                    target_name: "guest".to_string(),
+                    item: HeldItem::Cyclone,
+                }),
+            ]
+        );
     }
 
     #[test]

@@ -15,11 +15,12 @@ use typekart::game::{
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        HostBonusClaimInput, HostItemAftermath, HostItemPickupState, HostPlayerKeyInput,
-        HostPlayerKeyState, HostRaceTickAction, PreparedHostRace, advance_active_race_tick,
-        advance_host_race_lifecycle, apply_host_bonus_claim, apply_host_player_key,
-        begin_countdown_phase, cancel_countdown_outcome, countdown_start_plan,
-        countdown_tick_phase, finalize_host_race_results, prepare_race_from_selected_lobby_players,
+        HostAftermathAction, HostBonusClaimInput, HostItemAftermath, HostItemPickupState,
+        HostPlayerKeyInput, HostPlayerKeyState, HostRaceTickAction, PreparedHostRace,
+        advance_active_race_tick, advance_host_race_lifecycle, apply_host_bonus_claim,
+        apply_host_player_key, begin_countdown_phase, cancel_countdown_outcome,
+        countdown_start_plan, countdown_tick_phase, finalize_host_race_results,
+        host_aftermath_adapter_actions, prepare_race_from_selected_lobby_players,
         prepare_waiting_race_outcome, return_to_lobby_outcome, start_active_race_runtime_outcome,
         start_race_from_countdown,
     },
@@ -983,16 +984,18 @@ fn activate_browser_item_pickup(
 }
 
 fn apply_browser_item_aftermath(state: &mut BrowserHostLobby, aftermath: HostItemAftermath) {
-    for interrupted in aftermath.interrupted_players {
-        state.runtime.bonus_attempts.remove(&PlayerId(interrupted.0));
-    }
-    for ai_id in aftermath.reset_ai_players {
-        state
-            .ai_char_budget
-            .insert(PlayerId(ai_id.0), AiDriverState::default());
-    }
-    for event in aftermath.events {
-        state.push_event(event.message());
+    for action in host_aftermath_adapter_actions(aftermath) {
+        match action {
+            HostAftermathAction::ClearBonusAttempt(player_id) => {
+                state.runtime.bonus_attempts.remove(&PlayerId(player_id.0));
+            }
+            HostAftermathAction::ResetAiDriver(player_id) => {
+                state
+                    .ai_char_budget
+                    .insert(PlayerId(player_id.0), AiDriverState::default());
+            }
+            HostAftermathAction::EmitEvent(event) => state.push_event(event.message()),
+        }
     }
 }
 
