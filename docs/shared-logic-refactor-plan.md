@@ -614,9 +614,16 @@ Progress:
 - Race result finalization now has a shared host-session projection that
   returns protocol placements, protocol result rows, and semantic result events.
   Network result messages and browser result frames both use this projection.
-- Host-session events now have an initial semantic representation for player
-  finishes, race finish, and existing item messages. Adapters still decide how
-  those events are rendered, logged, or broadcast.
+- Host-visible events now live in `src/game/host_events.rs` with semantic
+  variants for player finishes, race finish, item misses, hits, blocks, and
+  Squid Ink hit counts. Adapters still decide how those events are rendered,
+  logged, or broadcast, and can use `HostEvent::message()` for the existing
+  event-feed text.
+- Local single-player item events now use the same neutral host-event wording
+  as LAN and browser hosts, removing the local-only item message rewrite layer.
+- `src/game/host_session.rs` now owns shared bonus-claim aftermath handling:
+  pickup/miss events, item activation, interruptions, and AI reset requests are
+  produced through one helper used by local, network, and browser hosts.
 - `src/game/host_session.rs` now returns a shared start-race outcome from the
   countdown-to-racing transition, including the `Racing` phase and common race
   started event text used by network and browser hosts.

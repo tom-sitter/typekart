@@ -27,6 +27,8 @@ use super::{
     typing::{KeyAction, TypingEvent},
 };
 
+pub use super::host_events::HostEvent;
+
 #[derive(Debug, Clone)]
 pub struct PreparedHostRace {
     pub race: RaceState,
@@ -94,23 +96,6 @@ pub struct ActiveRaceTickOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HostEvent {
-    PlayerFinished { placement: usize, name: String },
-    RaceFinished,
-    ItemMessage(String),
-}
-
-impl HostEvent {
-    pub fn message(&self) -> String {
-        match self {
-            Self::PlayerFinished { placement, name } => format!("{placement}. {name} finished"),
-            Self::RaceFinished => "Race finished".to_string(),
-            Self::ItemMessage(message) => message.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostPlayerKeyOutcome {
     pub handled: bool,
     pub typing_events: Vec<TypingEvent>,
@@ -147,10 +132,24 @@ pub struct HostItemPickupInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostBonusClaimInput {
+    pub player_id: RacePlayerId,
+    pub player_name: String,
+    pub pickup: Option<ItemPickup>,
+    pub now: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostItemAftermath {
     pub interrupted_players: Vec<RacePlayerId>,
     pub reset_ai_players: Vec<RacePlayerId>,
     pub events: Vec<HostEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostBonusClaimAftermath {
+    pub pickup: Option<ItemPickup>,
+    pub aftermath: HostItemAftermath,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -514,11 +513,53 @@ pub fn host_item_aftermath_actions(report: ItemActivationReport) -> HostItemAfte
     HostItemAftermath {
         interrupted_players: report.interrupted_players,
         reset_ai_players: report.reset_ai_players,
-        events: report
-            .events
-            .into_iter()
-            .map(HostEvent::ItemMessage)
-            .collect(),
+        events: report.events,
+    }
+}
+
+pub fn apply_host_bonus_claim(
+    state: &mut HostItemPickupState<'_>,
+    input: HostBonusClaimInput,
+) -> HostBonusClaimAftermath {
+    let mut aftermath = HostItemAftermath {
+        interrupted_players: Vec::new(),
+        reset_ai_players: Vec::new(),
+        events: Vec::new(),
+    };
+
+    match input.pickup {
+        Some(item) => {
+            aftermath.events.push(HostEvent::ItemPickedUp {
+                player_id: input.player_id,
+                player_name: input.player_name,
+                item,
+            });
+            let report = apply_host_item_pickup(
+                state,
+                HostItemPickupInput {
+                    player_id: input.player_id,
+                    item,
+                    now: input.now,
+                },
+            );
+            let item_aftermath = host_item_aftermath_actions(report);
+            aftermath
+                .interrupted_players
+                .extend(item_aftermath.interrupted_players);
+            aftermath
+                .reset_ai_players
+                .extend(item_aftermath.reset_ai_players);
+            aftermath.events.extend(item_aftermath.events);
+        }
+        None => aftermath.events.push(HostEvent::BonusMissed {
+            player_id: input.player_id,
+            player_name: input.player_name,
+        }),
+    }
+
+    HostBonusClaimAftermath {
+        pickup: input.pickup,
+        aftermath,
     }
 }
 
@@ -562,7 +603,7 @@ mod tests {
         bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
         effects::ActiveEffect,
         item_effects::ItemActivationReport,
-        items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
+        items::{HeldItem, ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
         race::{RaceLifecycleState, RacePlayerId},
         track::{Track, WordList},
         typing::{KeyAction, TypingEvent},
@@ -1022,7 +1063,13 @@ mod tests {
         let report = ItemActivationReport {
             interrupted_players: vec![RacePlayerId(1)],
             reset_ai_players: vec![RacePlayerId(2)],
-            events: vec!["ai-1 hit host".to_string()],
+            events: vec![super::HostEvent::ItemHit {
+                attacker_id: RacePlayerId(2),
+                attacker_name: "ai-1".to_string(),
+                target_id: RacePlayerId(1),
+                target_name: "host".to_string(),
+                item: HeldItem::Banana,
+            }],
         };
 
         let aftermath = super::host_item_aftermath_actions(report);
@@ -1030,6 +1077,79 @@ mod tests {
         assert_eq!(aftermath.interrupted_players, vec![RacePlayerId(1)]);
         assert_eq!(aftermath.reset_ai_players, vec![RacePlayerId(2)]);
         assert_eq!(aftermath.events[0].message(), "ai-1 hit host");
+    }
+
+    #[test]
+    fn host_bonus_claim_reports_pickup_and_applies_item() {
+        let now = Instant::now();
+        let players = vec![lobby_player(1, "host", true, true, PlayerKind::Human)];
+        let prepared = prepare_race_from_lobby(
+            &players,
+            Track::new(vec!["go".to_string(), "fast".to_string()]),
+            &WordList::from_static("go\nfast\nbonus"),
+            now,
+        );
+        let mut race = prepared.race;
+        let mut effects = HashMap::new();
+        let ai_players = HashSet::new();
+        let registry = ItemRegistry::builtin();
+
+        let outcome = super::apply_host_bonus_claim(
+            &mut super::HostItemPickupState {
+                race: &mut race,
+                effects: &mut effects,
+                ai_players: &ai_players,
+                item_registry: &registry,
+            },
+            super::HostBonusClaimInput {
+                player_id: RacePlayerId(1),
+                player_name: "host".to_string(),
+                pickup: Some(ItemPickup::Shield),
+                now,
+            },
+        );
+
+        assert_eq!(outcome.pickup, Some(ItemPickup::Shield));
+        assert_eq!(outcome.aftermath.events[0].message(), "host got Shield");
+        assert!(race.players[0].state.has_active_shield(now));
+    }
+
+    #[test]
+    fn host_bonus_claim_reports_missed_bonus_without_item_effects() {
+        let now = Instant::now();
+        let players = vec![lobby_player(1, "host", true, true, PlayerKind::Human)];
+        let prepared = prepare_race_from_lobby(
+            &players,
+            Track::new(vec!["go".to_string(), "fast".to_string()]),
+            &WordList::from_static("go\nfast\nbonus"),
+            now,
+        );
+        let mut race = prepared.race;
+        let mut effects = HashMap::new();
+        let ai_players = HashSet::new();
+        let registry = ItemRegistry::builtin();
+
+        let outcome = super::apply_host_bonus_claim(
+            &mut super::HostItemPickupState {
+                race: &mut race,
+                effects: &mut effects,
+                ai_players: &ai_players,
+                item_registry: &registry,
+            },
+            super::HostBonusClaimInput {
+                player_id: RacePlayerId(1),
+                player_name: "host".to_string(),
+                pickup: None,
+                now,
+            },
+        );
+
+        assert_eq!(outcome.pickup, None);
+        assert_eq!(
+            outcome.aftermath.events[0].message(),
+            "host missed the bonus"
+        );
+        assert!(!race.players[0].state.has_active_shield(now));
     }
 
     #[test]

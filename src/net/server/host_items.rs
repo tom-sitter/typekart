@@ -3,14 +3,17 @@
 //! Item targeting and effect rules live in `game::item_effects`. This module
 //! handles the network host's side effects around those shared item reports.
 
-use std::{collections::HashSet, time::Instant};
+#[cfg(test)]
+use std::collections::HashSet;
+use std::time::Instant;
 
+use crate::game::{host_session::HostItemAftermath, item_effects::advance_mushrooms};
+#[cfg(test)]
 use crate::game::{
     host_session::{
         HostItemPickupInput, HostItemPickupState, apply_host_item_pickup,
         host_item_aftermath_actions,
     },
-    item_effects::advance_mushrooms,
     items::ItemPickup,
     race::RacePlayerId,
 };
@@ -18,6 +21,7 @@ use crate::net::{log::push_network_log, protocol::PlayerId};
 
 use super::{HostState, push_event};
 
+#[cfg(test)]
 pub(super) fn activate_network_pickup(
     state: &mut HostState,
     player_id: PlayerId,
@@ -44,6 +48,10 @@ pub(super) fn activate_network_pickup(
     );
 
     let aftermath = host_item_aftermath_actions(report);
+    apply_network_item_aftermath(state, aftermath);
+}
+
+pub(super) fn apply_network_item_aftermath(state: &mut HostState, aftermath: HostItemAftermath) {
     for interrupted in aftermath.interrupted_players {
         state
             .runtime

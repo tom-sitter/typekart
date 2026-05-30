@@ -10,7 +10,10 @@ use rand::thread_rng;
 
 use crate::game::{
     bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
-    host_session::{HostPlayerKeyInput, HostPlayerKeyState, apply_host_player_key},
+    host_session::{
+        HostBonusClaimInput, HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState,
+        apply_host_bonus_claim, apply_host_player_key,
+    },
     item_effects::player_has_active_mushroom_effect,
     items::{ItemPickup, ItemRollContext, RacePositionBand},
     race::RacePlayerId,
@@ -21,7 +24,7 @@ use crate::net::{log::push_network_log, protocol::PlayerId};
 use super::{
     HostState,
     host_input::{player_input_is_paused, player_label, player_name},
-    host_items, push_event,
+    host_items,
 };
 
 pub(super) fn apply_network_key_input(
@@ -160,24 +163,40 @@ fn handle_network_bonus_claim_outcome(
     now: Instant,
 ) {
     let name = player_name(state, player_id).unwrap_or_else(|| format!("player {}", player_id.0));
-    match pickup {
-        Some(item) => {
-            let item_name = item_pickup_name(item);
-            push_event(state, format!("{name} got {item_name}"));
-            push_network_log(
-                &state.debug_log,
-                format!("{name} picked up {item_name} from network bonus"),
-            );
-            host_items::activate_network_pickup(state, player_id, item, now);
-        }
-        None => {
-            push_event(state, format!("{name} missed the bonus"));
-            push_network_log(
-                &state.debug_log,
-                format!("{name} missed network bonus; choice was unavailable"),
-            );
-        }
+    let ai_players = state
+        .ai_racers
+        .keys()
+        .map(|player_id| RacePlayerId(player_id.0))
+        .collect();
+    let outcome = apply_host_bonus_claim(
+        &mut HostItemPickupState {
+            race: &mut state.race,
+            effects: &mut state.runtime.player_effects,
+            ai_players: &ai_players,
+            item_registry: &state.item_registry,
+        },
+        HostBonusClaimInput {
+            player_id: RacePlayerId(player_id.0),
+            player_name: name.clone(),
+            pickup,
+            now,
+        },
+    );
+
+    if let Some(item) = outcome.pickup {
+        let item_name = item_pickup_name(item);
+        push_network_log(
+            &state.debug_log,
+            format!("{name} picked up {item_name} from network bonus"),
+        );
+    } else {
+        push_network_log(
+            &state.debug_log,
+            format!("{name} missed network bonus; choice was unavailable"),
+        );
     }
+
+    host_items::apply_network_item_aftermath(state, outcome.aftermath);
 }
 
 fn player_has_nearby_racer(

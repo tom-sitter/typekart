@@ -7,6 +7,7 @@ use std::{
 
 use super::{
     effects::ActiveEffect,
+    host_events::HostEvent,
     items::{
         BananaDisplayConfig, HeldItem, ItemPickup, ItemRegistry, RacerPosition,
         select_nearest_banana_target,
@@ -66,7 +67,7 @@ pub enum AttackDirection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemActivationReport {
-    pub events: Vec<String>,
+    pub events: Vec<HostEvent>,
     pub interrupted_players: Vec<RacePlayerId>,
     pub reset_ai_players: Vec<RacePlayerId>,
 }
@@ -257,15 +258,19 @@ fn activate_cyclone(
     let mut report = ItemActivationReport::new();
     let attacker_name = player_label(race, player_id);
     let Some(target_id) = first_place_target(race) else {
-        report
-            .events
-            .push(format!("{attacker_name} missed Cyclone"));
+        report.events.push(HostEvent::ItemMissed {
+            player_id,
+            player_name: attacker_name,
+            item: HeldItem::Cyclone,
+        });
         return report;
     };
     if target_id == player_id {
-        report
-            .events
-            .push(format!("{attacker_name} missed Cyclone"));
+        report.events.push(HostEvent::ItemMissed {
+            player_id,
+            player_name: attacker_name,
+            item: HeldItem::Cyclone,
+        });
         return report;
     };
 
@@ -296,9 +301,13 @@ fn activate_cyclone(
         now,
         &mut report,
     ) {
-        report
-            .events
-            .push(format!("{attacker_name} hit {target_name} with Cyclone"));
+        report.events.push(HostEvent::ItemHit {
+            attacker_id: player_id,
+            attacker_name,
+            target_id,
+            target_name,
+            item: HeldItem::Cyclone,
+        });
     }
     report
 }
@@ -334,7 +343,11 @@ fn activate_banana(
     let Some(target) =
         select_nearest_banana_target(attacker_word_index, &candidates, banana.range_words)
     else {
-        report.events.push(format!("{attacker_name} missed Banana"));
+        report.events.push(HostEvent::ItemMissed {
+            player_id,
+            player_name: attacker_name,
+            item: HeldItem::Banana,
+        });
         return report;
     };
 
@@ -360,9 +373,13 @@ fn activate_banana(
     ) {
         Some(BananaResolution::SpunOut) => {
             let target_name = player_label(race, target_id);
-            report
-                .events
-                .push(format!("{attacker_name} hit {target_name}"));
+            report.events.push(HostEvent::ItemHit {
+                attacker_id: player_id,
+                attacker_name,
+                target_id,
+                target_name,
+                item: HeldItem::Banana,
+            });
         }
         Some(BananaResolution::Blocked) | None => {}
     }
@@ -412,13 +429,17 @@ fn activate_squid_ink(
     }
 
     if hit_count == 0 {
-        report
-            .events
-            .push(format!("{attacker_name} missed Squid Ink"));
+        report.events.push(HostEvent::ItemMissed {
+            player_id,
+            player_name: attacker_name,
+            item: HeldItem::SquidInk,
+        });
     } else {
-        report
-            .events
-            .push(format!("{attacker_name} inked {hit_count} racer(s)"));
+        report.events.push(HostEvent::SquidInkHit {
+            attacker_id: player_id,
+            attacker_name,
+            hit_count,
+        });
     }
     report
 }
@@ -453,7 +474,11 @@ fn apply_banana_to_player(
             kind: RaceImpactCueKind::ShieldBlock,
             until: now + Duration::from_millis(700),
         });
-        report.events.push(format!("{target_name} blocked Banana"));
+        report.events.push(HostEvent::ItemBlocked {
+            target_id,
+            target_name,
+            item: HeldItem::Banana,
+        });
         return Some(BananaResolution::Blocked);
     }
 
@@ -515,7 +540,11 @@ fn apply_cyclone_to_player(
             kind: RaceImpactCueKind::ShieldBlock,
             until: now + Duration::from_millis(700),
         });
-        report.events.push(format!("{target_name} blocked Cyclone"));
+        report.events.push(HostEvent::ItemBlocked {
+            target_id,
+            target_name,
+            item: HeldItem::Cyclone,
+        });
         return false;
     }
 
@@ -575,9 +604,11 @@ fn apply_squid_ink_to_player(
             kind: RaceImpactCueKind::ShieldBlock,
             until: now + Duration::from_millis(700),
         });
-        report
-            .events
-            .push(format!("{target_name} blocked Squid Ink"));
+        report.events.push(HostEvent::ItemBlocked {
+            target_id,
+            target_name,
+            item: HeldItem::SquidInk,
+        });
         return false;
     }
 
@@ -745,7 +776,12 @@ mod tests {
             now,
         );
 
-        assert!(report.events.iter().any(|event| event == "host hit guest"));
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| event.message() == "host hit guest")
+        );
         assert_eq!(race.players[1].state.input, "");
         assert_eq!(race.players[1].state.typo_index, None);
         assert_eq!(effects[&RacePlayerId(2)].stunned_until, None);
@@ -809,7 +845,7 @@ mod tests {
             report
                 .events
                 .iter()
-                .any(|event| event == "guest hit host with Cyclone")
+                .any(|event| event.message() == "guest hit host with Cyclone")
         );
         assert_eq!(race.players[0].state.word_override(1), Some("owt"));
         assert_eq!(race.players[1].state.word_override(0), None);
@@ -837,7 +873,7 @@ mod tests {
             report
                 .events
                 .iter()
-                .any(|event| event == "host missed Cyclone")
+                .any(|event| event.message() == "host missed Cyclone")
         );
         assert_eq!(race.players[0].state.word_override(2), None);
         assert_eq!(race.players[1].state.word_override(1), None);

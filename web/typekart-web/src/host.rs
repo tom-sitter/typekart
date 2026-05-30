@@ -15,13 +15,13 @@ use typekart::game::{
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        HostItemPickupInput, HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState,
-        HostRaceTickAction, PreparedHostRace, advance_active_race_tick,
-        advance_host_race_lifecycle, apply_host_item_pickup, apply_host_player_key,
+        HostBonusClaimInput, HostItemAftermath, HostItemPickupState, HostPlayerKeyInput,
+        HostPlayerKeyState, HostRaceTickAction, PreparedHostRace, advance_active_race_tick,
+        advance_host_race_lifecycle, apply_host_bonus_claim, apply_host_player_key,
         begin_countdown_phase, cancel_countdown_outcome, countdown_start_plan,
-        countdown_tick_phase, finalize_host_race_results, host_item_aftermath_actions,
-        prepare_race_from_selected_lobby_players, prepare_waiting_race_outcome,
-        return_to_lobby_outcome, start_active_race_runtime_outcome, start_race_from_countdown,
+        countdown_tick_phase, finalize_host_race_results, prepare_race_from_selected_lobby_players,
+        prepare_waiting_race_outcome, return_to_lobby_outcome, start_active_race_runtime_outcome,
+        start_race_from_countdown,
     },
     item_effects::{RaceItemEffectState, advance_mushrooms, player_is_stunned},
     input_rules::player_input_is_paused,
@@ -42,6 +42,10 @@ use typekart::game::{
     },
     track::{Track, WordList},
     typing::KeyAction,
+};
+#[cfg(test)]
+use typekart::game::host_session::{
+    HostItemPickupInput, apply_host_item_pickup, host_item_aftermath_actions,
 };
 use typekart_protocol::{
     AiDifficultySnapshot, AssignedColor, ClientMessage, LobbyPlayer, ModConfigSnapshot,
@@ -918,16 +922,33 @@ fn handle_browser_bonus_claim_outcome(
         .find(|player| player.id == player_id)
         .map(|player| player.name.clone())
         .unwrap_or_else(|| format!("player {}", player_id.0));
-    match pickup {
-        Some(item) => {
-            let item_name = browser_item_pickup_name(item);
-            state.push_event(format!("{name} got {item_name}"));
-            activate_browser_item_pickup(state, player_id, item, now);
-        }
-        None => state.push_event(format!("{name} missed the bonus")),
-    }
+    let ai_players = state
+        .players
+        .iter()
+        .filter(|player| player.kind == PlayerKind::Bot)
+        .map(|player| RacePlayerId(player.id.0))
+        .collect::<HashSet<_>>();
+    let Some(core_race) = &mut state.core_race else {
+        return;
+    };
+    let outcome = apply_host_bonus_claim(
+        &mut HostItemPickupState {
+            race: core_race,
+            effects: &mut state.runtime.player_effects,
+            ai_players: &ai_players,
+            item_registry: &state.item_registry,
+        },
+        HostBonusClaimInput {
+            player_id: RacePlayerId(player_id.0),
+            player_name: name,
+            pickup,
+            now,
+        },
+    );
+    apply_browser_item_aftermath(state, outcome.aftermath);
 }
 
+#[cfg(test)]
 fn activate_browser_item_pickup(
     state: &mut BrowserHostLobby,
     player_id: PlayerId,
@@ -958,6 +979,10 @@ fn activate_browser_item_pickup(
     );
 
     let aftermath = host_item_aftermath_actions(report);
+    apply_browser_item_aftermath(state, aftermath);
+}
+
+fn apply_browser_item_aftermath(state: &mut BrowserHostLobby, aftermath: HostItemAftermath) {
     for interrupted in aftermath.interrupted_players {
         state.runtime.bonus_attempts.remove(&PlayerId(interrupted.0));
     }
@@ -1036,13 +1061,6 @@ fn browser_position_band(state: &BrowserHostLobby, player_id: PlayerId) -> RaceP
         RacePositionBand::Trailing
     } else {
         RacePositionBand::Middle
-    }
-}
-
-fn browser_item_pickup_name(item: ItemPickup) -> &'static str {
-    match item {
-        ItemPickup::Held(held_item) => held_item.name(),
-        ItemPickup::Shield => "Shield",
     }
 }
 

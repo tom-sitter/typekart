@@ -17,12 +17,12 @@ use crate::game::{
     bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
     effects::ActiveEffect,
     host_session::{
-        HostItemPickupInput, HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState,
-        advance_active_race_tick, advance_host_race_lifecycle, apply_host_item_pickup,
-        apply_host_player_key, begin_countdown_phase, connected_racer_count,
-        countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
-        host_item_aftermath_actions, prepare_race_from_participants, return_to_lobby_outcome,
-        start_race_from_countdown,
+        HostBonusClaimInput, HostItemPickupInput, HostItemPickupState, HostPlayerKeyInput,
+        HostPlayerKeyState, advance_active_race_tick, advance_host_race_lifecycle,
+        apply_host_bonus_claim, apply_host_item_pickup, apply_host_player_key,
+        begin_countdown_phase, connected_racer_count, countdown_should_cancel,
+        countdown_start_plan, countdown_tick_phase, host_item_aftermath_actions,
+        prepare_race_from_participants, return_to_lobby_outcome, start_race_from_countdown,
     },
     item_effects::{
         AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
@@ -933,42 +933,24 @@ impl LocalSession {
     }
 
     fn receive_ai_pickup(&mut self, ai_index: usize, item: ItemPickup, now: Instant) {
-        match item {
-            ItemPickup::Held(held_item) => {
-                let Some(ai) = self.ai_racers.get(ai_index) else {
-                    return;
-                };
-                let ai_name = ai.name.clone();
-                self.events
-                    .push(format!("{ai_name} got {}", held_item.name()));
-                self.run_log.push(
-                    now,
-                    format!(
-                        "{ai_name} picked up {} at word={}",
-                        held_item.name(),
-                        ai.player.word_index
-                    ),
-                );
-                self.activate_ai_held_item(ai_index, held_item, now);
-            }
-            ItemPickup::Shield => {
-                let Some(ai) = self.ai_racers.get(ai_index) else {
-                    return;
-                };
-                let ai_name = ai.name.clone();
-                let word_index = ai.player.word_index;
-                self.events.push(format!("{ai_name} got Shield"));
-                self.run_log.push(
-                    now,
-                    format!("{ai_name} picked up Shield at word={word_index}"),
-                );
-                self.activate_shared_item_pickup(
-                    RacePlayerId((ai.id + 1) as u64),
-                    ItemPickup::Shield,
-                    now,
-                );
-            }
-        }
+        let Some(ai) = self.ai_racers.get(ai_index) else {
+            return;
+        };
+        let ai_name = ai.name.clone();
+        let word_index = ai.player.word_index;
+        self.run_log.push(
+            now,
+            format!(
+                "{ai_name} picked up {} at word={word_index}",
+                item_pickup_name(item)
+            ),
+        );
+        self.activate_shared_bonus_claim(
+            RacePlayerId((ai.id + 1) as u64),
+            ai_name,
+            Some(item),
+            now,
+        );
     }
 
     fn activate_ai_held_item(&mut self, ai_index: usize, item: HeldItem, now: Instant) {
@@ -1046,6 +1028,51 @@ impl LocalSession {
         self.activate_shared_item_pickup(player_id, ItemPickup::Held(HeldItem::Focus), now);
     }
 
+    fn activate_shared_bonus_claim(
+        &mut self,
+        player_id: RacePlayerId,
+        player_name: String,
+        pickup: Option<ItemPickup>,
+        now: Instant,
+    ) {
+        let mut race = self.shared_race_state();
+        let ai_players = self
+            .ai_racers
+            .iter()
+            .map(|ai| RacePlayerId((ai.id + 1) as u64))
+            .collect::<HashSet<_>>();
+        let mut effects = self.shared_item_effects();
+        let outcome = apply_host_bonus_claim(
+            &mut HostItemPickupState {
+                race: &mut race,
+                effects: &mut effects,
+                ai_players: &ai_players,
+                item_registry: &self.item_registry,
+            },
+            HostBonusClaimInput {
+                player_id,
+                player_name,
+                pickup,
+                now,
+            },
+        );
+
+        self.sync_from_shared_item_race(race);
+        self.handle_shared_interruptions(&outcome.aftermath.interrupted_players, now);
+        for reset_ai in outcome.aftermath.reset_ai_players {
+            if let Some(ai) = self.local_ai_mut(reset_ai) {
+                ai.char_budget = 0.0;
+                ai.last_update = now;
+            }
+        }
+        self.apply_shared_item_effects(effects);
+        for event in outcome.aftermath.events {
+            let event = event.message();
+            self.run_log.push(now, event.clone());
+            self.events.push(event);
+        }
+    }
+
     fn activate_shared_item_pickup(
         &mut self,
         player_id: RacePlayerId,
@@ -1084,7 +1111,7 @@ impl LocalSession {
         }
         self.apply_shared_item_effects(effects);
         for event in aftermath.events {
-            let event = local_item_event(event.message());
+            let event = event.message();
             self.run_log.push(now, event.clone());
             self.events.push(event);
         }
@@ -1247,10 +1274,8 @@ impl LocalSession {
             self.push_typing_event(event, previous_word.as_deref());
         }
         for event in outcome.bonus_events {
-            if let BonusFlowEvent::ClaimResolved(outcome) = event
-                && let Some(item) = outcome.pickup
-            {
-                self.receive_pickup(item, now);
+            if let BonusFlowEvent::ClaimResolved(outcome) = event {
+                self.receive_pickup(outcome.pickup, now);
             }
         }
     }
@@ -1304,29 +1329,18 @@ impl LocalSession {
         self.activate_held_item(item, item_use, now);
     }
 
-    fn receive_pickup(&mut self, item: ItemPickup, now: Instant) {
-        match item {
-            ItemPickup::Held(held_item) => {
-                self.events.push(format!("Got {}", held_item.name()));
-                self.run_log.push(
-                    now,
-                    format!(
-                        "player picked up {} at word={}",
-                        held_item.name(),
-                        self.player.word_index
-                    ),
-                );
-                self.activate_held_item(held_item, ItemUse::Normal, now);
-            }
-            ItemPickup::Shield => {
-                self.events.push("Got Shield");
-                self.run_log.push(
-                    now,
-                    format!("player picked up Shield at word={}", self.player.word_index),
-                );
-                self.activate_shared_item_pickup(RacePlayerId(1), ItemPickup::Shield, now);
-            }
+    fn receive_pickup(&mut self, pickup: Option<ItemPickup>, now: Instant) {
+        if let Some(item) = pickup {
+            self.run_log.push(
+                now,
+                format!(
+                    "player picked up {} at word={}",
+                    item_pickup_name(item),
+                    self.player.word_index
+                ),
+            );
         }
+        self.activate_shared_bonus_claim(RacePlayerId(1), "you".to_string(), pickup, now);
     }
 
     fn activate_held_item(&mut self, item: HeldItem, _item_use: ItemUse, now: Instant) {
@@ -1405,29 +1419,10 @@ fn attack_direction_from_shared(direction: SharedAttackDirection) -> AttackDirec
     }
 }
 
-fn local_item_event(event: String) -> String {
-    if event == "you missed Cyclone" {
-        "Missed Cyclone".to_string()
-    } else if event == "you missed Banana" {
-        "Missed Banana".to_string()
-    } else if event == "you missed Squid Ink" {
-        "Missed Squid Ink".to_string()
-    } else if event == "you blocked Cyclone" {
-        "Blocked Cyclone".to_string()
-    } else if let Some(target) = event
-        .strip_prefix("you hit ")
-        .and_then(|suffix| suffix.strip_suffix(" with Cyclone"))
-    {
-        format!("Hit {target} with Cyclone")
-    } else if let Some(target) = event.strip_prefix("you hit ") {
-        format!("Hit {target}")
-    } else if let Some(count) = event
-        .strip_prefix("you inked ")
-        .and_then(|suffix| suffix.strip_suffix(" racer(s)"))
-    {
-        format!("Squid Ink hit {count} racer(s)")
-    } else {
-        event
+fn item_pickup_name(item: ItemPickup) -> &'static str {
+    match item {
+        ItemPickup::Held(held_item) => held_item.name(),
+        ItemPickup::Shield => "Shield",
     }
 }
 
@@ -1978,7 +1973,12 @@ mod tests {
 
         assert!(session.ai_racers[0].is_stunned(now));
         assert!(session.ai_racers[1].is_stunned(now));
-        assert!(session.events.entries().any(|entry| entry == "Hit ai-2"));
+        assert!(
+            session
+                .events
+                .entries()
+                .any(|entry| entry == "you hit ai-2")
+        );
     }
 
     #[test]
@@ -2023,7 +2023,7 @@ mod tests {
 
         let entries = session.events.entries().collect::<Vec<_>>();
         assert!(entries.contains(&"ai-1 blocked Banana"));
-        assert!(!entries.contains(&"Hit ai-1"));
+        assert!(!entries.contains(&"you hit ai-1"));
         assert!(!session.ai_racers[0].is_stunned(now));
         assert!(session.ai_racers[0].player.active_effects.is_empty());
         assert!(
@@ -2244,7 +2244,7 @@ mod tests {
         let mut session =
             LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
 
-        session.receive_pickup(ItemPickup::Held(HeldItem::Mushroom), Instant::now());
+        session.receive_pickup(Some(ItemPickup::Held(HeldItem::Mushroom)), Instant::now());
 
         assert_eq!(session.player.held_item, None);
         assert_eq!(session.player.word_index, 1);
@@ -2382,7 +2382,7 @@ mod tests {
         let mut session =
             LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
 
-        session.receive_pickup(ItemPickup::Shield, Instant::now());
+        session.receive_pickup(Some(ItemPickup::Shield), Instant::now());
 
         assert_eq!(session.player.held_item, None);
         assert!(matches!(
@@ -2398,7 +2398,7 @@ mod tests {
         let player = PlayerState::new(now);
         let mut session = LocalSession::with_bonuses(track, player, bonuses());
         session.player.word_index = 1;
-        session.receive_pickup(ItemPickup::Shield, now);
+        session.receive_pickup(Some(ItemPickup::Shield), now);
 
         session.apply_action(LocalAction::Typing(KeyAction::Char('d')), now);
 
@@ -2453,7 +2453,7 @@ mod tests {
         let mut session =
             LocalSession::with_bonuses(track, player, BonusState::with_points(vec![], vec![]));
 
-        session.receive_pickup(ItemPickup::Held(HeldItem::Focus), now);
+        session.receive_pickup(Some(ItemPickup::Held(HeldItem::Focus)), now);
         session.apply_action(LocalAction::Typing(KeyAction::Char('x')), now);
 
         assert!(session.player.has_active_focus(now));
@@ -2483,7 +2483,7 @@ mod tests {
             session
                 .events
                 .entries()
-                .any(|entry| entry == "Hit ai-1 with Cyclone")
+                .any(|entry| entry == "you hit ai-1 with Cyclone")
         );
     }
 
@@ -2623,7 +2623,7 @@ mod tests {
             session
                 .events
                 .entries()
-                .any(|entry| entry == "Missed Banana")
+                .any(|entry| entry == "you missed Banana")
         );
     }
 }
