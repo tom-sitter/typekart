@@ -11,8 +11,8 @@ use rand::{Rng, thread_rng};
 
 use crate::game::{
     ai::AiDifficulty,
-    ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
-    input_rules::player_input_is_paused_or_finished,
+    ai_driver::{AiDriverConfig, AiDriverState},
+    host_session::{HostAiTickInput, advance_host_ai_racer_tick},
     lobby::{
         add_ai_lobby_player as shared_add_ai_lobby_player, color_for_lobby_slot,
         set_lobby_ai_difficulty as shared_set_lobby_ai_difficulty,
@@ -204,15 +204,6 @@ fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: In
         ai.last_update = now;
     }
 
-    if player_input_is_paused_or_finished(
-        &state.race,
-        &state.runtime.player_effects,
-        race_player_id,
-        now,
-    ) {
-        return;
-    }
-
     let config = AiDriverConfig {
         base_wpm: words_per_minute,
         focus_boost_wpm: state.item_registry.focus_effect().ai_wpm_boost,
@@ -221,13 +212,16 @@ fn advance_network_ai_typing(state: &mut HostState, player_id: PlayerId, now: In
             .squid_ink_effect()
             .ai_wpm_multiplier_percent,
     };
-    let advance = advance_ai_driver(
+    let advance = advance_host_ai_racer_tick(
         &mut state.race,
-        race_player_id,
+        &state.runtime.player_effects,
         &mut driver,
-        config,
-        now,
-        elapsed,
+        HostAiTickInput {
+            player_id: race_player_id,
+            config,
+            now,
+            elapsed,
+        },
     );
 
     if let Some(ai) = state.ai_racers.get_mut(&player_id) {

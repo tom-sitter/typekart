@@ -12,18 +12,19 @@ use rand::{Rng, thread_rng};
 
 use crate::game::{
     ai::AiDifficulty,
-    ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
+    ai_driver::{AiDriverConfig, AiDriverState},
     bonus::BonusState,
     bonus_flow::{BonusClaimRoll, BonusFlowEvent, BonusFlowState, claim_random_available_bonus},
     effects::ActiveEffect,
     host_session::{
-        HostAftermathAction, HostBonusClaimInput, HostItemAftermath, HostItemPickupInput,
-        HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState, advance_active_race_tick,
-        advance_host_race_lifecycle, apply_host_bonus_claim, apply_host_item_pickup,
-        apply_host_player_key, begin_countdown_phase, connected_racer_count,
-        countdown_should_cancel, countdown_start_plan, countdown_tick_phase,
-        host_aftermath_adapter_actions, host_item_aftermath_actions,
-        prepare_race_from_participants, return_to_lobby_outcome, start_race_from_countdown,
+        HostAftermathAction, HostAiTickInput, HostBonusClaimInput, HostItemAftermath,
+        HostItemPickupInput, HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState,
+        advance_active_race_tick, advance_host_ai_racer_tick, advance_host_race_lifecycle,
+        apply_host_bonus_claim, apply_host_item_pickup, apply_host_player_key,
+        begin_countdown_phase, connected_racer_count, countdown_should_cancel,
+        countdown_start_plan, countdown_tick_phase, host_aftermath_adapter_actions,
+        host_item_aftermath_actions, prepare_race_from_participants, return_to_lobby_outcome,
+        start_race_from_countdown,
     },
     item_effects::{
         AttackDirection as SharedAttackDirection, RaceImpactCueKind, RaceItemCueKind,
@@ -794,35 +795,34 @@ impl LocalSession {
         let words_per_minute = ai.words_per_minute;
         let char_budget = ai.char_budget;
         let last_update = ai.last_update;
-        let is_stunned = ai.is_stunned(now);
 
         if let Some(ai) = self.ai_racers.get_mut(ai_index) {
             ai.last_update = now;
         }
 
-        if is_stunned {
-            return;
-        }
-
         let mut race = self.shared_race_state();
+        let effects = self.shared_item_effects();
         let mut driver = AiDriverState {
             char_budget,
             last_update: Some(last_update),
         };
-        let advance = advance_ai_driver(
+        let advance = advance_host_ai_racer_tick(
             &mut race,
-            player_id,
+            &effects,
             &mut driver,
-            AiDriverConfig {
-                base_wpm: words_per_minute,
-                focus_boost_wpm: self.item_registry.focus_effect().ai_wpm_boost,
-                ink_multiplier_percent: self
-                    .item_registry
-                    .squid_ink_effect()
-                    .ai_wpm_multiplier_percent,
+            HostAiTickInput {
+                player_id,
+                config: AiDriverConfig {
+                    base_wpm: words_per_minute,
+                    focus_boost_wpm: self.item_registry.focus_effect().ai_wpm_boost,
+                    ink_multiplier_percent: self
+                        .item_registry
+                        .squid_ink_effect()
+                        .ai_wpm_multiplier_percent,
+                },
+                now,
+                elapsed,
             },
-            now,
-            elapsed,
         );
         self.sync_from_shared_item_race(race);
         if let Some(ai) = self.ai_racers.get_mut(ai_index) {

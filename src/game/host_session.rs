@@ -15,8 +15,10 @@ use rand::Rng;
 use typekart_protocol::{LobbyPlayer, NetworkRacePhase, PlayerId, RaceResultRow};
 
 use super::{
+    ai_driver::{AiDriverAdvance, AiDriverConfig, AiDriverState, advance_ai_driver},
     bonus::BonusState,
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent, BonusFlowState, apply_bonus_key},
+    input_rules::player_input_is_paused_or_finished,
     item_effects::{ItemActivationReport, RaceItemEffectState, activate_item_pickup},
     items::{ItemPickup, ItemRegistry},
     lobby::{lobby_players_to_participants, ready_connected_participants},
@@ -129,6 +131,14 @@ pub struct HostItemPickupInput {
     pub player_id: RacePlayerId,
     pub item: ItemPickup,
     pub now: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostAiTickInput {
+    pub player_id: RacePlayerId,
+    pub config: AiDriverConfig,
+    pub now: Instant,
+    pub elapsed: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -516,6 +526,29 @@ pub fn apply_host_item_pickup(
     )
 }
 
+pub fn advance_host_ai_racer_tick(
+    race: &mut RaceState,
+    player_effects: &HashMap<RacePlayerId, RaceItemEffectState>,
+    driver: &mut AiDriverState,
+    input: HostAiTickInput,
+) -> AiDriverAdvance {
+    if player_input_is_paused_or_finished(race, player_effects, input.player_id, input.now) {
+        return AiDriverAdvance {
+            typed_actions: Vec::new(),
+            typing_events: Vec::new(),
+        };
+    }
+
+    advance_ai_driver(
+        race,
+        input.player_id,
+        driver,
+        input.config,
+        input.now,
+        input.elapsed,
+    )
+}
+
 pub fn host_item_aftermath_actions(report: ItemActivationReport) -> HostItemAftermath {
     HostItemAftermath {
         interrupted_players: report.interrupted_players,
@@ -626,12 +659,13 @@ mod tests {
         start_race_from_countdown,
     };
     use crate::game::{
+        ai_driver::{AiDriverConfig, AiDriverState},
         bonus::{BonusChoice, BonusChoiceStatus, BonusPoint, BonusState},
         bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
         effects::ActiveEffect,
-        item_effects::ItemActivationReport,
+        item_effects::{ItemActivationReport, RaceItemEffectState},
         items::{HeldItem, ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
-        race::{RaceLifecycleState, RacePlayerId},
+        race::{RaceLifecycleState, RacePlayerId, RaceState},
         track::{Track, WordList},
         typing::{KeyAction, TypingEvent},
     };
@@ -1083,6 +1117,79 @@ mod tests {
 
         assert!(report.events.is_empty());
         assert!(race.players[0].state.has_active_shield(now));
+    }
+
+    #[test]
+    fn host_ai_tick_advances_typing_with_shared_effect_gating() {
+        let now = Instant::now();
+        let mut race = RaceState::new(Track::new(vec!["go".to_string(), "fast".to_string()]));
+        race.add_player(
+            RacePlayerId(1),
+            "ai-1",
+            crate::game::race::PlayerColorId::Cyan,
+            now,
+        );
+        let mut driver = AiDriverState::default();
+
+        let advance = super::advance_host_ai_racer_tick(
+            &mut race,
+            &HashMap::new(),
+            &mut driver,
+            super::HostAiTickInput {
+                player_id: RacePlayerId(1),
+                config: AiDriverConfig {
+                    base_wpm: 12.0,
+                    focus_boost_wpm: 0,
+                    ink_multiplier_percent: 100,
+                },
+                now,
+                elapsed: Duration::from_secs(1),
+            },
+        );
+
+        assert!(advance.changed());
+        assert_eq!(race.players[0].state.input, "g");
+    }
+
+    #[test]
+    fn host_ai_tick_pauses_when_item_effects_stun_player() {
+        let now = Instant::now();
+        let mut race = RaceState::new(Track::new(vec!["go".to_string(), "fast".to_string()]));
+        race.add_player(
+            RacePlayerId(1),
+            "ai-1",
+            crate::game::race::PlayerColorId::Cyan,
+            now,
+        );
+        let mut driver = AiDriverState::default();
+        let mut effects = HashMap::new();
+        effects.insert(
+            RacePlayerId(1),
+            RaceItemEffectState {
+                stunned_until: Some(now + Duration::from_secs(1)),
+                ..Default::default()
+            },
+        );
+
+        let advance = super::advance_host_ai_racer_tick(
+            &mut race,
+            &effects,
+            &mut driver,
+            super::HostAiTickInput {
+                player_id: RacePlayerId(1),
+                config: AiDriverConfig {
+                    base_wpm: 600.0,
+                    focus_boost_wpm: 0,
+                    ink_multiplier_percent: 100,
+                },
+                now,
+                elapsed: Duration::from_secs(1),
+            },
+        );
+
+        assert!(!advance.changed());
+        assert_eq!(race.players[0].state.input, "");
+        assert_eq!(driver.char_budget, 0.0);
     }
 
     #[test]

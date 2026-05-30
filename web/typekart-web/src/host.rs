@@ -10,21 +10,21 @@ use gloo_timers::future::{IntervalStream, TimeoutFuture};
 use leptos::prelude::*;
 use rand::thread_rng;
 use typekart::game::{
-    ai_driver::{AiDriverConfig, AiDriverState, advance_ai_driver},
+    ai_driver::{AiDriverConfig, AiDriverState},
     bonus::BonusState,
     bonus_flow::{BonusAttempt, BonusClaimRoll, BonusFlowEvent},
     host_session::{
         CountdownAdvanceRejection, CountdownRacePreparation, CountdownStartRejection,
-        HostAftermathAction, HostBonusClaimInput, HostItemAftermath, HostItemPickupState,
-        HostPlayerKeyInput, HostPlayerKeyState, HostRaceTickAction, PreparedHostRace,
-        advance_active_race_tick, advance_host_race_lifecycle, apply_host_bonus_claim,
-        apply_host_player_key, begin_countdown_phase, cancel_countdown_outcome,
-        countdown_start_plan, countdown_tick_phase, finalize_host_race_results,
-        host_aftermath_adapter_actions, prepare_race_from_selected_lobby_players,
-        prepare_waiting_race_outcome, return_to_lobby_outcome, start_active_race_runtime_outcome,
-        start_race_from_countdown,
+        HostAftermathAction, HostAiTickInput, HostBonusClaimInput, HostItemAftermath,
+        HostItemPickupState, HostPlayerKeyInput, HostPlayerKeyState, HostRaceTickAction,
+        PreparedHostRace, advance_active_race_tick, advance_host_ai_racer_tick,
+        advance_host_race_lifecycle, apply_host_bonus_claim, apply_host_player_key,
+        begin_countdown_phase, cancel_countdown_outcome, countdown_start_plan,
+        countdown_tick_phase, finalize_host_race_results, host_aftermath_adapter_actions,
+        prepare_race_from_selected_lobby_players, prepare_waiting_race_outcome,
+        return_to_lobby_outcome, start_active_race_runtime_outcome, start_race_from_countdown,
     },
-    item_effects::{RaceItemEffectState, advance_mushrooms, player_is_stunned},
+    item_effects::{RaceItemEffectState, advance_mushrooms},
     input_rules::player_input_is_paused,
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
     lobby::{
@@ -1117,17 +1117,17 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
 
         for (player_id, config) in ai_configs {
             let race_player_id = RacePlayerId(player_id.0);
-            if player_is_stunned(&state.runtime.player_effects, race_player_id, now) {
-                continue;
-            }
             let driver = state.ai_char_budget.entry(player_id).or_default();
-            let advance = advance_ai_driver(
+            let advance = advance_host_ai_racer_tick(
                 core_race,
-                race_player_id,
+                &state.runtime.player_effects,
                 driver,
-                config,
-                now,
-                Duration::from_secs_f64(elapsed_ms / 1000.0),
+                HostAiTickInput {
+                    player_id: race_player_id,
+                    config,
+                    now,
+                    elapsed: Duration::from_secs_f64(elapsed_ms / 1000.0),
+                },
             );
             if advance.changed() {
                 changed = true;

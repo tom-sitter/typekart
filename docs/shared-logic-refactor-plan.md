@@ -627,6 +627,9 @@ Progress:
 - Item and bonus aftermath now also flow through shared adapter actions:
   clear bonus attempts, reset AI driver state, and emit host events. Local,
   network, and browser adapters still apply those actions to their own storage.
+- AI typing ticks now use a shared host-session wrapper around the lower-level
+  AI driver, so local, network, and browser hosts share finished/stunned/paused
+  gating before an AI consumes typing budget.
 - `src/game/host_session.rs` now returns a shared start-race outcome from the
   countdown-to-racing transition, including the `Racing` phase and common race
   started event text used by network and browser hosts.
