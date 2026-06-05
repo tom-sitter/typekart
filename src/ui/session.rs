@@ -92,8 +92,7 @@ pub struct AiRacer {
     pub player: PlayerState,
     pub difficulty: AiDifficulty,
     pub words_per_minute: f64,
-    char_budget: f64,
-    last_update: Instant,
+    driver: AiDriverState,
     stunned_until: Option<Instant>,
     pub(crate) impact_cue: Option<ImpactCue>,
     pub item_cue: Option<ItemCue>,
@@ -126,8 +125,10 @@ impl AiRacer {
             player: PlayerState::new(now),
             difficulty,
             words_per_minute,
-            char_budget: 0.0,
-            last_update: now,
+            driver: AiDriverState {
+                char_budget: 0.0,
+                last_update: Some(now),
+            },
             stunned_until: None,
             impact_cue: None,
             item_cue: None,
@@ -302,6 +303,13 @@ fn apply_prepared_player_states(
             ai.player = race_player.state.clone();
         }
     }
+}
+
+fn reset_local_ai_driver(ai: &mut AiRacer, now: Instant) {
+    ai.driver = AiDriverState {
+        char_budget: 0.0,
+        last_update: Some(now),
+    };
 }
 
 impl LocalSession {
@@ -502,8 +510,7 @@ impl LocalSession {
         self.player.started_at = now;
         for ai in &mut self.ai_racers {
             ai.player.started_at = now;
-            ai.last_update = now;
-            ai.char_budget = 0.0;
+            reset_local_ai_driver(ai, now);
         }
         self.events.push(outcome.event);
         self.run_log.push(now, "race started");
@@ -624,8 +631,7 @@ impl LocalSession {
         let mut rng = thread_rng();
         ai.difficulty = difficulty;
         ai.words_per_minute = rng.gen_range(difficulty.wpm_range());
-        ai.char_budget = 0.0;
-        ai.last_update = now;
+        reset_local_ai_driver(ai, now);
         self.events
             .push(format!("{} set to {}", ai.name, difficulty.name()));
         self.run_log.push(
@@ -790,23 +796,19 @@ impl LocalSession {
             return;
         };
 
-        let elapsed = now.saturating_duration_since(ai.last_update);
+        let last_update = ai.driver.last_update.unwrap_or(now);
+        let elapsed = now.saturating_duration_since(last_update);
         let player_id = RacePlayerId((ai.id + 1) as u64);
         let ai_name = ai.name.clone();
         let words_per_minute = ai.words_per_minute;
-        let char_budget = ai.char_budget;
-        let last_update = ai.last_update;
+        let mut driver = ai.driver;
 
         if let Some(ai) = self.ai_racers.get_mut(ai_index) {
-            ai.last_update = now;
+            ai.driver.last_update = Some(now);
         }
 
         let mut race = self.shared_race_state();
         let effects = self.shared_item_effects();
-        let mut driver = AiDriverState {
-            char_budget,
-            last_update: Some(last_update),
-        };
         let advance = advance_host_ai_racer_tick(
             &mut race,
             &effects,
@@ -827,7 +829,7 @@ impl LocalSession {
         );
         self.sync_from_shared_item_race(race);
         if let Some(ai) = self.ai_racers.get_mut(ai_index) {
-            ai.char_budget = driver.char_budget;
+            ai.driver = driver;
         }
 
         if advance.finished() {
@@ -1112,8 +1114,7 @@ impl LocalSession {
                 }
                 HostAftermathAction::ResetAiDriver(player_id) => {
                     if let Some(ai) = self.local_ai_mut(player_id) {
-                        ai.char_budget = 0.0;
-                        ai.last_update = now;
+                        reset_local_ai_driver(ai, now);
                     }
                 }
                 HostAftermathAction::EmitEvent(event) => {
@@ -1141,8 +1142,7 @@ impl LocalSession {
             if *player_id == RacePlayerId(1) {
                 self.bonus_attempt = None;
             } else if let Some(ai) = self.local_ai_mut(*player_id) {
-                ai.char_budget = 0.0;
-                ai.last_update = now;
+                reset_local_ai_driver(ai, now);
             }
         }
     }
@@ -2390,13 +2390,13 @@ mod tests {
             35.0,
             start - std::time::Duration::from_secs(1),
         ));
-        session.ai_racers[0].char_budget = 4.0;
+        session.ai_racers[0].driver.char_budget = 4.0;
 
         session.receive_ai_pickup(0, ItemPickup::Held(HeldItem::Mushroom), start);
 
         assert_eq!(session.ai_racers[0].player.word_index, 1);
-        assert_eq!(session.ai_racers[0].char_budget, 0.0);
-        assert_eq!(session.ai_racers[0].last_update, start);
+        assert_eq!(session.ai_racers[0].driver.char_budget, 0.0);
+        assert_eq!(session.ai_racers[0].driver.last_update, Some(start));
     }
 
     #[test]

@@ -375,6 +375,9 @@ Progress:
 - Local AI typing now uses shared `game::ai_driver::advance_ai_driver` for
   WPM-budget typing and `RaceState::apply_key_input`, while preserving local
   AI timing storage and local stun checks in the terminal adapter.
+- Local AI racers now store shared `AiDriverState` directly, so local typing
+  budget and last-update metadata use the same structure as network and
+  browser-hosted AI racers.
 - Local active-race ticking now uses shared `game::host_session` policy for
   bonus cooldown expiry, timed effect expiry, and lifecycle advancement while
   keeping local-only AI scheduling, run-log text, item cue expiry, and terminal
