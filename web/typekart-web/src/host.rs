@@ -41,6 +41,7 @@ use typekart::game::{
     snapshot::{
         RaceSnapshotInput, build_bonus_snapshots, build_player_snapshots, build_race_snapshot,
     },
+    tick::bounded_tick_elapsed_ms,
     track::{Track, WordList},
     typing::KeyAction,
 };
@@ -1278,19 +1279,15 @@ fn browser_finish_race(state: &mut BrowserHostLobby, finish_event: &str) {
 }
 
 fn browser_host_ai_elapsed_ms(state: &mut BrowserHostLobby, tick_ms: u32) -> f64 {
-    let Some(last_tick_ms) = state.ai_last_tick_ms else {
-        return f64::from(tick_ms);
-    };
-
     let now_ms = browser_now_ms();
-    let elapsed_ms = now_ms - last_tick_ms;
-    let minimum_real_tick_ms = f64::from(tick_ms) * 0.5;
-    if elapsed_ms < minimum_real_tick_ms {
+    let Some(tick) = bounded_tick_elapsed_ms(state.ai_last_tick_ms, now_ms, tick_ms, 0.5, 1_000.0)
+    else {
         return 0.0;
+    };
+    if let Some(accepted_at_ms) = tick.accepted_at_ms {
+        state.ai_last_tick_ms = Some(accepted_at_ms);
     }
-
-    state.ai_last_tick_ms = Some(now_ms);
-    elapsed_ms.min(1000.0)
+    tick.elapsed_ms
 }
 
 fn browser_sync_snapshot_from_core(

@@ -21,6 +21,7 @@ pub mod race;
 pub mod race_flow;
 pub mod snapshot;
 pub mod stats;
+pub mod tick;
 pub mod track;
 pub mod typing;
 pub mod words;

@@ -759,6 +759,12 @@ Validation:
 - Adapter tests should verify that each interface calls the shared tick methods
   at the expected phase boundaries.
 
+Progress:
+
+- `src/game/tick.rs` now owns a deterministic bounded elapsed-time helper for
+  adapter ticks. Browser-hosted AI advancement uses this helper while keeping
+  browser timers and clock reads in the browser adapter.
+
 ## Suggested Order
 
 1. Split `web/typekart-web/src/main.rs` into smaller modules.
