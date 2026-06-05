@@ -25,6 +25,7 @@ use typekart::game::{
         prepare_waiting_race_outcome, return_to_lobby_outcome, start_active_race_runtime_outcome,
         start_race_from_countdown, try_host_ai_bonus_claim,
     },
+    host_events::push_capped_event,
     item_effects::{RaceItemEffectState, advance_mushrooms},
     input_rules::player_input_is_paused,
     items::{ItemPickup, ItemRegistry, ItemRollContext, RacePositionBand},
@@ -61,6 +62,7 @@ const BROWSER_HOST_TRACK_WORD_COUNT: usize = 16;
 const BROWSER_HOST_AI_TICK_MS: u32 = 250;
 const BROWSER_HOST_POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 const BROWSER_HOST_MAX_PLAYERS: usize = 6;
+const BROWSER_HOST_EVENT_CAPACITY: usize = 8;
 
 pub(crate) async fn host_browser_lobby(
     relay_url: String,
@@ -254,11 +256,7 @@ impl BrowserHostLobby {
     }
 
     fn push_event(&mut self, event: impl Into<String>) {
-        self.events.push(event.into());
-        const MAX_EVENTS: usize = 8;
-        if self.events.len() > MAX_EVENTS {
-            self.events.drain(0..self.events.len() - MAX_EVENTS);
-        }
+        push_capped_event(&mut self.events, event, BROWSER_HOST_EVENT_CAPACITY);
     }
 
     fn next_race_sequence(&mut self) -> u64 {
@@ -1166,11 +1164,11 @@ fn apply_browser_host_ai_tick(state: &mut BrowserHostLobby, tick_ms: u32) -> boo
                                 .insert(PlayerId(player_id.0), AiDriverState::default());
                         }
                         HostAftermathAction::EmitEvent(event) => {
-                            state.events.push(event.message());
-                            const MAX_EVENTS: usize = 8;
-                            if state.events.len() > MAX_EVENTS {
-                                state.events.drain(0..state.events.len() - MAX_EVENTS);
-                            }
+                            push_capped_event(
+                                &mut state.events,
+                                event.message(),
+                                BROWSER_HOST_EVENT_CAPACITY,
+                            );
                         }
                     }
                 }

@@ -85,9 +85,45 @@ impl HostEvent {
     }
 }
 
+pub fn push_capped_event(events: &mut Vec<String>, event: impl Into<String>, capacity: usize) {
+    if capacity == 0 {
+        return;
+    }
+
+    events.push(event.into());
+    if events.len() > capacity {
+        events.drain(0..events.len() - capacity);
+    }
+}
+
 fn item_pickup_name(item: ItemPickup) -> &'static str {
     match item {
         ItemPickup::Held(held_item) => held_item.name(),
         ItemPickup::Shield => "Shield",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::push_capped_event;
+
+    #[test]
+    fn capped_events_keep_recent_entries() {
+        let mut events = Vec::new();
+
+        push_capped_event(&mut events, "one", 2);
+        push_capped_event(&mut events, "two", 2);
+        push_capped_event(&mut events, "three", 2);
+
+        assert_eq!(events, vec!["two".to_string(), "three".to_string()]);
+    }
+
+    #[test]
+    fn capped_events_ignore_zero_capacity() {
+        let mut events = Vec::new();
+
+        push_capped_event(&mut events, "one", 0);
+
+        assert!(events.is_empty());
     }
 }

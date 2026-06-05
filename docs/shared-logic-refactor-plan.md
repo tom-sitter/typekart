@@ -733,6 +733,13 @@ Validation:
 - Shared event tests should assert semantic event data, not UI strings.
 - Existing terminal and browser event-feed tests should cover adapter wording.
 
+Progress:
+
+- `src/game/host_events.rs` now includes a shared capped event-feed helper.
+  Browser-hosted races use it for host-visible events, removing duplicated
+  event truncation logic while keeping event wording and broadcast timing in
+  the browser adapter.
+
 ### 14. Clock And Tick Boundary
 
 Goal: keep shared gameplay deterministic and browser-compatible while allowing
