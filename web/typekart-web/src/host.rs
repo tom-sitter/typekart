@@ -36,11 +36,9 @@ use typekart::game::{
         set_lobby_ai_difficulty as shared_set_lobby_ai_difficulty,
         set_lobby_ready as shared_set_lobby_ready, unique_lobby_name,
     },
-    player::PlayerState,
-    race::{PlayerColorId, RacePlayer, RacePlayerId, RaceState, RaceRuntimeState},
+    race::{RacePlayerId, RaceState, RaceRuntimeState},
     snapshot::{
-        RaceSnapshotInput, build_bonus_snapshots,
-        build_player_snapshots, build_race_snapshot, player_color_id,
+        RaceSnapshotInput, build_bonus_snapshots, build_player_snapshots, build_race_snapshot,
     },
     track::{Track, WordList},
     typing::KeyAction,
@@ -185,6 +183,17 @@ struct BrowserHostLobby {
     mod_config: ModConfigSnapshot,
 }
 
+struct BrowserHostSnapshotInput<'a> {
+    sequence: u64,
+    phase: NetworkRacePhase,
+    mod_config: &'a ModConfigSnapshot,
+    racers: &'a [LobbyPlayer],
+    race: &'a RaceState,
+    bonuses: &'a BonusState,
+    player_effects: &'a HashMap<RacePlayerId, RaceItemEffectState>,
+    events: Vec<String>,
+}
+
 impl BrowserHostLobby {
     fn new(room: RoomCode, host_name: String) -> Self {
         let next_track_words = browser_generate_track_words();
@@ -255,6 +264,27 @@ impl BrowserHostLobby {
     fn next_race_sequence(&mut self) -> u64 {
         self.race_sequence += 1;
         self.race_sequence
+    }
+
+    fn set_active_race_from_core(
+        &mut self,
+        phase: NetworkRacePhase,
+        events: Vec<String>,
+    ) {
+        let sequence = self.next_race_sequence();
+        let Some(core_race) = &self.core_race else {
+            return;
+        };
+        self.active_race = Some(build_browser_host_snapshot(BrowserHostSnapshotInput {
+            sequence,
+            phase,
+            mod_config: &self.mod_config,
+            racers: &self.players,
+            race: core_race,
+            bonuses: &self.bonuses,
+            player_effects: &self.runtime.player_effects,
+            events,
+        }));
     }
 }
 
@@ -581,20 +611,15 @@ async fn run_browser_host_countdown(
     let prepared_race = browser_prepare_race_from_lobby(&racers, race_track_words.clone());
     let waiting_reset = prepare_waiting_race_outcome();
     state.bonuses = prepared_race.bonuses.clone();
+    state.core_race = Some(prepared_race.race);
 
-    state.active_race = Some(browser_host_race_snapshot_with_track(
-        state.next_race_sequence(),
+    state.set_active_race_from_core(
         waiting_reset.phase,
-        &state.mod_config,
-        &racers,
-        &race_track_words,
-        &state.bonuses,
         vec!["browser host preparing race".to_string()],
-    ));
+    );
     if waiting_reset.clear_results {
         state.active_results = None;
     }
-    state.core_race = None;
     if waiting_reset.reset_runtime {
         state.runtime.reset();
     }
@@ -610,15 +635,10 @@ async fn run_browser_host_countdown(
         } else {
             countdown_tick_phase(remaining_seconds)
         };
-        state.active_race = Some(browser_host_race_snapshot_with_track(
-            state.next_race_sequence(),
+        state.set_active_race_from_core(
             phase,
-            &state.mod_config,
-            &racers,
-            &race_track_words,
-            &state.bonuses,
             vec![format!("countdown {remaining_seconds}")],
-        ));
+        );
         publish_browser_host_state(state, writer, set_live_frame).await?;
         TimeoutFuture::new(1000).await;
     }
@@ -636,18 +656,12 @@ async fn run_browser_host_countdown(
         ),
     };
 
-    state.active_race = Some(browser_host_race_snapshot_with_track(
-        state.next_race_sequence(),
+    state.set_active_race_from_core(
         start_outcome.phase,
-        &state.mod_config,
-        &racers,
-        &race_track_words,
-        &state.bonuses,
         vec![start_outcome.event.to_string()],
-    ));
+    );
     let active_reset = start_active_race_runtime_outcome();
     state.active_results = None;
-    state.core_race = Some(prepared_race.race);
     state.next_track_words = browser_generate_track_words();
     if active_reset.reset_runtime {
         state.runtime.reset();
@@ -688,6 +702,7 @@ fn browser_host_race_snapshot(
     )
 }
 
+#[cfg(test)]
 fn browser_host_race_snapshot_with_track(
     sequence: u64,
     phase: NetworkRacePhase,
@@ -699,19 +714,33 @@ fn browser_host_race_snapshot_with_track(
 ) -> RaceSnapshot {
     let race = browser_prepare_race_from_lobby(racers, track_words.to_vec()).race;
     let player_effects = HashMap::new();
+    build_browser_host_snapshot(BrowserHostSnapshotInput {
+        sequence,
+        phase,
+        mod_config,
+        racers,
+        race: &race,
+        bonuses,
+        player_effects: &player_effects,
+        events,
+    })
+}
+
+fn build_browser_host_snapshot(input: BrowserHostSnapshotInput<'_>) -> RaceSnapshot {
     build_race_snapshot(
         RaceSnapshotInput {
-            sequence,
-            phase,
-            mod_config: mod_config.clone(),
-            race: &race,
-            bonuses,
-            player_effects: &player_effects,
-            events,
+            sequence: input.sequence,
+            phase: input.phase,
+            mod_config: input.mod_config.clone(),
+            race: input.race,
+            bonuses: input.bonuses,
+            player_effects: input.player_effects,
+            events: input.events,
             now: Instant::now(),
         },
         |player_id| {
-            racers
+            input
+                .racers
                 .iter()
                 .find(|racer| racer.id == player_id)
                 .map(|racer| racer.kind)
@@ -723,6 +752,20 @@ fn browser_host_race_snapshot_with_track(
 #[cfg(test)]
 fn browser_host_core_race(racers: &[LobbyPlayer], track_words: Vec<String>) -> RaceState {
     browser_prepare_race_from_lobby(racers, track_words).race
+}
+
+#[cfg(test)]
+fn seed_browser_host_active_race(
+    lobby: &mut BrowserHostLobby,
+    phase: NetworkRacePhase,
+    racers: &[LobbyPlayer],
+    track_words: Vec<String>,
+    events: Vec<String>,
+) {
+    let prepared = browser_prepare_race_from_lobby(racers, track_words);
+    lobby.bonuses = prepared.bonuses;
+    lobby.core_race = Some(prepared.race);
+    lobby.set_active_race_from_core(phase, events);
 }
 
 fn browser_prepare_race_from_lobby(
@@ -738,46 +781,10 @@ fn browser_prepare_race_from_lobby(
 }
 
 fn browser_ensure_core_race(state: &mut BrowserHostLobby) {
-    if state.core_race.is_some() {
-        return;
-    }
-    let Some(snapshot) = &state.active_race else {
-        return;
-    };
-    state.core_race = Some(browser_core_race_from_snapshot(snapshot));
-}
-
-fn browser_core_race_from_snapshot(snapshot: &RaceSnapshot) -> RaceState {
-    let now = Instant::now();
-    RaceState {
-        track: Track::new(snapshot.track_words.clone()),
-        players: snapshot
-            .players
-            .iter()
-            .map(|player| {
-                let mut state = PlayerState::new(now);
-                state.word_index = player.word_index;
-                state.input = player.input.clone();
-                state.typo_index = player.typo_index;
-                state.word_overrides = player
-                    .word_overrides
-                    .iter()
-                    .map(|override_word| (override_word.word_index, override_word.word.clone()))
-                    .collect();
-                if player.finished {
-                    state.finished_at = Some(now);
-                }
-
-                RacePlayer {
-                    id: RacePlayerId(player.id.0),
-                    name: player.name.clone(),
-                    color: browser_player_color_id(player.color),
-                    state,
-                    connected: player.connected,
-                }
-            })
-            .collect(),
-    }
+    debug_assert!(
+        state.core_race.is_some() || state.active_race.is_none(),
+        "browser host snapshots should be projected from core race state"
+    );
 }
 
 fn apply_browser_host_race_key_input(
@@ -1313,10 +1320,6 @@ fn browser_protocol_key_to_action(key: ProtocolKey) -> KeyAction {
     }
 }
 
-fn browser_player_color_id(color: AssignedColor) -> PlayerColorId {
-    player_color_id(color)
-}
-
 #[cfg(target_arch = "wasm32")]
 fn browser_now_ms() -> f64 {
     js_sys::Date::now()
@@ -1643,13 +1646,13 @@ fn browser_host_race_key_input_advances_words() {
         .items
         .retain(|item| item.id.as_str() == "banana");
     let racers = vec![lobby.players[0].clone()];
-    lobby.active_race = Some(browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        browser_demo_track_words(),
         Vec::new(),
-    ));
+    );
     let (_connection, set_connection) = signal(ConnectionState::Disconnected);
 
     for ch in "spark".chars() {
@@ -1678,15 +1681,13 @@ fn browser_host_race_key_input_finishes_final_word_without_space() {
     let room = RoomCode::parse("rocket-salad-tiger").unwrap();
     let mut lobby = BrowserHostLobby::new(room, "host".to_string());
     let racers = vec![lobby.players[0].clone()];
-    let mut snapshot = browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        vec!["go".to_string()],
         Vec::new(),
     );
-    snapshot.track_words = vec!["go".to_string()];
-    lobby.active_race = Some(snapshot);
     let (_connection, set_connection) = signal(ConnectionState::Disconnected);
 
     apply_browser_host_race_key_input(
@@ -1714,15 +1715,13 @@ fn browser_host_race_results_rank_racers_by_finish_order() {
     let mut lobby = BrowserHostLobby::new(room, "host".to_string());
     let joiner = add_browser_lobby_human(&mut lobby, PlayerId(4), "laura");
     let racers = vec![lobby.players[0].clone(), joiner];
-    let mut snapshot = browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        vec!["go".to_string()],
         Vec::new(),
     );
-    snapshot.track_words = vec!["go".to_string()];
-    lobby.active_race = Some(snapshot);
     let (_connection, set_connection) = signal(ConnectionState::Disconnected);
 
     for player_id in [PlayerId(2), PlayerId(1)] {
@@ -1757,15 +1756,13 @@ fn browser_host_race_results_timeout_places_unfinished_racers_by_progress() {
     let mut lobby = BrowserHostLobby::new(room, "host".to_string());
     let joiner = add_browser_lobby_human(&mut lobby, PlayerId(4), "laura");
     let racers = vec![lobby.players[0].clone(), joiner];
-    let mut snapshot = browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        vec!["go".to_string(), "fast".to_string()],
         Vec::new(),
     );
-    snapshot.track_words = vec!["go".to_string(), "fast".to_string()];
-    lobby.active_race = Some(snapshot);
     let (_connection, set_connection) = signal(ConnectionState::Disconnected);
 
     for ch in "gof".chars() {
@@ -1861,13 +1858,13 @@ fn browser_host_race_key_input_marks_and_clears_typos() {
     let room = RoomCode::parse("rocket-salad-tiger").unwrap();
     let mut lobby = BrowserHostLobby::new(room, "host".to_string());
     let racers = vec![lobby.players[0].clone()];
-    lobby.active_race = Some(browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        browser_demo_track_words(),
         Vec::new(),
-    ));
+    );
     let (_connection, set_connection) = signal(ConnectionState::Disconnected);
 
     apply_browser_host_race_key_input(
@@ -1901,16 +1898,14 @@ fn browser_host_bonus_word_claims_choice_after_space() {
         .items
         .retain(|item| item.id.as_str() == "shield");
     let racers = vec![lobby.players[0].clone()];
-    let mut snapshot = browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        vec!["one".to_string(), "two".to_string()],
         Vec::new(),
     );
-    snapshot.track_words = vec!["one".to_string(), "two".to_string()];
-    snapshot.players[0].word_index = 1;
-    lobby.active_race = Some(snapshot);
+    lobby.core_race.as_mut().unwrap().players[0].state.word_index = 1;
     lobby.bonuses = BonusState::with_points(
         vec![BonusPoint::new(
             0,
@@ -1922,6 +1917,7 @@ fn browser_host_bonus_word_claims_choice_after_space() {
         )],
         vec!["dash".to_string(), "drift".to_string(), "turbo".to_string()],
     );
+    browser_sync_active_race_from_core(&mut lobby);
     let (_connection, set_connection) = signal(ConnectionState::Disconnected);
 
     for ch in "dash".chars() {
@@ -1972,20 +1968,19 @@ fn browser_host_banana_activation_resets_target_and_renders_impact() {
     let mut lobby = BrowserHostLobby::new(room, "host".to_string());
     let joiner = add_browser_lobby_human(&mut lobby, PlayerId(4), "laura");
     let racers = vec![lobby.players[0].clone(), joiner];
-    let mut snapshot = browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        vec!["one".to_string(), "two".to_string()],
         Vec::new(),
     );
-    snapshot.track_words = vec!["one".to_string(), "two".to_string()];
-    snapshot.players[0].word_index = 0;
-    snapshot.players[1].word_index = 1;
-    snapshot.players[1].input = "twx".to_string();
-    snapshot.players[1].typo_index = Some(2);
-    lobby.active_race = Some(snapshot);
-    browser_ensure_core_race(&mut lobby);
+    let core_race = lobby.core_race.as_mut().unwrap();
+    core_race.players[0].state.word_index = 0;
+    core_race.players[1].state.word_index = 1;
+    core_race.players[1].state.input = "twx".to_string();
+    core_race.players[1].state.typo_index = Some(2);
+    browser_sync_active_race_from_core(&mut lobby);
 
     activate_browser_item_pickup(
         &mut lobby,
@@ -2020,13 +2015,13 @@ fn browser_host_ai_tick_advances_bot_racers() {
         signal(ConnectionState::Disconnected).1,
     );
     let racers = lobby.players.clone();
-    lobby.active_race = Some(browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        browser_demo_track_words(),
         Vec::new(),
-    ));
+    );
 
     assert!(apply_browser_host_ai_tick(&mut lobby, 1_000));
 
@@ -2058,21 +2053,23 @@ fn browser_host_ai_tick_can_claim_bonus_pickup() {
         .unwrap()
         .id;
     let racers = lobby.players.clone();
-    let mut snapshot = browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        vec!["one".to_string(), "two".to_string(), "three".to_string()],
         Vec::new(),
     );
-    snapshot.track_words = vec!["one".to_string(), "two".to_string(), "three".to_string()];
-    snapshot
+    lobby
+        .core_race
+        .as_mut()
+        .unwrap()
         .players
         .iter_mut()
-        .find(|player| player.id == ai_id)
+        .find(|player| player.id == RacePlayerId(ai_id.0))
         .unwrap()
+        .state
         .word_index = 1;
-    lobby.active_race = Some(snapshot);
     lobby.bonuses = BonusState::with_points(
         vec![BonusPoint::new(
             0,
@@ -2084,6 +2081,7 @@ fn browser_host_ai_tick_can_claim_bonus_pickup() {
         )],
         vec!["dash".into(), "spin".into(), "zoom".into()],
     );
+    browser_sync_active_race_from_core(&mut lobby);
 
     assert!(apply_browser_host_ai_tick(&mut lobby, 1_000));
 
@@ -2114,13 +2112,13 @@ fn browser_host_ai_tick_finishes_bot_with_enough_budget() {
         .unwrap()
         .ai_wpm = Some(1000);
     let racers = lobby.players.clone();
-    lobby.active_race = Some(browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        browser_demo_track_words(),
         Vec::new(),
-    ));
+    );
 
     assert!(apply_browser_host_ai_tick(&mut lobby, 60_000));
 
@@ -2146,13 +2144,13 @@ fn browser_host_ai_tick_ignores_queued_countdown_ticks() {
         signal(ConnectionState::Disconnected).1,
     );
     let racers = lobby.players.clone();
-    lobby.active_race = Some(browser_host_race_snapshot(
-        1,
+    seed_browser_host_active_race(
+        &mut lobby,
         NetworkRacePhase::Racing,
-        &lobby.mod_config,
         &racers,
+        browser_demo_track_words(),
         Vec::new(),
-    ));
+    );
     lobby.ai_last_tick_ms = Some(browser_now_ms());
 
     assert!(!apply_browser_host_ai_tick(

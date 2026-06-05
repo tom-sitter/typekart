@@ -677,6 +677,14 @@ Validation:
 - AI countdown, item effects, bonus availability, cancel/rematch, and results
   parity against terminal multiplayer.
 
+Progress:
+
+- Browser-hosted races now keep `core_race` as the authoritative race state
+  during waiting, countdown, and racing snapshots instead of reconstructing
+  `RaceState` from protocol snapshots. Browser snapshots are projected from the
+  shared core race via the shared snapshot builder, reducing browser-specific
+  authority and avoiding loss of runtime-only player state.
+
 ### 12. Local Single-Player Session Convergence
 
 Goal: make local terminal play a local adapter around the same authoritative
