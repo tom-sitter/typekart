@@ -787,17 +787,15 @@ Progress:
   adapter needs.
 - Completed: deterministic shared tick-boundary helper while keeping scheduler
   ownership in adapters.
-- Deferred: split large inline tests into focused sibling or integration test
-  modules after production refactors settle.
+- Completed: split inline unit tests into sibling `tests.rs` modules for easier
+  production-code navigation.
 
 ## Deferred Cleanup
 
-- Split large inline Rust test modules into sibling `tests.rs` modules or
-  focused integration tests after the shared-logic refactors stabilize. Rust
-  commonly keeps unit tests beside production code, but the current large
-  modules in files like `src/net/server.rs`, `src/ui/session.rs`, and
-  `src/game/item_effects.rs` are making navigation harder. Deferring this
-  avoids moving tests repeatedly while production code is still being split.
+- Consider whether any large sibling unit-test modules should become focused
+  integration tests once feature boundaries are stable. Unit tests currently
+  remain child modules so they can still validate private helper behavior where
+  that is useful.
 
 ## Out Of Scope For This Refactor
 

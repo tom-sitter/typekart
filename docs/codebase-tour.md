@@ -285,14 +285,16 @@ Typo behavior:
 - The final word is a special case: once its last correct character is typed,
   the race finishes immediately without requiring a trailing Space.
 
-Tests live in the same file under:
+Unit tests live in sibling `tests.rs` modules:
 
 ```rust
 #[cfg(test)]
-mod tests { ... }
+mod tests;
 ```
 
-This is common in Rust. Unit tests can access private helper functions in the same module, which makes it practical to test implementation details when useful.
+For example, `src/game/typing.rs` declares `mod tests;` and the test body lives
+in `src/game/typing/tests.rs`. This keeps production files smaller while still
+making tests child modules that can access private helper functions when useful.
 
 ## UI Modules
 
