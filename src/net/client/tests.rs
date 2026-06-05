@@ -9,7 +9,7 @@ use super::{
 use crate::net::protocol::{
     BonusChoiceSnapshot, BonusChoiceSnapshotStatus, BonusPointSnapshot, ClientMessage,
     ImpactCueSnapshot, ImpactCueSnapshotKind, ModConfigSnapshot, NetworkRacePhase, PlayerKind,
-    RaceSnapshot,
+    RaceDeltaSnapshot, RaceSnapshot,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier};
@@ -221,6 +221,39 @@ fn lobby_observer_can_hold_race_snapshot_without_being_racer() {
 
     assert!(state.race_snapshot.is_some());
     assert!(!state.is_local_player_in_current_race());
+}
+
+#[test]
+fn skipped_delta_warning_is_not_repeated_before_full_snapshot() {
+    let mut state = NetworkViewState::new(PlayerId(2), crate::ui::render::IconMode::Ascii, None);
+    let delta = RaceDeltaSnapshot {
+        sequence: 2,
+        phase: NetworkRacePhase::Racing,
+        bonuses: Vec::new(),
+        players: Vec::new(),
+        events: Vec::new(),
+    };
+
+    state.apply_race_delta(delta.clone());
+    state.apply_race_delta(delta);
+
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(
+        state.messages[0],
+        "Skipped race update until full race snapshot arrives"
+    );
+
+    state.apply_race_snapshot(snapshot_with_bonus(0));
+    state.race_snapshot = None;
+    state.apply_race_delta(RaceDeltaSnapshot {
+        sequence: 3,
+        phase: NetworkRacePhase::Racing,
+        bonuses: Vec::new(),
+        players: Vec::new(),
+        events: Vec::new(),
+    });
+
+    assert_eq!(state.messages.len(), 2);
 }
 
 #[test]

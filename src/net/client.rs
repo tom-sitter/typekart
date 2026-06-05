@@ -245,7 +245,7 @@ pub fn run_join(config: JoinConfig) -> Result<()> {
         let state = view_state.lock().expect("client view poisoned").clone();
         terminal.draw(&state, &lobby_command, rename_input.as_deref())?;
 
-        if !event::poll(Duration::from_millis(50)).context("failed to poll terminal input")? {
+        if !event::poll(Duration::from_millis(16)).context("failed to poll terminal input")? {
             continue;
         }
 
@@ -389,6 +389,7 @@ struct NetworkViewState {
     selected_lobby_index: usize,
     show_help: bool,
     disconnected: bool,
+    skipped_delta_warning_shown: bool,
 }
 
 impl NetworkViewState {
@@ -408,6 +409,7 @@ impl NetworkViewState {
             selected_lobby_index: 0,
             show_help: false,
             disconnected: false,
+            skipped_delta_warning_shown: false,
         }
     }
 
@@ -481,6 +483,7 @@ impl NetworkViewState {
         match snapshot.phase {
             NetworkRacePhase::Lobby | NetworkRacePhase::WaitingForHost => {
                 self.race_snapshot = None;
+                self.skipped_delta_warning_shown = false;
                 self.placements.clear();
                 self.result_rows.clear();
                 if self.selected_lobby_index >= self.lobby_players.len() {
@@ -491,6 +494,7 @@ impl NetworkViewState {
             | NetworkRacePhase::Racing
             | NetworkRacePhase::Finished => {
                 self.race_snapshot = Some(snapshot);
+                self.skipped_delta_warning_shown = false;
             }
         }
     }
@@ -505,7 +509,10 @@ impl NetworkViewState {
             return;
         }
 
-        self.push_message("Skipped race update until full race snapshot arrives".to_string());
+        if !self.skipped_delta_warning_shown {
+            self.push_message("Skipped race update until full race snapshot arrives".to_string());
+            self.skipped_delta_warning_shown = true;
+        }
     }
 }
 

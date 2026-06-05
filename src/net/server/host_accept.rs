@@ -13,8 +13,10 @@ use std::{
 use anyhow::{Context, Result};
 
 use super::{
-    HostState, broadcast_lobby_snapshot, host_client, host_handshake, host_join, print_server_line,
+    HostState, broadcast_lobby_snapshot, broadcast_race_snapshot, host_client, host_handshake,
+    host_join, print_server_line,
 };
+use crate::net::protocol::NetworkRacePhase;
 
 pub(super) fn run_accept_loop(
     listener: TcpListener,
@@ -40,6 +42,9 @@ pub(super) fn run_accept_loop(
                 continue;
             };
             broadcast_lobby_snapshot(&mut state)?;
+            if joiner_needs_active_race_snapshot(state.phase) {
+                broadcast_race_snapshot(&mut state)?;
+            }
 
             (
                 accepted_join.player_id,
@@ -64,3 +69,13 @@ pub(super) fn run_accept_loop(
 
     Ok(())
 }
+
+fn joiner_needs_active_race_snapshot(phase: NetworkRacePhase) -> bool {
+    matches!(
+        phase,
+        NetworkRacePhase::Countdown { .. } | NetworkRacePhase::Racing | NetworkRacePhase::Finished
+    )
+}
+
+#[cfg(test)]
+mod tests;

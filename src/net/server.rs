@@ -88,7 +88,7 @@ use host_state::{ConnectedClient, HostState, build_initial_host_state};
 use host_util::{print_lobby_snapshot, validate_host_capacity};
 
 const POST_FIRST_FINISH_TIMEOUT: Duration = Duration::from_secs(30);
-const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(100);
+const RACE_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(50);
 static SERVER_CONSOLE_LOGGING: AtomicBool = AtomicBool::new(true);
 
 macro_rules! server_println {
