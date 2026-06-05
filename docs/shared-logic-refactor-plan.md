@@ -6,6 +6,10 @@ the same renderer or event loop. The goal is to keep authoritative gameplay,
 race lifecycle, item behavior, snapshots, and validation in browser-compatible
 Rust modules, with terminal and web layers acting as adapters.
 
+Status: the non-test shared-logic refactor slices are complete. The remaining
+planned work is the deferred test-module migration described below, plus any
+future refactors discovered during normal code health sweeps.
+
 ## Current Shared Foundation
 
 These pieces already live in shared Rust code and are used by more than one
@@ -765,28 +769,26 @@ Progress:
   adapter ticks. Browser-hosted AI advancement uses this helper while keeping
   browser timers and clock reads in the browser adapter.
 
-## Suggested Order
+## Completion Status
 
-1. Split `web/typekart-web/src/main.rs` into smaller modules.
-2. Expand `src/game/engine.rs` into the shared race host facade.
-3. Move bonus attempt flow into shared gameplay code.
-4. Extract shared snapshot building.
-5. Extract shared lobby policy.
-6. Consolidate rematch/result orchestration through the shared facade.
-7. Extract renderer view-model helpers only after gameplay parity is stable.
-8. Migrate local terminal session rules to shared gameplay modules.
-9. Split network host adapter modules after shared ownership boundaries are
-   clear.
-10. Define and migrate toward the shared host session core one operation at a
-    time.
-11. Converge browser host authority onto shared session operations.
-12. Converge local single-player onto shared session operations.
-13. Replace duplicated host event strings and frame projection with structured
-    shared events/snapshots.
-14. Keep clock/tick scheduling adapter-owned while testing shared tick behavior
-    with deterministic fake times.
-15. Split large inline tests into focused sibling or integration test modules
-    after the shared-logic boundaries settle.
+- Completed: browser module split.
+- Completed: shared race rule modules and host facade.
+- Completed: shared bonus attempt flow.
+- Completed: shared snapshot builder.
+- Completed: shared lobby policy.
+- Completed: shared results and rematch flow.
+- Completed: renderer view-model helpers where current parity needs them.
+- Completed: local terminal session migration to shared gameplay modules.
+- Completed: network host adapter module split.
+- Completed: shared host session core migration.
+- Completed: browser host authority convergence.
+- Completed: local single-player session convergence.
+- Completed: shared host events and snapshot-frame convergence for current
+  adapter needs.
+- Completed: deterministic shared tick-boundary helper while keeping scheduler
+  ownership in adapters.
+- Deferred: split large inline tests into focused sibling or integration test
+  modules after production refactors settle.
 
 ## Deferred Cleanup
 

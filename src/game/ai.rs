@@ -1,8 +1,7 @@
 //! Local AI racer configuration.
 //!
-//! The AI racers are a temporary stand-in for remote multiplayer clients. They
-//! deliberately use simple WPM-based behavior so the UI and item systems can be
-//! exercised without adding networking yet.
+//! AI racers use simple WPM-based behavior across local, network-hosted, and
+//! browser-hosted races.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiDifficulty {
